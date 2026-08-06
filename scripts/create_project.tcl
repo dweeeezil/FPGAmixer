@@ -1,53 +1,67 @@
 # =============================================================================
 # create_project.tcl
 #
-# Regenerates the FPGAmixer Vivado project from the sources in this repo.
+# Regenerates the FPGAmixer Vivado project. Run once, then use the GUI (or
+# run_sim.tcl for batch mode) for subsequent work.
 #
-# Usage (from the repo root):
+# Usage (from repo root):
 #     vivado -source scripts/create_project.tcl
-#
-# Or from within Vivado's Tcl Console:
-#     source scripts/create_project.tcl
-#
-# This wipes and recreates ./vivado_project/. Nothing under vivado_project/
-# should be committed to git - it's a build artifact of this script.
 # =============================================================================
 
-set proj_name  "FPGAmixer"
-set proj_dir   "vivado_project"
-set part       "xc7z020clg400-1"
-set board_part "digilentinc.com:arty-z7-20:part0:1.1"
+set proj_name    "FPGAmixer"
+set proj_dir     "vivado_project"
+set part         "xc7z020clg400-1"
+set board_part   "digilentinc.com:arty-z7-20:part0:1.1"
+set current_phase "phase2_top"
+set sim_top      "tb_i2s_loopback"
 
-# ------ Locate repo root ------
-# This script assumes it's being sourced from the repo root, i.e. the current
-# working directory contains src/, constraints/, scripts/, etc. Verify:
-if {![file isdirectory "src/rtl"] || ![file isdirectory "constraints"]} {
-    puts "ERROR: create_project.tcl must be run from the repo root."
-    puts "       Expected to find src/rtl/ and constraints/ in [pwd]"
+# ------ Verify we're at the repo root ------
+foreach d {src/rtl src/sim constraints scripts} {
+    if {![file isdirectory $d]} {
+        puts "ERROR: expected directory '$d' not found under [pwd]"
+        puts "       Run this script from the repo root."
+        return
+    }
+}
+
+# ------ Verify sim files actually exist (this is what broke last time) ------
+set rtl_files [glob -nocomplain src/rtl/*.sv]
+set sim_files [glob -nocomplain src/sim/*.sv]
+set xdc_files [glob -nocomplain constraints/*.xdc]
+
+if {[llength $rtl_files] == 0} {
+    puts "ERROR: no RTL sources found in src/rtl/"
+    return
+}
+if {[llength $sim_files] == 0} {
+    puts "ERROR: no simulation sources found in src/sim/"
+    puts "       Testbenches should be at src/sim/tb_*.sv"
+    return
+}
+if {[llength $xdc_files] == 0} {
+    puts "ERROR: no XDC constraints found in constraints/"
     return
 }
 
-# ------ Wipe any previous project directory ------
+puts "INFO: found [llength $rtl_files] RTL files, [llength $sim_files] sim files, [llength $xdc_files] XDC files"
+
+# ------ Wipe previous project directory ------
 if {[file exists $proj_dir]} {
-    puts "INFO: Removing existing $proj_dir/"
+    puts "INFO: removing existing $proj_dir/"
     file delete -force $proj_dir
 }
 
 # ------ Create project ------
 create_project $proj_name $proj_dir -part $part -force
-set_property BOARD_PART $board_part [current_project]
-set_property TARGET_LANGUAGE Verilog [current_project]
+set_property BOARD_PART      $board_part [current_project]
+set_property TARGET_LANGUAGE Verilog     [current_project]
 
-# ------ Add RTL sources ------
-add_files -norecurse -fileset sources_1 [glob src/rtl/*.sv]
+# ------ Add sources ------
+add_files -norecurse -fileset sources_1 $rtl_files
+add_files -norecurse -fileset sim_1     $sim_files
+add_files -norecurse -fileset constrs_1 $xdc_files
 
-# ------ Add constraint files ------
-add_files -norecurse -fileset constrs_1 [glob constraints/*.xdc]
-
-# ------ Create Clocking Wizard IP: 125 MHz -> ~12.288 MHz ------
-# All IP configuration lives here rather than in a checked-in .xci file, so
-# there's a single source of truth. Vivado picks the exact MMCM dividers to
-# best approximate 12.288 MHz; typical result is within ~0.02%.
+# ------ Clocking Wizard IP: 125 MHz -> ~12.288 MHz ------
 create_ip -name clk_wiz -vendor xilinx.com -library ip \
     -module_name clk_wiz_audio
 
@@ -65,19 +79,23 @@ set_property -dict [list \
 
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
 
-# ------ Set top module and refresh compile order ------
-set_property top phase1_top [current_fileset]
+# ------ Set synthesis and simulation tops ------
+set_property top $current_phase [current_fileset]
 update_compile_order -fileset sources_1
 
+set_property top $sim_top [get_filesets sim_1]
+update_compile_order -fileset sim_1
+
+# ------ Verify what got added ------
+set added_sim_files [get_files -of_objects [get_filesets sim_1]]
 puts ""
 puts "=================================================================="
 puts "  Project created at $proj_dir/$proj_name.xpr"
-puts "  Top module:        phase1_top"
-puts "  Board:             $board_part"
+puts "  Synthesis top:  $current_phase"
+puts "  Simulation top: $sim_top"
 puts ""
-puts "  Next steps:"
-puts "    1. Run synthesis + implementation + bitstream"
-puts "    2. Plug Pmod I2S2 into JA (jumper JP1 in SLV position)"
-puts "    3. Program the FPGA over JTAG"
-puts "    4. Line In of the Pmod = source, Line Out = looped-back audio"
+puts "  Simulation fileset contains [llength $added_sim_files] files:"
+foreach f $added_sim_files {
+    puts "    [file tail $f]"
+}
 puts "=================================================================="
