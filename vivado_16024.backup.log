@@ -4,8 +4,8 @@ INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detect
 # SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
 # IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
 # SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-# Start of session at: Thu Aug  6 15:50:15 2026
-# Process ID         : 12156
+# Start of session at: Thu Aug  6 15:14:44 2026
+# Process ID         : 16024
 # Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer
 # Command line       : vivado.exe -source scripts/create_project.tcl
 # Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado.log
@@ -20,7 +20,7 @@ INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detect
 # Host memory        : 16505 MB
 # Swap memory        : 9126 MB
 # Total Virtual      : 25632 MB
-# Available Virtual  : 16540 MB
+# Available Virtual  : 16630 MB
 #-----------------------------------------------------------
 start_gui
 source scripts/create_project.tcl
@@ -37,11 +37,12 @@ source scripts/create_project.tcl
 #     puts "INFO: Removing existing $proj_dir/"
 #     file delete -force $proj_dir
 # }
+INFO: Removing existing vivado_project/
 # create_project $proj_name $proj_dir -part $part -force
 INFO: [IP_Flow 19-234] Refreshing IP repositories
 INFO: [IP_Flow 19-1704] No user IP repositories specified
 INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'C:/AMDDesignTools/2026.1/Vivado/data/ip'.
-create_project: Time (s): cpu = 00:00:26 ; elapsed = 00:00:16 . Memory (MB): peak = 1731.879 ; gain = 346.402
+create_project: Time (s): cpu = 00:00:25 ; elapsed = 00:00:16 . Memory (MB): peak = 1730.633 ; gain = 321.543
 # set_property BOARD_PART $board_part [current_project]
 # set_property TARGET_LANGUAGE Verilog [current_project]
 # add_files -norecurse -fileset sources_1 [glob src/rtl/*.sv]
@@ -49,7 +50,7 @@ create_project: Time (s): cpu = 00:00:26 ; elapsed = 00:00:16 . Memory (MB): pea
 # create_ip -name clk_wiz -vendor xilinx.com -library ip \
 #     -module_name clk_wiz_audio
 INFO: [Device 21-403] Loading part xc7z020clg400-1
-create_ip: Time (s): cpu = 00:00:06 ; elapsed = 00:00:19 . Memory (MB): peak = 1944.074 ; gain = 212.195
+create_ip: Time (s): cpu = 00:00:06 ; elapsed = 00:00:19 . Memory (MB): peak = 1946.473 ; gain = 215.840
 # set_property -dict [list \
 #     CONFIG.PRIM_IN_FREQ                {125.000} \
 #     CONFIG.CLK_IN1_BOARD_INTERFACE     {Custom} \
@@ -102,18 +103,18 @@ create_fileset -blockset clk_wiz_audio
 set_property top clk_wiz_audio [get_fileset clk_wiz_audio]
 move_files -fileset [get_fileset clk_wiz_audio] [get_files -of_objects [get_fileset sources_1] c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.srcs/sources_1/ip/clk_wiz_audio/clk_wiz_audio.xci]
 launch_run clk_wiz_audio_synth_1
-[Thu Aug  6 15:55:39 2026] Launched clk_wiz_audio_synth_1...
+[Thu Aug  6 15:16:25 2026] Launched clk_wiz_audio_synth_1...
 Run output will be captured here: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/runme.log
 wait_on_run clk_wiz_audio_synth_1
 
-[Thu Aug  6 15:55:39 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:55:44 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:55:49 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:55:54 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:56:04 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:56:14 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:56:24 2026] Waiting for clk_wiz_audio_synth_1 to finish...
-[Thu Aug  6 15:56:34 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:16:25 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:16:30 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:16:35 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:16:40 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:16:51 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:17:01 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:17:11 2026] Waiting for clk_wiz_audio_synth_1 to finish...
+[Thu Aug  6 15:17:21 2026] Waiting for clk_wiz_audio_synth_1 to finish...
 
 *** Running vivado
     with args -log clk_wiz_audio.vds -m64 -product Vivado -mode batch -messageDb vivado.pb -notrace -source clk_wiz_audio.tcl
@@ -125,8 +126,8 @@ INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detect
 # SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
 # IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
 # SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-# Start of session at: Thu Aug  6 15:55:40 2026
-# Process ID         : 4408
+# Start of session at: Thu Aug  6 15:16:27 2026
+# Process ID         : 2956
 # Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1
 # Command line       : vivado.exe -log clk_wiz_audio.vds -product Vivado -mode batch -messageDb vivado.pb -notrace -source clk_wiz_audio.tcl
 # Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/clk_wiz_audio.vds
@@ -141,19 +142,19 @@ INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detect
 # Host memory        : 16505 MB
 # Swap memory        : 9126 MB
 # Total Virtual      : 25632 MB
-# Available Virtual  : 14284 MB
+# Available Virtual  : 14464 MB
 #-----------------------------------------------------------
 
 ****** Vivado v2026.1 (64-bit)
   **** SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
   **** IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
   **** SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-  **** Start of session at: Thu Aug  6 15:55:40 2026
+  **** Start of session at: Thu Aug  6 15:16:27 2026
     ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
     ** Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 source clk_wiz_audio.tcl -notrace
-create_project: Time (s): cpu = 00:00:11 ; elapsed = 00:00:07 . Memory (MB): peak = 581.543 ; gain = 268.426
+create_project: Time (s): cpu = 00:00:11 ; elapsed = 00:00:07 . Memory (MB): peak = 581.844 ; gain = 269.062
 Command: synth_design -top clk_wiz_audio -part xc7z020clg400-1 -incremental_mode off -mode out_of_context
 Starting synth_design
 Attempting to get a license for feature 'Vivado_Synthesis' and/or device 'xc7z020'
@@ -162,9 +163,9 @@ INFO: [Device 21-403] Loading part xc7z020clg400-1
 INFO: [Designutils 20-5008] Incremental synthesis strategy off
 INFO: [Synth 8-7079] Multithreading enabled for synth_design using a maximum of 2 processes.
 INFO: [Synth 8-7078] Launching helper process for spawning children vivado processes
-INFO: [Synth 8-7075] Helper process launched with PID 16944
+INFO: [Synth 8-7075] Helper process launched with PID 15876
 ---------------------------------------------------------------------------------
-Starting RTL Elaboration : Time (s): cpu = 00:00:07 ; elapsed = 00:00:08 . Memory (MB): peak = 1405.594 ; gain = 576.012
+Starting RTL Elaboration : Time (s): cpu = 00:00:07 ; elapsed = 00:00:08 . Memory (MB): peak = 1403.199 ; gain = 576.941
 ---------------------------------------------------------------------------------
 INFO: [Synth 8-6157] synthesizing module 'clk_wiz_audio' [c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio.v:66]
 INFO: [Synth 8-6157] synthesizing module 'clk_wiz_audio_clk_wiz' [c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio_clk_wiz.v:66]
@@ -190,18 +191,18 @@ INFO: [Synth 8-6155] done synthesizing module 'BUFG' (0#1) [C:/AMDDesignTools/20
 INFO: [Synth 8-6155] done synthesizing module 'clk_wiz_audio_clk_wiz' (0#1) [c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio_clk_wiz.v:66]
 INFO: [Synth 8-6155] done synthesizing module 'clk_wiz_audio' (0#1) [c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio.v:66]
 ---------------------------------------------------------------------------------
-Finished RTL Elaboration : Time (s): cpu = 00:00:09 ; elapsed = 00:00:10 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished RTL Elaboration : Time (s): cpu = 00:00:09 ; elapsed = 00:00:10 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Handling Custom Attributes
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Handling Custom Attributes : Time (s): cpu = 00:00:09 ; elapsed = 00:00:10 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:09 ; elapsed = 00:00:10 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished RTL Optimization Phase 1 : Time (s): cpu = 00:00:09 ; elapsed = 00:00:10 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished RTL Optimization Phase 1 : Time (s): cpu = 00:00:09 ; elapsed = 00:00:10 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
-Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 1525.781 ; gain = 0.000
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 1522.453 ; gain = 0.000
 INFO: [Netlist 29-17] Analyzing 1 Unisim elements for replacement
 INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
 INFO: [Project 1-570] Preparing netlist for logic optimization
@@ -221,30 +222,30 @@ Parsing XDC File [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/
 Finished Parsing XDC File [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/dont_touch.xdc]
 Completed Processing XDC Constraints
 
-Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 1525.781 ; gain = 0.000
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 1522.453 ; gain = 0.000
 INFO: [Project 1-111] Unisim Transformation Summary:
 No Unisim elements were transformed.
 
-Constraint Validation Runtime : Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.042 . Memory (MB): peak = 1525.781 ; gain = 0.000
+Constraint Validation Runtime : Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.043 . Memory (MB): peak = 1522.453 ; gain = 0.000
 INFO: [Designutils 20-5008] Incremental synthesis strategy off
 ---------------------------------------------------------------------------------
-Finished Constraint Validation : Time (s): cpu = 00:00:19 ; elapsed = 00:00:21 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished Constraint Validation : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Loading Part and Timing Information
 ---------------------------------------------------------------------------------
 Loading part: xc7z020clg400-1
 ---------------------------------------------------------------------------------
-Finished Loading Part and Timing Information : Time (s): cpu = 00:00:19 ; elapsed = 00:00:21 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished Loading Part and Timing Information : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Applying 'set_property' XDC Constraints
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished applying 'set_property' XDC Constraints : Time (s): cpu = 00:00:19 ; elapsed = 00:00:21 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished applying 'set_property' XDC Constraints : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished RTL Optimization Phase 2 : Time (s): cpu = 00:00:19 ; elapsed = 00:00:21 . Memory (MB): peak = 1525.781 ; gain = 696.199
+Finished RTL Optimization Phase 2 : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1522.453 ; gain = 696.195
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start RTL Component Statistics 
@@ -266,25 +267,25 @@ Finished Part Resource Summary
 Start Cross Boundary and Area Optimization
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Cross Boundary and Area Optimization : Time (s): cpu = 00:00:21 ; elapsed = 00:00:23 . Memory (MB): peak = 1559.430 ; gain = 729.848
+Finished Cross Boundary and Area Optimization : Time (s): cpu = 00:00:21 ; elapsed = 00:00:23 . Memory (MB): peak = 1551.148 ; gain = 724.891
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Applying XDC Timing Constraints
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Applying XDC Timing Constraints : Time (s): cpu = 00:00:28 ; elapsed = 00:00:30 . Memory (MB): peak = 1727.066 ; gain = 897.484
+Finished Applying XDC Timing Constraints : Time (s): cpu = 00:00:27 ; elapsed = 00:00:29 . Memory (MB): peak = 1723.734 ; gain = 897.477
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Timing Optimization
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Timing Optimization : Time (s): cpu = 00:00:28 ; elapsed = 00:00:30 . Memory (MB): peak = 1727.270 ; gain = 897.688
+Finished Timing Optimization : Time (s): cpu = 00:00:27 ; elapsed = 00:00:29 . Memory (MB): peak = 1723.734 ; gain = 897.477
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Technology Mapping
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Technology Mapping : Time (s): cpu = 00:00:28 ; elapsed = 00:00:30 . Memory (MB): peak = 1736.855 ; gain = 907.273
+Finished Technology Mapping : Time (s): cpu = 00:00:27 ; elapsed = 00:00:29 . Memory (MB): peak = 1733.281 ; gain = 907.023
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start IO Insertion
@@ -302,37 +303,37 @@ Start Final Netlist Cleanup
 Finished Final Netlist Cleanup
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished IO Insertion : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished IO Insertion : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Renaming Generated Instances
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Renaming Generated Instances : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished Renaming Generated Instances : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Rebuilding User Hierarchy
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Rebuilding User Hierarchy : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished Rebuilding User Hierarchy : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Renaming Generated Ports
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Renaming Generated Ports : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished Renaming Generated Ports : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Handling Custom Attributes
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Handling Custom Attributes : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Renaming Generated Nets
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
-Finished Renaming Generated Nets : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished Renaming Generated Nets : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------
 Start Writing Synthesis Report
@@ -353,18 +354,18 @@ Report Cell Usage:
 |3     |IBUF       |     1|
 +------+-----------+------+
 ---------------------------------------------------------------------------------
-Finished Writing Synthesis Report : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Finished Writing Synthesis Report : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 ---------------------------------------------------------------------------------
 Synthesis finished with 0 errors, 0 critical warnings and 0 warnings.
-Synthesis Optimization Runtime : Time (s): cpu = 00:00:23 ; elapsed = 00:00:34 . Memory (MB): peak = 2012.984 ; gain = 1183.402
-Synthesis Optimization Complete : Time (s): cpu = 00:00:34 ; elapsed = 00:00:37 . Memory (MB): peak = 2012.984 ; gain = 1183.402
+Synthesis Optimization Runtime : Time (s): cpu = 00:00:24 ; elapsed = 00:00:34 . Memory (MB): peak = 2008.781 ; gain = 1182.523
+Synthesis Optimization Complete : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2008.781 ; gain = 1182.523
 INFO: [Project 1-571] Translating synthesized netlist
-Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 2012.984 ; gain = 0.000
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 2008.781 ; gain = 0.000
 INFO: [Netlist 29-17] Analyzing 1 Unisim elements for replacement
 INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
 INFO: [Project 1-570] Preparing netlist for logic optimization
 INFO: [Opt 31-138] Pushed 0 inverter(s) to 0 load pin(s).
-Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 2025.785 ; gain = 0.000
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 2021.535 ; gain = 0.000
 INFO: [Project 1-111] Unisim Transformation Summary:
 No Unisim elements were transformed.
 
@@ -372,20 +373,20 @@ Synth Design complete | Checksum: 78c65b4e
 INFO: [Common 17-83] Releasing license: Vivado_Synthesis
 30 Infos, 0 Warnings, 0 Critical Warnings and 0 Errors encountered.
 synth_design completed successfully
-synth_design: Time (s): cpu = 00:00:39 ; elapsed = 00:00:44 . Memory (MB): peak = 2025.785 ; gain = 1424.578
-Write ShapeDB Complete: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2025.785 ; gain = 0.000
+synth_design: Time (s): cpu = 00:00:40 ; elapsed = 00:00:43 . Memory (MB): peak = 2021.535 ; gain = 1422.598
+Write ShapeDB Complete: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2021.535 ; gain = 0.000
 INFO: [Common 17-1381] The checkpoint 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/clk_wiz_audio.dcp' has been generated.
 INFO: [Ipptcl 7-1612] Added synthesis output to IP cache for IP clk_wiz_audio, cache-ID = 43f1f39c9586ebff
-Write ShapeDB Complete: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2025.785 ; gain = 0.000
+Write ShapeDB Complete: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2021.535 ; gain = 0.000
 INFO: [Common 17-1381] The checkpoint 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/clk_wiz_audio.dcp' has been generated.
 INFO: [Vivado 12-24828] Executing command : report_utilization -file clk_wiz_audio_utilization_synth.rpt -pb clk_wiz_audio_utilization_synth.pb
-INFO: [Common 17-206] Exiting Vivado at Thu Aug  6 15:56:38 2026...
-[Thu Aug  6 15:56:39 2026] clk_wiz_audio_synth_1 finished
-wait_on_runs: Time (s): cpu = 00:00:04 ; elapsed = 00:01:00 . Memory (MB): peak = 2016.992 ; gain = 0.000
+INFO: [Common 17-206] Exiting Vivado at Thu Aug  6 15:17:23 2026...
+[Thu Aug  6 15:17:26 2026] clk_wiz_audio_synth_1 finished
+wait_on_runs: Time (s): cpu = 00:00:04 ; elapsed = 00:01:00 . Memory (MB): peak = 1991.113 ; gain = 0.000
 launch_simulation
 Command: launch_simulation  -mode behavioral
 INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
-INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:56:39 2026
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:17:26 2026
 
 INFO: [Vivado 12-12493] Simulation top is 'phase2_top'
 INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
@@ -417,7 +418,7 @@ INFO: [VRFC 10-2263] Analyzing SystemVerilog file "C:/Users/Alex/Desktop/FPGAmix
 INFO: [VRFC 10-311] analyzing module phase2_top
 INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim/glbl.v" into library xil_defaultlib
 INFO: [VRFC 10-311] analyzing module glbl
-INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
+INFO: [USF-XSim-69] 'compile' step finished in '2' seconds
 INFO: [USF-XSim-3] XSim::Elaborate design
 INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
 "xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot phase2_top_behav xil_defaultlib.phase2_top xil_defaultlib.glbl -log elaborate.log"
@@ -444,7 +445,8 @@ Compiling module xil_defaultlib.i2s_transmitter
 Compiling module xil_defaultlib.phase2_top
 Compiling module xil_defaultlib.glbl
 Built simulation snapshot phase2_top_behav
-INFO: [USF-XSim-69] 'elaborate' step finished in '3' seconds
+run_program: Time (s): cpu = 00:00:00 ; elapsed = 00:00:06 . Memory (MB): peak = 1991.113 ; gain = 0.000
+INFO: [USF-XSim-69] 'elaborate' step finished in '5' seconds
 INFO: [USF-XSim-4] XSim::Simulate design
 INFO: [USF-XSim-61] Executing 'SIMULATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
 INFO: [USF-XSim-98] *** Running xsim
@@ -464,21 +466,241 @@ source phase2_top.tcl
 # run 1000ns
 INFO: [USF-XSim-96] XSim completed. Design snapshot 'phase2_top_behav' loaded.
 INFO: [USF-XSim-97] XSim simulation ran for 1000ns
-launch_simulation: Time (s): cpu = 00:00:06 ; elapsed = 00:00:08 . Memory (MB): peak = 2016.992 ; gain = 0.000
-set_property SOURCE_SET sources_1 [get_filesets sim_1]
-add_files -fileset sim_1 -norecurse C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv
-update_compile_order -fileset sim_1
+launch_simulation: Time (s): cpu = 00:00:06 ; elapsed = 00:00:10 . Memory (MB): peak = 1994.016 ; gain = 2.902
+run al
+ERROR: [Simtcl 6-18] Time value al is missing the numeric part.
+run all
+INFO: [Common 17-41] Interrupt caught. Command should exit soon.
+run: Time (s): cpu = 00:00:13 ; elapsed = 00:05:26 . Memory (MB): peak = 2114.906 ; gain = 0.000
+INFO: [Common 17-344] 'run' was cancelled
+get_files -of_objects [get_filesets sim_1]
+WARNING: [Vivado 12-818] No files matched '*'
 set_property SOURCE_SET sources_1 [get_filesets sim_1]
 add_files -fileset sim_1 -norecurse {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_transmitter.sv C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_receiver.sv C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv}
-WARNING: [filemgmt 56-12] File 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv' cannot be added to the project because it already exists in the project, skipping this file
 update_compile_order -fileset sim_1
-set_property top tb_i2s_transmitter [get_filesets sim_1]
-set_property top_lib xil_defaultlib [get_filesets sim_1]
+set_property top tb_i2s_receiver [get_filesets sim_1]
+restart
+INFO: [Wavedata 42-604] Simulation restarted
+run all
+INFO: [Common 17-41] Interrupt caught. Command should exit soon.
+run: Time (s): cpu = 00:00:01 ; elapsed = 00:00:14 . Memory (MB): peak = 3101.176 ; gain = 0.000
+INFO: [Common 17-344] 'run' was cancelled
 update_compile_order -fileset sim_1
+stop
 relaunch_sim
+INFO: xsimkernel Simulation Memory Usage: 21116 KB (Peak: 21116 KB), Simulation CPU Usage: 338484 ms
 Command: launch_simulation -step compile -simset sim_1 -mode behavioral
 INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
-INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:59:09 2026
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:40:46 2026
+
+INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_receiver'
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [SIM-utils-72] Using boost library from 'C:/AMDDesignTools/2026.1/Vivado/tps/boost_1_72_0'
+INFO: [USF-XSim-7] Finding pre-compiled libraries...
+INFO: [USF-XSim-11] File 'C:/AMDDesignTools/2026.1/Vivado/data/xsim/xsim.ini' copied to run dir:'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-54] Inspecting design source files for 'tb_i2s_receiver' in fileset 'sim_1'...
+INFO: [USF-XSim-97] Finding global include files...
+INFO: [USF-XSim-98] Fetching design files from 'sim_1'...
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xvlog --incr --relax -L uvm -prj tb_i2s_receiver_vlog.prj"
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_receiver.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_i2s_receiver
+INFO: [USF-XSim-69] 'compile' step finished in '2' seconds
+Command: launch_simulation -step elaborate -simset sim_1 -mode behavioral
+INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:40:48 2026
+
+INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_receiver'
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_receiver_behav xil_defaultlib.tb_i2s_receiver xil_defaultlib.glbl -log elaborate.log"
+Vivado Simulator v2026.1
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+Running: C:/AMDDesignTools/2026.1/Vivado/bin/unwrapped/win64.o/xelab.exe --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_receiver_behav xil_defaultlib.tb_i2s_receiver xil_defaultlib.glbl -log elaborate.log 
+INFO: [XSIM 43-3493] Using 2 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module xil_defaultlib.i2s_clock_divider
+Compiling module xil_defaultlib.i2s_receiver
+Compiling module xil_defaultlib.tb_i2s_receiver
+Compiling module xil_defaultlib.glbl
+Built simulation snapshot tb_i2s_receiver_behav
+INFO: [USF-XSim-69] 'elaborate' step finished in '3' seconds
+Time resolution is 1 ps
+relaunch_sim: Time (s): cpu = 00:00:01 ; elapsed = 00:00:07 . Memory (MB): peak = 3101.176 ; gain = 0.000
+set_property top tb_i2s_receiver [get_filesets sim_1]
+restart
+INFO: [Wavedata 42-604] Simulation restarted
+run all
+INFO: [Common 17-41] Interrupt caught. Command should exit soon.
+run: Time (s): cpu = 00:00:02 ; elapsed = 00:00:16 . Memory (MB): peak = 3101.176 ; gain = 0.000
+INFO: [Common 17-344] 'run' was cancelled
+set_property top tb_i2s_transmitter [get_filesets sim_1]
+update_compile_order -fileset sim_1
+relaunch_sim
+INFO: xsimkernel Simulation Memory Usage: 20452 KB (Peak: 20452 KB), Simulation CPU Usage: 16233 ms
+Command: launch_simulation -step compile -simset sim_1 -mode behavioral
+INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:44:05 2026
+
+INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_transmitter'
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xvlog --incr --relax -L uvm -prj tb_i2s_transmitter_vlog.prj"
+INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
+Command: launch_simulation -step elaborate -simset sim_1 -mode behavioral
+INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:44:06 2026
+
+INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_transmitter'
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_transmitter_behav xil_defaultlib.tb_i2s_transmitter xil_defaultlib.glbl -log elaborate.log"
+Vivado Simulator v2026.1
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+Running: C:/AMDDesignTools/2026.1/Vivado/bin/unwrapped/win64.o/xelab.exe --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_transmitter_behav xil_defaultlib.tb_i2s_transmitter xil_defaultlib.glbl -log elaborate.log 
+INFO: [XSIM 43-3493] Using 2 slave threads.
+ERROR: [XSIM 43-3225] Cannot find design unit xil_defaultlib.tb_i2s_transmitter in library work located at xsim.dir/work.
+INFO: [USF-XSim-69] 'elaborate' step finished in '1' seconds
+INFO: [USF-XSim-99] Step results log file:'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim/elaborate.log'
+ERROR: [USF-XSim-62] 'elaborate' step failed with error(s). Please check the Tcl console output or 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim/elaborate.log' file for more information.
+ERROR: [Vivado 12-4473] Detected error while running simulation. Please correct the issue and retry this operation.
+ERROR: [Common 17-39] 'launch_simulation' failed due to earlier errors.
+ERROR: [Common 17-69] Command failed: ERROR: [Common 17-39] 'launch_simulation' failed due to earlier errors.
+
+source C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/scripts/run_sim.tcl
+# set proj_file "vivado_project/FPGAmixer.xpr"
+# if {![file exists $proj_file]} {
+#     puts "ERROR: $proj_file not found. Run scripts/create_project.tcl first."
+#     return
+# }
+# if {[catch {current_project}]} {
+#     open_project $proj_file
+# }
+# set testbenches {
+#     tb_i2s_receiver
+#     tb_i2s_transmitter
+#     tb_i2s_loopback
+# }
+# foreach tb $testbenches {
+#     puts ""
+#     puts "------------------------------------------------------------------"
+#     puts "  Running $tb"
+#     puts "------------------------------------------------------------------"
+# 
+#     # Point the sim fileset at this testbench and launch behavioral sim.
+#     set_property top $tb [get_filesets sim_1]
+# 
+#     # If a previous simulation is still open, close it before relaunching.
+#     if {![catch {current_sim}]} {
+#         close_sim -quiet
+#     }
+# 
+#     launch_simulation -mode behavioral
+#     run all
+#     close_sim
+# }
+
+------------------------------------------------------------------
+  Running tb_i2s_receiver
+------------------------------------------------------------------
+Command: launch_simulation  -mode behavioral
+INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:44:47 2026
+
+INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_receiver'
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [SIM-utils-72] Using boost library from 'C:/AMDDesignTools/2026.1/Vivado/tps/boost_1_72_0'
+INFO: [USF-XSim-7] Finding pre-compiled libraries...
+INFO: [USF-XSim-11] File 'C:/AMDDesignTools/2026.1/Vivado/data/xsim/xsim.ini' copied to run dir:'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-54] Inspecting design source files for 'tb_i2s_receiver' in fileset 'sim_1'...
+INFO: [USF-XSim-97] Finding global include files...
+INFO: [USF-XSim-98] Fetching design files from 'sim_1'...
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xvlog --incr --relax -L uvm -prj tb_i2s_receiver_vlog.prj"
+INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_receiver_behav xil_defaultlib.tb_i2s_receiver xil_defaultlib.glbl -log elaborate.log"
+Vivado Simulator v2026.1
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+Running: C:/AMDDesignTools/2026.1/Vivado/bin/unwrapped/win64.o/xelab.exe --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_receiver_behav xil_defaultlib.tb_i2s_receiver xil_defaultlib.glbl -log elaborate.log 
+INFO: [XSIM 43-3493] Using 2 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+INFO: [XSIM 43-4323] No Change in HDL. Linking previously generated obj files to create kernel
+INFO: [USF-XSim-69] 'elaborate' step finished in '1' seconds
+INFO: [USF-XSim-4] XSim::Simulate design
+INFO: [USF-XSim-61] Executing 'SIMULATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [USF-XSim-98] *** Running xsim
+   with args "tb_i2s_receiver_behav -key {Behavioral:sim_1:Functional:tb_i2s_receiver} -tclbatch {tb_i2s_receiver.tcl} -log {simulate.log}"
+INFO: [USF-XSim-8] Loading simulator feature
+Time resolution is 1 ps
+source tb_i2s_receiver.tcl
+## set curr_wave [current_wave_config]
+## if { [string length $curr_wave] == 0 } {
+##   if { [llength [get_objects]] > 0} {
+##     add_wave /
+##     set_property needs_save false [current_wave_config]
+##   } else {
+##      send_msg_id Add_Wave-1 WARNING "No top level signals found. Simulator will start without a wave window. If you want to open a wave window go to 'File->New Waveform Configuration' or type 'create_wave_config' in the TCL console."
+##   }
+## }
+## run 1000ns
+
+=== tb_i2s_receiver ===
+Reset released.
+INFO: [USF-XSim-96] XSim completed. Design snapshot 'tb_i2s_receiver_behav' loaded.
+INFO: [USF-XSim-97] XSim simulation ran for 1000ns
+Test 1: L=0xA5A5A5, R=0x5A5A5A
+  [FAIL] left_data: expected 0xa5a5a5, got 0x52d2d2
+  [FAIL] right_data: expected 0x5a5a5a, got 0x2d2d2d
+Test 2: L=0xFFFFFF, R=0x000000
+  [FAIL] left_data: expected 0xffffff, got 0x7fffff
+  [ok] right_data: 0x000000
+Test 3: L=0x123456, R=0xABCDEF
+  [FAIL] left_data: expected 0x123456, got 0x091a2b
+  [FAIL] right_data: expected 0xabcdef, got 0x55e6f7
+
+FAIL: tb_i2s_receiver - 5 check(s) failed
+
+$finish called at time : 146002500 ps : File "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_receiver.sv" Line 139
+INFO: [Simtcl 6-16] Simulation closed
+
+------------------------------------------------------------------
+  Running tb_i2s_transmitter
+------------------------------------------------------------------
+Command: launch_simulation  -mode behavioral
+INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:44:53 2026
 
 INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_transmitter'
 INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
@@ -497,15 +719,6 @@ INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in 'C:/Users/Alex/Deskt
 INFO: [VRFC 10-2263] Analyzing SystemVerilog file "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_transmitter.sv" into library xil_defaultlib
 INFO: [VRFC 10-311] analyzing module tb_i2s_transmitter
 INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
-Command: launch_simulation -step elaborate -simset sim_1 -mode behavioral
-INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
-INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:59:10 2026
-
-INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_transmitter'
-INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
-INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
-INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
-INFO: [SIM-utils-51] Simulation object is 'sim_1'
 INFO: [USF-XSim-3] XSim::Elaborate design
 INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
 "xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_transmitter_behav xil_defaultlib.tb_i2s_transmitter xil_defaultlib.glbl -log elaborate.log"
@@ -526,259 +739,149 @@ Compiling module xil_defaultlib.tb_i2s_transmitter
 Compiling module xil_defaultlib.glbl
 Built simulation snapshot tb_i2s_transmitter_behav
 INFO: [USF-XSim-69] 'elaborate' step finished in '1' seconds
+INFO: [USF-XSim-4] XSim::Simulate design
+INFO: [USF-XSim-61] Executing 'SIMULATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [USF-XSim-98] *** Running xsim
+   with args "tb_i2s_transmitter_behav -key {Behavioral:sim_1:Functional:tb_i2s_transmitter} -tclbatch {tb_i2s_transmitter.tcl} -log {simulate.log}"
+INFO: [USF-XSim-8] Loading simulator feature
 Time resolution is 1 ps
-launch_runs impl_1 -to_step write_bitstream -jobs 8
-[Thu Aug  6 16:02:18 2026] Launched synth_1...
-Run output will be captured here: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/runme.log
-[Thu Aug  6 16:02:18 2026] Launched impl_1...
-Run output will be captured here: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/runme.log
-open_hw_manager
-connect_hw_server -allow_non_jtag
-INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
-INFO: [Labtools 27-2222] Launching hw_server...
-INFO: [Labtools 27-2221] Launch Output:
+source tb_i2s_transmitter.tcl
+## set curr_wave [current_wave_config]
+## if { [string length $curr_wave] == 0 } {
+##   if { [llength [get_objects]] > 0} {
+##     add_wave /
+##     set_property needs_save false [current_wave_config]
+##   } else {
+##      send_msg_id Add_Wave-1 WARNING "No top level signals found. Simulator will start without a wave window. If you want to open a wave window go to 'File->New Waveform Configuration' or type 'create_wave_config' in the TCL console."
+##   }
+## }
+## run 1000ns
 
-****** Xilinx hw_server v2026.1
-  **** Build date : May 29 2026 at 14:55:19
-    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+=== tb_i2s_transmitter ===
+Reset released.
+INFO: [USF-XSim-96] XSim completed. Design snapshot 'tb_i2s_transmitter_behav' loaded.
+INFO: [USF-XSim-97] XSim simulation ran for 1000ns
+launch_simulation: Time (s): cpu = 00:00:03 ; elapsed = 00:00:05 . Memory (MB): peak = 3142.066 ; gain = 0.000
+Test 1: L=0xA5A5A5, R=0x5A5A5A
+  [ok] captured L: 0xa5a5a5
+  [FAIL] captured R: expected 0x5a5a5a, got 0x00b4b4
+Test 2: L=0xFFFFFF, R=0x000000
+  [ok] captured L: 0xffffff
+  [ok] captured R: 0x000000
+Test 3: L=0x123456, R=0xABCDEF
+  [ok] captured L: 0x123456
+  [FAIL] captured R: expected 0xabcdef, got 0x01579b
 
+FAIL: tb_i2s_transmitter - 2 check(s) failed
 
-INFO: [Labtools 27-3415] Connecting to cs_server url TCP:localhost:0
-INFO: [Labtools 27-3417] Launching cs_server...
-INFO: [Labtools 27-2221] Launch Output:
-
-****** Xilinx cs_server v2026.1
-  **** Build Info : #60 | 2026-06-15 19:15 UTC | a9691a9
-    ** Copyright 2017-2022 Xilinx, Inc. All Rights Reserved.
-    ** Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
-
-
-
-connect_hw_server: Time (s): cpu = 00:00:02 ; elapsed = 00:00:07 . Memory (MB): peak = 3534.379 ; gain = 0.000
-open_hw_target
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-current_hw_device [get_hw_devices xc7z020_1]
-refresh_hw_device -update_hw_probes false [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-open_run impl_1
-Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 3534.379 ; gain = 0.000
-INFO: [Netlist 29-17] Analyzing 1 Unisim elements for replacement
-INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
-INFO: [Project 1-479] Netlist was created with Vivado 2026.1
-INFO: [Project 1-570] Preparing netlist for logic optimization
-Read ShapeDB Complete: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.002 . Memory (MB): peak = 3534.379 ; gain = 0.000
-INFO: [Timing 38-478] Restoring timing data from binary archive.
-INFO: [Timing 38-479] Binary timing data restore complete.
-INFO: [Project 1-856] Restoring constraints from binary archive.
-INFO: [Project 1-853] Binary constraint restore complete.
-INFO: [Designutils 20-5722] Start Reading Physical Databases.
-Reading placement.
-Read Netlist Cache: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Reading placer database...
-Read Device Cache: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.012 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Read PlaceDB: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Read placeStorage: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.002 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Read PulsedLatchDB: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Reading routing.
-Read RouteStorage: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.011 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Read Physdb Files: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.039 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Restored from archive | CPU: 0.000000 secs | Memory: 0.000000 MB |
-Finished XDEF File Restore: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.046 . Memory (MB): peak = 3534.379 ; gain = 0.000
-Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 3534.379 ; gain = 0.000
-INFO: [Project 1-111] Unisim Transformation Summary:
-No Unisim elements were transformed.
-
-open_run: Time (s): cpu = 00:00:28 ; elapsed = 00:00:16 . Memory (MB): peak = 3534.379 ; gain = 0.000
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-ERROR: [Labtools 27-3165] End of startup status: LOW
-ERROR: [Common 17-39] 'program_hw_devices' failed due to earlier errors.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-ERROR: [Labtools 27-3165] End of startup status: LOW
-ERROR: [Common 17-39] 'program_hw_devices' failed due to earlier errors.
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-ERROR: [Labtools 27-3165] End of startup status: LOW
-ERROR: [Common 17-39] 'program_hw_devices' failed due to earlier errors.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-close_sim
+$finish called at time : 78934500 ps : File "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_transmitter.sv" Line 126
 INFO: [Simtcl 6-16] Simulation closed
+
+------------------------------------------------------------------
+  Running tb_i2s_loopback
+------------------------------------------------------------------
+Command: launch_simulation  -mode behavioral
+INFO: [Vivado 12-25911] Executing simulation for 'XSim' simulator
+INFO: [Vivado 12-28535] Process started - Thu Aug  6 15:44:59 2026
+
+INFO: [Vivado 12-12493] Simulation top is 'tb_i2s_loopback'
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [SIM-utils-72] Using boost library from 'C:/AMDDesignTools/2026.1/Vivado/tps/boost_1_72_0'
+INFO: [USF-XSim-7] Finding pre-compiled libraries...
+INFO: [USF-XSim-11] File 'C:/AMDDesignTools/2026.1/Vivado/data/xsim/xsim.ini' copied to run dir:'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-54] Inspecting design source files for 'tb_i2s_loopback' in fileset 'sim_1'...
+INFO: [USF-XSim-97] Finding global include files...
+INFO: [USF-XSim-98] Fetching design files from 'sim_1'...
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xvlog --incr --relax -L uvm -prj tb_i2s_loopback_vlog.prj"
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_i2s_loopback
+INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+"xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_loopback_behav xil_defaultlib.tb_i2s_loopback xil_defaultlib.glbl -log elaborate.log"
+Vivado Simulator v2026.1
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+Running: C:/AMDDesignTools/2026.1/Vivado/bin/unwrapped/win64.o/xelab.exe --incr --debug typical --relax --mt 2 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_i2s_loopback_behav xil_defaultlib.tb_i2s_loopback xil_defaultlib.glbl -log elaborate.log 
+INFO: [XSIM 43-3493] Using 2 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module xil_defaultlib.i2s_clock_divider
+Compiling module xil_defaultlib.i2s_receiver
+Compiling module xil_defaultlib.i2s_transmitter
+Compiling module xil_defaultlib.tb_i2s_loopback
+Compiling module xil_defaultlib.glbl
+Built simulation snapshot tb_i2s_loopback_behav
+INFO: [USF-XSim-69] 'elaborate' step finished in '1' seconds
+INFO: [USF-XSim-4] XSim::Simulate design
+INFO: [USF-XSim-61] Executing 'SIMULATE' step in 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.sim/sim_1/behav/xsim'
+INFO: [USF-XSim-98] *** Running xsim
+   with args "tb_i2s_loopback_behav -key {Behavioral:sim_1:Functional:tb_i2s_loopback} -tclbatch {tb_i2s_loopback.tcl} -log {simulate.log}"
+INFO: [USF-XSim-8] Loading simulator feature
+Time resolution is 1 ps
+source tb_i2s_loopback.tcl
+## set curr_wave [current_wave_config]
+## if { [string length $curr_wave] == 0 } {
+##   if { [llength [get_objects]] > 0} {
+##     add_wave /
+##     set_property needs_save false [current_wave_config]
+##   } else {
+##      send_msg_id Add_Wave-1 WARNING "No top level signals found. Simulator will start without a wave window. If you want to open a wave window go to 'File->New Waveform Configuration' or type 'create_wave_config' in the TCL console."
+##   }
+## }
+## run 1000ns
+
+=== tb_i2s_loopback ===
+INFO: [USF-XSim-96] XSim completed. Design snapshot 'tb_i2s_loopback_behav' loaded.
+INFO: [USF-XSim-97] XSim simulation ran for 1000ns
+launch_simulation: Time (s): cpu = 00:00:02 ; elapsed = 00:00:05 . Memory (MB): peak = 3142.066 ; gain = 0.000
+Frame 0 (driven earlier):
+  [FAIL] L round-trip: expected 0xa5a5a5, got 0x00014b
+  [FAIL] R round-trip: expected 0x5a5a5a, got 0x969001
+Frame 1 (driven earlier):
+  [FAIL] L round-trip: expected 0xffffff, got 0xd2d2d0
+  [FAIL] R round-trip: expected 0x000000, got 0x0fffff
+Frame 2 (driven earlier):
+  [FAIL] L round-trip: expected 0x123456, got 0xc00000
+  [FAIL] R round-trip: expected 0xabcdef, got 0x000004
+
+FAIL: tb_i2s_loopback - 6 check(s) failed
+
+$finish called at time : 86062500 ps : File "C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv" Line 168
+INFO: [Simtcl 6-16] Simulation closed
+# puts ""
+
+# puts "=================================================================="
+==================================================================
+# puts "  All testbenches complete."
+  All testbenches complete.
+# puts "  Look for 'PASS:' or 'FAIL:' lines above for each testbench."
+  Look for 'PASS:' or 'FAIL:' lines above for each testbench.
+# puts "=================================================================="
+==================================================================
+update_compile_order -fileset sim_1
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_receiver.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_transmitter.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_loopback.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\rtl\phase2_top.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_receiver.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_receiver.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_receiver.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_transmitter.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_loopback.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\rtl\phase2_top.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_loopback.sv:]
+WARNING: [filemgmt 56-199] Attempt to get parsing info during refresh. "On-the-fly" syntax checking information may be incorrect. [C:\Users\Alex\Desktop\FPGAmixer_main\FPGAmixer\src\sim\tb_i2s_loopback.sv:]
+ERROR: [Common 17-180] Spawn failed: The operation completed successfully.
+
 exit
+INFO: [Common 17-206] Exiting Vivado at Thu Aug  6 15:47:30 2026...

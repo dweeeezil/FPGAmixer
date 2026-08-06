@@ -3,8 +3,8 @@
 # SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
 # IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
 # SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-# Start of session at: Thu Aug  6 15:14:44 2026
-# Process ID         : 16024
+# Start of session at: Thu Aug  6 15:50:15 2026
+# Process ID         : 12156
 # Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer
 # Command line       : vivado.exe -source scripts/create_project.tcl
 # Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado.log
@@ -19,7 +19,7 @@
 # Host memory        : 16505 MB
 # Swap memory        : 9126 MB
 # Total Virtual      : 25632 MB
-# Available Virtual  : 16630 MB
+# Available Virtual  : 16540 MB
 #-----------------------------------------------------------
 start_gui
 source scripts/create_project.tcl
@@ -35,26 +35,84 @@ wait_on_run clk_wiz_audio_synth_1
 
 launch_simulation
 source phase2_top.tcl
-run al
-run all
-get_files -of_objects [get_filesets sim_1]
+set_property SOURCE_SET sources_1 [get_filesets sim_1]
+add_files -fileset sim_1 -norecurse C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv
+update_compile_order -fileset sim_1
 set_property SOURCE_SET sources_1 [get_filesets sim_1]
 add_files -fileset sim_1 -norecurse {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_transmitter.sv C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_receiver.sv C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/sim/tb_i2s_loopback.sv}
 update_compile_order -fileset sim_1
-set_property top tb_i2s_receiver [get_filesets sim_1]
-restart
-run all
-update_compile_order -fileset sim_1
-stop
-relaunch_sim
-set_property top tb_i2s_receiver [get_filesets sim_1]
-restart
-run all
 set_property top tb_i2s_transmitter [get_filesets sim_1]
+set_property top_lib xil_defaultlib [get_filesets sim_1]
 update_compile_order -fileset sim_1
 relaunch_sim
-source C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/scripts/run_sim.tcl
-source tb_i2s_receiver.tcl
-source tb_i2s_transmitter.tcl
-source tb_i2s_loopback.tcl
-update_compile_order -fileset sim_1
+launch_runs impl_1 -to_step write_bitstream -jobs 8
+wait_on_run impl_1
+open_hw_manager
+connect_hw_server -allow_non_jtag
+open_hw_target
+current_hw_device [get_hw_devices xc7z020_1]
+refresh_hw_device -update_hw_probes false [lindex [get_hw_devices xc7z020_1] 0]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+open_run impl_1
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase1_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+close_sim
