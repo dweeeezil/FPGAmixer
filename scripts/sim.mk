@@ -29,11 +29,31 @@ SIM      := src/sim
 CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv
 
-.PHONY: all matrix phase3 clean
-all: matrix phase3
+.PHONY: all rx tx loopback matrix phase3 clean
+all: rx tx loopback matrix phase3
 
 $(BUILD):
 	@mkdir -p $(BUILD)
+
+# --- Phase 2 unit / integration tests ---
+rx: | $(BUILD)
+	@echo ">>> Building tb_i2s_receiver"
+	@$(IVERILOG) $(FLAGS) -s tb_i2s_receiver -o $(BUILD)/tb_i2s_receiver.vvp \
+		$(RTL)/i2s_receiver.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_receiver.sv
+	@$(VVP) $(BUILD)/tb_i2s_receiver.vvp
+
+tx: | $(BUILD)
+	@echo ">>> Building tb_i2s_transmitter"
+	@$(IVERILOG) $(FLAGS) -s tb_i2s_transmitter -o $(BUILD)/tb_i2s_transmitter.vvp \
+		$(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_transmitter.sv
+	@$(VVP) $(BUILD)/tb_i2s_transmitter.vvp
+
+loopback: | $(BUILD)
+	@echo ">>> Building tb_i2s_loopback"
+	@$(IVERILOG) $(FLAGS) -s tb_i2s_loopback -o $(BUILD)/tb_i2s_loopback.vvp \
+		$(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv \
+		$(SIM)/tb_i2s_loopback.sv
+	@$(VVP) $(BUILD)/tb_i2s_loopback.vvp
 
 # --- Matrix unit test: pure PCM in/out, checked vs an independent reference ---
 matrix: | $(BUILD)
