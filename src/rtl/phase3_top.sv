@@ -1,0 +1,144 @@
+// -----------------------------------------------------------------------------
+// phase3_top.sv
+//
+// Phase 3: static 4-in / 4-out PCM matrix mixer across both Pmod I2S2 modules.
+//
+// Four ADC channels (JA L/R + JB L/R) are deserialized to PCM, run through a
+// compile-time crosspoint matrix, and reserialized to four DAC channels
+// (JA L/R + JB L/R). No runtime control yet -- the routing is baked in via
+// MATRIX_GAINS below; changing the mix means rebuilding.
+//
+// Both Pmods are driven from ONE set of clocks (single MMCM + single divider),
+// so all four ADCs and all four DACs share the same MCLK/SCLK/LRCK. That makes
+// every input and output sample-synchronous and puts them in one clock domain,
+// which is exactly what lets the matrix combine them with no CDC.
+//
+//   sysclk 125MHz -> MMCM -> mclk -> reset_sync -> rst_n
+//                                 -> divider    -> sclk, lrck  (to BOTH Pmods)
+//
+//   ja_ad_sdout -> rx_ja -> {ja_l, ja_r} =ch0,ch1 -.
+//   jb_ad_sdout -> rx_jb -> {jb_l, jb_r} =ch2,ch3 --+-> pcm_matrix -.
+//                                                                    |
+//   ch0,ch1 -> tx_ja -> ja_da_sdin   <-------------------------------+
+//   ch2,ch3 -> tx_jb -> jb_da_sdin   <-- (matrix outputs)
+//
+// Default routing (rows = outputs, cols = inputs; see MATRIX_GAINS):
+//   JA_L out = JA_L in                    (passthrough)
+//   JA_R out = JB_L in                    (cross-Pmod route)
+//   JB_L out = 0.5*JA_L in + 0.5*JB_L in  (summed mix)
+//   JB_R out = JB_R in                    (passthrough)
+// -----------------------------------------------------------------------------
+module phase3_top (
+    input  logic sysclk,       // 125 MHz, pin H16
+
+    // ----- Pmod JA : Pmod I2S2 #1 -----
+    output logic ja_da_mclk,   // JA1
+    output logic ja_da_lrck,   // JA2
+    output logic ja_da_sclk,   // JA3
+    output logic ja_da_sdin,   // JA4
+    output logic ja_ad_mclk,   // JA7
+    output logic ja_ad_lrck,   // JA8
+    output logic ja_ad_sclk,   // JA9
+    input  logic ja_ad_sdout,  // JA10
+
+    // ----- Pmod JB : Pmod I2S2 #2 -----
+    output logic jb_da_mclk,   // JB1
+    output logic jb_da_lrck,   // JB2
+    output logic jb_da_sclk,   // JB3
+    output logic jb_da_sdin,   // JB4
+    output logic jb_ad_mclk,   // JB7
+    output logic jb_ad_lrck,   // JB8
+    output logic jb_ad_sclk,   // JB9
+    input  logic jb_ad_sdout   // JB10
+);
+
+    localparam int N  = 4;
+    localparam int SW = 24;
+
+    // ----- Clocking -----
+    logic mclk, mmcm_locked;
+
+    clk_wiz_audio u_mmcm (
+        .clk_in1  (sysclk),
+        .reset    (1'b0),
+        .clk_out1 (mclk),
+        .locked   (mmcm_locked)
+    );
+
+    logic rst_n;
+    reset_sync u_rst_sync (
+        .clk         (mclk),
+        .async_rst_n (mmcm_locked),
+        .sync_rst_n  (rst_n)
+    );
+
+    logic sclk, lrck;
+    i2s_clock_divider u_div (
+        .mclk (mclk), .rst_n (rst_n), .sclk (sclk), .lrck (lrck)
+    );
+
+    // ----- Fan the same clocks out to both Pmods, both sides -----
+    assign ja_da_mclk = mclk;  assign ja_da_lrck = lrck;  assign ja_da_sclk = sclk;
+    assign ja_ad_mclk = mclk;  assign ja_ad_lrck = lrck;  assign ja_ad_sclk = sclk;
+    assign jb_da_mclk = mclk;  assign jb_da_lrck = lrck;  assign jb_da_sclk = sclk;
+    assign jb_ad_mclk = mclk;  assign jb_ad_lrck = lrck;  assign jb_ad_sclk = sclk;
+
+    // ----- Receivers: I2S -> PCM (per Pmod, stereo) -----
+    logic [SW-1:0] ja_l_in, ja_r_in, jb_l_in, jb_r_in;
+    logic          valid_ja, valid_jb;  // identical timing (shared LRCK)
+
+    i2s_receiver #(.DATA_WIDTH(SW)) u_rx_ja (
+        .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
+        .sdata_i (ja_ad_sdout),
+        .left_data (ja_l_in), .right_data (ja_r_in), .sample_valid (valid_ja)
+    );
+    i2s_receiver #(.DATA_WIDTH(SW)) u_rx_jb (
+        .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
+        .sdata_i (jb_ad_sdout),
+        .left_data (jb_l_in), .right_data (jb_r_in), .sample_valid (valid_jb)
+    );
+
+    // ----- Matrix -----
+    // Channel map (packed): ch0=JA_L, ch1=JA_R, ch2=JB_L, ch3=JB_R (ch0 at LSB).
+    logic [N*SW-1:0] mtx_in, mtx_out;
+    assign mtx_in = { jb_r_in, jb_l_in, ja_r_in, ja_l_in };
+
+    logic [SW-1:0] ja_l_out, ja_r_out, jb_l_out, jb_r_out;
+    assign { jb_r_out, jb_l_out, ja_r_out, ja_l_out } = mtx_out;
+
+    // Gain constants (Q2.16): 1.0, 0.5, 0.0
+    localparam logic signed [17:0] G_UNITY = 18'sh10000;
+    localparam logic signed [17:0] G_HALF  = 18'sh08000;
+    localparam logic signed [17:0] G_ZERO  = 18'sh00000;
+
+    // Rows = outputs (out3..out0), each row lists cols i3,i2,i1,i0.
+    localparam logic [N*N*18-1:0] MATRIX_GAINS = {
+        //  i3       i2       i1       i0
+        G_UNITY, G_ZERO,  G_ZERO,  G_ZERO,    // out3 JB_R = JB_R in
+        G_ZERO,  G_HALF,  G_ZERO,  G_HALF,    // out2 JB_L = 0.5*JA_L + 0.5*JB_L
+        G_ZERO,  G_UNITY, G_ZERO,  G_ZERO,    // out1 JA_R = JB_L in
+        G_ZERO,  G_ZERO,  G_ZERO,  G_UNITY    // out0 JA_L = JA_L in
+    };
+
+    pcm_matrix #(
+        .N (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (18), .GAIN_FRAC (16),
+        .GAINS_FLAT (MATRIX_GAINS)
+    ) u_matrix (
+        .mclk (mclk), .rst_n (rst_n),
+        .sample_valid_i (valid_ja),
+        .in_flat  (mtx_in),
+        .out_flat (mtx_out),
+        .sample_valid_o ()
+    );
+
+    // ----- Transmitters: PCM -> I2S (per Pmod, stereo) -----
+    i2s_transmitter #(.DATA_WIDTH(SW)) u_tx_ja (
+        .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
+        .left_data (ja_l_out), .right_data (ja_r_out), .sdata_o (ja_da_sdin)
+    );
+    i2s_transmitter #(.DATA_WIDTH(SW)) u_tx_jb (
+        .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
+        .left_data (jb_l_out), .right_data (jb_r_out), .sdata_o (jb_da_sdin)
+    );
+
+endmodule
