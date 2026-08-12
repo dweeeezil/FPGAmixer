@@ -1,0 +1,180 @@
+INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detected. Your current license is active and will expire on 02-aug-2027.
+#-----------------------------------------------------------
+# Vivado v2026.1 (64-bit)
+# SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
+# IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
+# SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
+# Start of session at: Tue Aug 11 15:03:26 2026
+# Process ID         : 16816
+# Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer
+# Command line       : vivado.exe -source scripts/create_project.tcl
+# Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado.log
+# Journal file       : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer\vivado.jou
+# Running On         : DESKTOP-3RVCKQ3
+# Platform           : Windows 11
+# Operating System   : 26200
+# Processor Detail   : AMD Ryzen 7 4800H with Radeon Graphics         
+# CPU Frequency      : 2894 MHz
+# CPU Physical cores : 8
+# CPU Logical cores  : 16
+# Host memory        : 16505 MB
+# Swap memory        : 9126 MB
+# Total Virtual      : 25632 MB
+# Available Virtual  : 18227 MB
+#-----------------------------------------------------------
+start_gui
+source scripts/create_project.tcl
+# set proj_name     "FPGAmixer"
+# set proj_dir      "vivado_project"
+# set part          "xc7z020clg400-1"
+# set board_part    "digilentinc.com:arty-z7-20:part0:1.1"
+# set current_phase "phase3"
+# set synth_top     "${current_phase}_top"
+# set sim_top       "tb_phase3_datapath"
+# set xdc_file      "constraints/${current_phase}_arty_z7.xdc"
+# foreach d {src/rtl src/sim constraints scripts} {
+#     if {![file isdirectory $d]} {
+#         puts "ERROR: expected directory '$d' not found under [pwd]"
+#         puts "       Run this script from the repo root."
+#         return
+#     }
+# }
+# set rtl_files [glob -nocomplain src/rtl/*.sv]
+# set sim_files {}
+# foreach f [glob -nocomplain src/sim/*.sv] {
+#     if {[string match "*clk_wiz_audio_stub.sv" $f]} continue
+#     lappend sim_files $f
+# }
+# if {[llength $rtl_files] == 0} {
+#     puts "ERROR: no RTL sources found in src/rtl/"
+#     return
+# }
+# if {![file exists $xdc_file]} {
+#     puts "ERROR: constraints file '$xdc_file' not found for phase '$current_phase'"
+#     return
+# }
+# puts "INFO: phase '$current_phase' -> synth top '$synth_top', xdc '$xdc_file'"
+INFO: phase 'phase3' -> synth top 'phase3_top', xdc 'constraints/phase3_arty_z7.xdc'
+# puts "INFO: [llength $rtl_files] RTL files, [llength $sim_files] sim files (stub excluded)"
+INFO: 8 RTL files, 5 sim files (stub excluded)
+# if {[file exists $proj_dir]} {
+#     puts "INFO: removing existing $proj_dir/"
+#     file delete -force $proj_dir
+# }
+INFO: removing existing vivado_project/
+# create_project $proj_name $proj_dir -part $part -force
+INFO: [IP_Flow 19-234] Refreshing IP repositories
+INFO: [IP_Flow 19-1704] No user IP repositories specified
+INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'C:/AMDDesignTools/2026.1/Vivado/data/ip'.
+create_project: Time (s): cpu = 00:00:25 ; elapsed = 00:00:16 . Memory (MB): peak = 1738.770 ; gain = 334.590
+# set_property BOARD_PART      $board_part [current_project]
+# set_property TARGET_LANGUAGE Verilog     [current_project]
+# add_files -norecurse -fileset sources_1 $rtl_files
+# add_files -norecurse -fileset sim_1     $sim_files
+# add_files -norecurse -fileset constrs_1 $xdc_file
+# create_ip -name clk_wiz -vendor xilinx.com -library ip \
+#     -module_name clk_wiz_audio
+INFO: [Device 21-403] Loading part xc7z020clg400-1
+create_ip: Time (s): cpu = 00:00:06 ; elapsed = 00:00:18 . Memory (MB): peak = 1946.426 ; gain = 207.656
+# set_property -dict [list \
+#     CONFIG.PRIM_IN_FREQ                {125.000} \
+#     CONFIG.CLK_IN1_BOARD_INTERFACE     {Custom} \
+#     CONFIG.USE_BOARD_FLOW              {false} \
+#     CONFIG.CLKOUT1_USED                {true} \
+#     CONFIG.CLKOUT1_REQUESTED_OUT_FREQ  {12.288} \
+#     CONFIG.CLK_OUT1_PORT               {clk_out1} \
+#     CONFIG.USE_RESET                   {true} \
+#     CONFIG.RESET_TYPE                  {ACTIVE_HIGH} \
+#     CONFIG.USE_LOCKED                  {true} \
+# ] [get_ips clk_wiz_audio]
+WARNING: [Vivado 12-818] No files matched '*'
+# generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
+# set_property top $synth_top [current_fileset]
+# update_compile_order -fileset sources_1
+# set_property top $sim_top [get_filesets sim_1]
+# update_compile_order -fileset sim_1
+# puts ""
+
+# puts "=================================================================="
+==================================================================
+# puts "  Project created at $proj_dir/$proj_name.xpr"
+  Project created at vivado_project/FPGAmixer.xpr
+# puts "  Synthesis top:  $synth_top"
+  Synthesis top:  phase3_top
+# puts "  Simulation top: $sim_top   (Vivado uses the real clk_wiz_audio IP)"
+  Simulation top: tb_phase3_datapath   (Vivado uses the real clk_wiz_audio IP)
+# puts ""
+
+# puts "  For trustworthy command-line simulation instead, run:"
+  For trustworthy command-line simulation instead, run:
+# puts "    make -f scripts/sim.mk all"
+    make -f scripts/sim.mk all
+# puts "=================================================================="
+==================================================================
+update_compile_order -fileset sources_1
+launch_runs impl_1 -to_step write_bitstream -jobs 8
+INFO: [IP_Flow 19-1686] Generating 'Synthesis' target for IP 'clk_wiz_audio'...
+INFO: [IP_Flow 19-1686] Generating 'Implementation' target for IP 'clk_wiz_audio'...
+[Tue Aug 11 15:04:43 2026] Launched clk_wiz_audio_synth_1, synth_1...
+Run output will be captured here:
+clk_wiz_audio_synth_1: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/runme.log
+synth_1: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/runme.log
+[Tue Aug 11 15:04:43 2026] Launched impl_1...
+Run output will be captured here: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/runme.log
+open_hw_manager
+connect_hw_server -allow_non_jtag
+INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
+INFO: [Labtools 27-2222] Launching hw_server...
+INFO: [Labtools 27-2221] Launch Output:
+
+****** Xilinx hw_server v2026.1
+  **** Build date : May 29 2026 at 14:55:19
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+
+
+INFO: [Labtools 27-3415] Connecting to cs_server url TCP:localhost:0
+INFO: [Labtools 27-3417] Launching cs_server...
+INFO: [Labtools 27-2221] Launch Output:
+
+****** Xilinx cs_server v2026.1
+  **** Build Info : #60 | 2026-06-15 19:15 UTC | a9691a9
+    ** Copyright 2017-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+
+
+connect_hw_server: Time (s): cpu = 00:00:01 ; elapsed = 00:00:07 . Memory (MB): peak = 2010.742 ; gain = 6.078
+open_hw_target
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
+current_hw_device [get_hw_devices xc7z020_1]
+refresh_hw_device -update_hw_probes false [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+INFO: [Labtools 27-3164] End of startup status: HIGH
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+INFO: [Labtools 27-3164] End of startup status: HIGH
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+INFO: [Labtools 27-3164] End of startup status: HIGH
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
+ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
+WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
+INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
+WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
+exit
+INFO: [Common 17-206] Exiting Vivado at Tue Aug 11 17:06:29 2026...
