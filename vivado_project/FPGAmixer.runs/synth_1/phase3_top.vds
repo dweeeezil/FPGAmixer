@@ -1,0 +1,287 @@
+INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detected. Your current license is active and will expire on 02-aug-2027.
+#-----------------------------------------------------------
+# Vivado v2026.1 (64-bit)
+# SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
+# IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
+# SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
+# Start of session at: Tue Aug 11 17:52:19 2026
+# Process ID         : 19132
+# Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1
+# Command line       : vivado.exe -log phase3_top.vds -product Vivado -mode batch -messageDb vivado.pb -notrace -source phase3_top.tcl
+# Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/phase3_top.vds
+# Journal file       : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1\vivado.jou
+# Running On         : DESKTOP-3RVCKQ3
+# Platform           : Windows 11
+# Operating System   : 26200
+# Processor Detail   : AMD Ryzen 7 4800H with Radeon Graphics         
+# CPU Frequency      : 2894 MHz
+# CPU Physical cores : 8
+# CPU Logical cores  : 16
+# Host memory        : 16505 MB
+# Swap memory        : 9126 MB
+# Total Virtual      : 25632 MB
+# Available Virtual  : 14136 MB
+#-----------------------------------------------------------
+source phase3_top.tcl -notrace
+create_project: Time (s): cpu = 00:00:11 ; elapsed = 00:00:07 . Memory (MB): peak = 585.434 ; gain = 272.855
+Command: synth_design -top phase3_top -part xc7z020clg400-1
+Starting synth_design
+Attempting to get a license for feature 'Vivado_Synthesis' and/or device 'xc7z020'
+INFO: [Common 17-349] Got license for feature 'Vivado_Synthesis' and/or device 'xc7z020'
+INFO: [Device 21-403] Loading part xc7z020clg400-1
+INFO: [Designutils 20-5008] Incremental synthesis strategy default
+INFO: [Synth 8-7079] Multithreading enabled for synth_design using a maximum of 2 processes.
+INFO: [Synth 8-7078] Launching helper process for spawning children vivado processes
+INFO: [Synth 8-7075] Helper process launched with PID 18304
+---------------------------------------------------------------------------------
+Starting RTL Elaboration : Time (s): cpu = 00:00:07 ; elapsed = 00:00:07 . Memory (MB): peak = 1401.824 ; gain = 577.215
+---------------------------------------------------------------------------------
+INFO: [Synth 8-6157] synthesizing module 'phase3_top' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/phase3_top.sv:31]
+INFO: [Synth 8-6157] synthesizing module 'clk_wiz_audio' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/.Xil/Vivado-19132-DESKTOP-3RVCKQ3/realtime/clk_wiz_audio_stub.v:6]
+INFO: [Synth 8-6155] done synthesizing module 'clk_wiz_audio' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/.Xil/Vivado-19132-DESKTOP-3RVCKQ3/realtime/clk_wiz_audio_stub.v:6]
+INFO: [Synth 8-6157] synthesizing module 'reset_sync' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/reset_sync.sv:16]
+INFO: [Synth 8-6155] done synthesizing module 'reset_sync' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/reset_sync.sv:16]
+INFO: [Synth 8-6157] synthesizing module 'i2s_clock_divider' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/i2s_clock_divider.sv:19]
+INFO: [Synth 8-6155] done synthesizing module 'i2s_clock_divider' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/i2s_clock_divider.sv:19]
+INFO: [Synth 8-6157] synthesizing module 'i2s_receiver' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/i2s_receiver.sv:36]
+	Parameter DATA_WIDTH bound to: 32'sb00000000000000000000000000011000 
+INFO: [Synth 8-6155] done synthesizing module 'i2s_receiver' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/i2s_receiver.sv:36]
+INFO: [Synth 8-6157] synthesizing module 'pcm_matrix' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/pcm_matrix.sv:40]
+	Parameter N bound to: 32'sb00000000000000000000000000000100 
+	Parameter SAMPLE_WIDTH bound to: 32'sb00000000000000000000000000011000 
+	Parameter GAIN_WIDTH bound to: 32'sb00000000000000000000000000010010 
+	Parameter GAIN_FRAC bound to: 32'sb00000000000000000000000000010000 
+	Parameter GAINS_FLAT bound to: 288'b010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000 
+INFO: [Synth 8-6155] done synthesizing module 'pcm_matrix' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/pcm_matrix.sv:40]
+INFO: [Synth 8-6157] synthesizing module 'i2s_transmitter' [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/i2s_transmitter.sv:18]
+	Parameter DATA_WIDTH bound to: 32'sb00000000000000000000000000011000 
+INFO: [Synth 8-6155] done synthesizing module 'i2s_transmitter' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/i2s_transmitter.sv:18]
+INFO: [Synth 8-6155] done synthesizing module 'phase3_top' (0#1) [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/phase3_top.sv:31]
+WARNING: [Synth 8-6014] Unused sequential element acc_reg was removed.  [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/pcm_matrix.sv:109]
+WARNING: [Synth 8-6014] Unused sequential element prod_reg was removed.  [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/pcm_matrix.sv:111]
+WARNING: [Synth 8-6014] Unused sequential element scaled_reg was removed.  [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/src/rtl/pcm_matrix.sv:115]
+WARNING: [Synth 8-7129] Port in_flat[47] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[46] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[45] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[44] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[43] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[42] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[41] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[40] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[39] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[38] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[37] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[36] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[35] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[34] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[33] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[32] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[31] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[30] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[29] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[28] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[27] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[26] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[25] in module pcm_matrix is either unconnected or has no load
+WARNING: [Synth 8-7129] Port in_flat[24] in module pcm_matrix is either unconnected or has no load
+---------------------------------------------------------------------------------
+Finished RTL Elaboration : Time (s): cpu = 00:00:09 ; elapsed = 00:00:09 . Memory (MB): peak = 1523.789 ; gain = 699.180
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:09 ; elapsed = 00:00:09 . Memory (MB): peak = 1523.789 ; gain = 699.180
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 1 : Time (s): cpu = 00:00:09 ; elapsed = 00:00:09 . Memory (MB): peak = 1523.789 ; gain = 699.180
+---------------------------------------------------------------------------------
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.004 . Memory (MB): peak = 1523.789 ; gain = 0.000
+INFO: [Project 1-570] Preparing netlist for logic optimization
+
+Processing XDC Constraints
+Initializing timing engine
+Parsing XDC File [c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio/clk_wiz_audio_in_context.xdc] for cell 'u_mmcm'
+Finished Parsing XDC File [c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio/clk_wiz_audio_in_context.xdc] for cell 'u_mmcm'
+Parsing XDC File [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/constraints/phase3_arty_z7.xdc]
+Finished Parsing XDC File [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/constraints/phase3_arty_z7.xdc]
+INFO: [Project 1-236] Implementation specific constraints were found while reading constraint file [C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/constraints/phase3_arty_z7.xdc]. These constraints will be ignored for synthesis but will be used in implementation. Impacted constraints are listed in the file [.Xil/phase3_top_propImpl.xdc].
+Resolution: To avoid this warning, move constraints listed in [.Xil/phase3_top_propImpl.xdc] to another XDC file and exclude this new file from synthesis with the used_in_synthesis property (File Properties dialog in GUI) and re-run elaboration/synthesis.
+Completed Processing XDC Constraints
+
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 1589.629 ; gain = 0.000
+INFO: [Project 1-111] Unisim Transformation Summary:
+No Unisim elements were transformed.
+
+Constraint Validation Runtime : Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.013 . Memory (MB): peak = 1591.875 ; gain = 0.000
+---------------------------------------------------------------------------------
+Finished Constraint Validation : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1591.875 ; gain = 767.266
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Loading Part and Timing Information
+---------------------------------------------------------------------------------
+Loading part: xc7z020clg400-1
+---------------------------------------------------------------------------------
+Finished Loading Part and Timing Information : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1591.875 ; gain = 767.266
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Applying 'set_property' XDC Constraints
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished applying 'set_property' XDC Constraints : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1591.875 ; gain = 767.266
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 2 : Time (s): cpu = 00:00:19 ; elapsed = 00:00:20 . Memory (MB): peak = 1591.875 ; gain = 767.266
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start RTL Component Statistics 
+---------------------------------------------------------------------------------
+Detailed RTL Component Info : 
++---Adders : 
+	   2 Input    8 Bit       Adders := 1     
+	   2 Input    5 Bit       Adders := 4     
++---Registers : 
+	               24 Bit    Registers := 12    
+	                8 Bit    Registers := 1     
+	                6 Bit    Registers := 4     
+	                1 Bit    Registers := 27    
++---Muxes : 
+	   2 Input   24 Bit        Muxes := 14    
+	   2 Input    5 Bit        Muxes := 4     
+	   2 Input    1 Bit        Muxes := 8     
+---------------------------------------------------------------------------------
+Finished RTL Component Statistics 
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Part Resource Summary
+---------------------------------------------------------------------------------
+Part Resources:
+DSPs: 220 (col length:60)
+BRAMs: 280 (col length: RAMB18 60 RAMB36 30)
+---------------------------------------------------------------------------------
+Finished Part Resource Summary
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Cross Boundary and Area Optimization
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Cross Boundary and Area Optimization : Time (s): cpu = 00:00:22 ; elapsed = 00:00:23 . Memory (MB): peak = 1603.289 ; gain = 778.680
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Applying XDC Timing Constraints
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Applying XDC Timing Constraints : Time (s): cpu = 00:00:28 ; elapsed = 00:00:30 . Memory (MB): peak = 1750.770 ; gain = 926.160
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Timing Optimization
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Timing Optimization : Time (s): cpu = 00:00:28 ; elapsed = 00:00:30 . Memory (MB): peak = 1760.758 ; gain = 936.148
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Technology Mapping
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Technology Mapping : Time (s): cpu = 00:00:29 ; elapsed = 00:00:30 . Memory (MB): peak = 1761.801 ; gain = 937.191
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished IO Insertion : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Instances
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Instances : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Rebuilding User Hierarchy
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Rebuilding User Hierarchy : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Ports
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Ports : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Nets
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Nets : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Writing Synthesis Report
+---------------------------------------------------------------------------------
+
+Report BlackBoxes: 
++------+--------------+----------+
+|      |BlackBox name |Instances |
++------+--------------+----------+
+|1     |clk_wiz_audio |         1|
++------+--------------+----------+
+
+Report Cell Usage: 
++------+--------------+------+
+|      |Cell          |Count |
++------+--------------+------+
+|1     |clk_wiz_audio |     1|
+|2     |CARRY4        |    31|
+|3     |LUT1          |    84|
+|4     |LUT2          |    89|
+|5     |LUT3          |   106|
+|6     |LUT4          |     9|
+|7     |LUT5          |     7|
+|8     |LUT6          |    56|
+|9     |FDCE          |   304|
+|10    |IBUF          |     2|
+|11    |OBUF          |    14|
++------+--------------+------+
+---------------------------------------------------------------------------------
+Finished Writing Synthesis Report : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+---------------------------------------------------------------------------------
+Synthesis finished with 0 errors, 0 critical warnings and 0 warnings.
+Synthesis Optimization Runtime : Time (s): cpu = 00:00:24 ; elapsed = 00:00:34 . Memory (MB): peak = 2035.855 ; gain = 1143.160
+Synthesis Optimization Complete : Time (s): cpu = 00:00:35 ; elapsed = 00:00:37 . Memory (MB): peak = 2035.855 ; gain = 1211.246
+INFO: [Project 1-571] Translating synthesized netlist
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.004 . Memory (MB): peak = 2040.816 ; gain = 0.000
+INFO: [Netlist 29-17] Analyzing 31 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-570] Preparing netlist for logic optimization
+INFO: [Opt 31-138] Pushed 0 inverter(s) to 0 load pin(s).
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2043.516 ; gain = 0.000
+INFO: [Project 1-111] Unisim Transformation Summary:
+No Unisim elements were transformed.
+
+Synth Design complete | Checksum: cef5413e
+INFO: [Common 17-83] Releasing license: Vivado_Synthesis
+30 Infos, 27 Warnings, 0 Critical Warnings and 0 Errors encountered.
+synth_design completed successfully
+synth_design: Time (s): cpu = 00:00:41 ; elapsed = 00:00:45 . Memory (MB): peak = 2043.527 ; gain = 1438.613
+Write ShapeDB Complete: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.003 . Memory (MB): peak = 2043.527 ; gain = 0.000
+INFO: [Common 17-1381] The checkpoint 'C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/phase3_top.dcp' has been generated.
+INFO: [Vivado 12-24828] Executing command : report_utilization -file phase3_top_utilization_synth.rpt -pb phase3_top_utilization_synth.pb
+INFO: [Common 17-206] Exiting Vivado at Tue Aug 11 17:53:17 2026...
