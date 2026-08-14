@@ -90,10 +90,11 @@ module tb_phase3_datapath;
         else                            return scaled[SW-1:0];
     endfunction
 
-    // out = routing(in). Uses the same gains as phase3_top.MATRIX_GAINS.
+    // out = routing(in). MUST mirror phase3_top's active MATRIX_GAINS.
+    // Currently IDENTITY: each output = its own input at unity.
     function automatic logic signed [SW-1:0] ref_ja_l(input longint al,ar,bl,br); return sat24(GU*al); endfunction
-    function automatic logic signed [SW-1:0] ref_ja_r(input longint al,ar,bl,br); return sat24(GU*bl); endfunction
-    function automatic logic signed [SW-1:0] ref_jb_l(input longint al,ar,bl,br); return sat24(GH*al + GH*bl); endfunction
+    function automatic logic signed [SW-1:0] ref_ja_r(input longint al,ar,bl,br); return sat24(GU*ar); endfunction
+    function automatic logic signed [SW-1:0] ref_jb_l(input longint al,ar,bl,br); return sat24(GU*bl); endfunction
     function automatic logic signed [SW-1:0] ref_jb_r(input longint al,ar,bl,br); return sat24(GU*br); endfunction
 
     int errors = 0;

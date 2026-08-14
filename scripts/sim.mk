@@ -29,8 +29,8 @@ SIM      := src/sim
 CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv
 
-.PHONY: all rx tx loopback matrix phase3 clean
-all: rx tx loopback matrix phase3
+.PHONY: all rx tx loopback matrix phase3 dynamic clean
+all: rx tx loopback matrix phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -69,6 +69,14 @@ phase3: | $(BUILD)
 		$(CORE_RTL) $(RTL)/phase3_top.sv \
 		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_datapath.sv
 	@$(VVP) $(BUILD)/tb_phase3_datapath.vvp
+
+# --- Phase-3 dynamic: changing value every frame, checked sample-by-sample ---
+dynamic: | $(BUILD)
+	@echo ">>> Building tb_phase3_dynamic"
+	@$(IVERILOG) $(FLAGS) -s tb_phase3_dynamic -o $(BUILD)/tb_phase3_dynamic.vvp \
+		$(CORE_RTL) $(RTL)/phase3_top.sv \
+		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_dynamic.sv
+	@$(VVP) $(BUILD)/tb_phase3_dynamic.vvp
 
 clean:
 	@rm -rf $(BUILD)

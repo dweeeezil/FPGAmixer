@@ -111,14 +111,31 @@ module phase3_top (
     localparam logic signed [17:0] G_HALF  = 18'sh08000;
     localparam logic signed [17:0] G_ZERO  = 18'sh00000;
 
+    // -------------------------------------------------------------------------
+    // IDENTITY routing (debug): each output = its own input at unity. Every
+    // Pmod loops back to itself; no cross-routes, no fractional gains. This is
+    // the minimal datapath test -- if an output is still noisy here, the matrix
+    // insertion or the clocking (not the routing or the gains) is implicated.
+    //   JA_L = JA_L,  JA_R = JA_R,  JB_L = JB_L,  JB_R = JB_R
     // Rows = outputs (out3..out0), each row lists cols i3,i2,i1,i0.
     localparam logic [N*N*18-1:0] MATRIX_GAINS = {
         //  i3       i2       i1       i0
         G_UNITY, G_ZERO,  G_ZERO,  G_ZERO,    // out3 JB_R = JB_R in
-        G_ZERO,  G_HALF,  G_ZERO,  G_HALF,    // out2 JB_L = 0.5*JA_L + 0.5*JB_L
-        G_ZERO,  G_UNITY, G_ZERO,  G_ZERO,    // out1 JA_R = JB_L in
+        G_ZERO,  G_UNITY, G_ZERO,  G_ZERO,    // out2 JB_L = JB_L in
+        G_ZERO,  G_ZERO,  G_UNITY, G_ZERO,    // out1 JA_R = JA_R in
         G_ZERO,  G_ZERO,  G_ZERO,  G_UNITY    // out0 JA_L = JA_L in
     };
+
+    // -------------------------------------------------------------------------
+    // DEMO routing (restore when the datapath is proven clean): a passthrough,
+    // a cross-Pmod route, and a summed 0.5+0.5 mix.
+    //   JA_L = JA_L,  JA_R = JB_L,  JB_L = 0.5*JA_L + 0.5*JB_L,  JB_R = JB_R
+    // localparam logic [N*N*18-1:0] MATRIX_GAINS = {
+    //     G_UNITY, G_ZERO,  G_ZERO,  G_ZERO,    // out3 JB_R = JB_R in
+    //     G_ZERO,  G_HALF,  G_ZERO,  G_HALF,    // out2 JB_L = 0.5*JA_L + 0.5*JB_L
+    //     G_ZERO,  G_UNITY, G_ZERO,  G_ZERO,    // out1 JA_R = JB_L in
+    //     G_ZERO,  G_ZERO,  G_ZERO,  G_UNITY    // out0 JA_L = JA_L in
+    // };
 
     pcm_matrix #(
         .N (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (18), .GAIN_FRAC (16),
