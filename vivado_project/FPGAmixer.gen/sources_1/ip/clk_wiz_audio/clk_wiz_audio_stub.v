@@ -2,7 +2,7 @@
 // Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 // --------------------------------------------------------------------------------
 // Tool Version: Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-// Date        : Tue Aug 11 17:52:18 2026
+// Date        : Tue Aug 11 19:33:49 2026
 // Host        : DESKTOP-3RVCKQ3 running 64-bit major release  (build 9200)
 // Command     : write_verilog -force -mode synth_stub
 //               c:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.gen/sources_1/ip/clk_wiz_audio/clk_wiz_audio_stub.v

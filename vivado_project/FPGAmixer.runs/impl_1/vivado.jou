@@ -3,8 +3,8 @@
 # SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
 # IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
 # SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-# Start of session at: Tue Aug 11 17:53:25 2026
-# Process ID         : 19104
+# Start of session at: Tue Aug 11 19:34:58 2026
+# Process ID         : 10508
 # Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1
 # Command line       : vivado.exe -log phase3_top.vdi -applog -product Vivado -messageDb vivado.pb -mode batch -source phase3_top.tcl -notrace
 # Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.vdi
@@ -19,6 +19,6 @@
 # Host memory        : 16505 MB
 # Swap memory        : 9126 MB
 # Total Virtual      : 25632 MB
-# Available Virtual  : 14147 MB
+# Available Virtual  : 13262 MB
 #-----------------------------------------------------------
 source phase3_top.tcl -notrace

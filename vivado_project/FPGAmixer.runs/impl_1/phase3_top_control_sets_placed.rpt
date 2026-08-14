@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Tue Aug 11 17:54:02 2026
+| Date         : Tue Aug 11 19:35:36 2026
 | Host         : DESKTOP-3RVCKQ3 running 64-bit major release  (build 9200)
 | Command      : report_control_sets -verbose -file phase3_top_control_sets_placed.rpt
 | Design       : phase3_top
@@ -81,8 +81,8 @@ Table of Contents
 |  u_mmcm/inst/clk_out1 | u_rx_ja/shift_reg[23]_i_1_n_0   | u_div/rst_sync_reg          |                4 |             24 |         6.00 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/channel_prev_reg_0[0]   | u_div/rst_sync_reg          |                8 |             24 |         3.00 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/sclk_prev_reg_0[0]      | u_div/rst_sync_reg          |                5 |             24 |         4.80 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[3]_1[0] | u_div/rst_sync_reg          |                9 |             29 |         3.22 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[3]_0[0] | u_div/rst_sync_reg          |                9 |             29 |         3.22 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[3]_1[0] | u_div/rst_sync_reg          |                9 |             29 |         3.22 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/channel_prev_reg_1[0]   | u_div/rst_sync_reg          |               12 |             48 |         4.00 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/E[0]                    | u_div/rst_sync_reg          |               15 |             96 |         6.40 |
 +-----------------------+---------------------------------+-----------------------------+------------------+----------------+--------------+

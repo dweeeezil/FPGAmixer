@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Tue Aug 11 17:54:40 2026
+| Date         : Tue Aug 11 19:36:15 2026
 | Host         : DESKTOP-3RVCKQ3 running 64-bit major release  (build 9200)
 | Command      : report_clock_utilization -file phase3_top_clock_utilization_routed.rpt
 | Design       : phase3_top
