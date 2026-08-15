@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ----------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version     : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date             : Tue Aug 11 19:36:14 2026
+| Date             : Fri Aug 14 17:55:31 2026
 | Host             : DESKTOP-3RVCKQ3 running 64-bit major release  (build 9200)
 | Command          : report_power -file phase3_top_power_routed.rpt -pb phase3_top_power_summary_routed.pb -rpx phase3_top_power_routed.rpx
 | Design           : phase3_top
@@ -33,7 +33,7 @@ Table of Contents
 | Total On-Chip Power (W)  | 0.220        |
 | Design Power Budget (W)  | Unspecified* |
 | Power Budget Margin (W)  | NA           |
-| Dynamic (W)              | 0.113        |
+| Dynamic (W)              | 0.112        |
 | Device Static (W)        | 0.108        |
 | Effective TJA (C/W)      | 11.5         |
 | Max Ambient (C)          | 82.5         |
@@ -53,12 +53,12 @@ Table of Contents
 | On-Chip        | Power (W) | Used     | Available | Utilization (%) |
 +----------------+-----------+----------+-----------+-----------------+
 | Clocks         |    <0.001 |        8 |       --- |             --- |
-| Slice Logic    |    <0.001 |      695 |       --- |             --- |
-|   LUT as Logic |    <0.001 |      261 |     53200 |            0.49 |
-|   Register     |    <0.001 |      304 |    106400 |            0.29 |
-|   CARRY4       |    <0.001 |       31 |     13300 |            0.23 |
-|   Others       |     0.000 |        9 |       --- |             --- |
-| Signals        |    <0.001 |      378 |       --- |             --- |
+| Slice Logic    |    <0.001 |      686 |       --- |             --- |
+|   LUT as Logic |    <0.001 |      237 |     53200 |            0.45 |
+|   Register     |    <0.001 |      328 |    106400 |            0.31 |
+|   CARRY4       |    <0.001 |       24 |     13300 |            0.18 |
+|   Others       |     0.000 |        8 |       --- |             --- |
+| Signals        |    <0.001 |      375 |       --- |             --- |
 | MMCM           |     0.105 |        1 |         4 |           25.00 |
 | I/O            |     0.007 |       17 |       125 |           13.60 |
 | Static Power   |     0.108 |          |           |                 |
@@ -153,7 +153,7 @@ Table of Contents
 +------------+-----------+
 | Name       | Power (W) |
 +------------+-----------+
-| phase3_top |     0.113 |
+| phase3_top |     0.112 |
 |   u_mmcm   |     0.105 |
 |     inst   |     0.105 |
 +------------+-----------+

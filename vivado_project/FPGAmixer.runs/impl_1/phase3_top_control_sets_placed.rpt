@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Tue Aug 11 19:35:36 2026
+| Date         : Fri Aug 14 17:54:47 2026
 | Host         : DESKTOP-3RVCKQ3 running 64-bit major release  (build 9200)
 | Command      : report_control_sets -verbose -file phase3_top_control_sets_placed.rpt
 | Design       : phase3_top
@@ -59,10 +59,10 @@ Table of Contents
 | Clock Enable | Synchronous Set/Reset | Asynchronous Set/Reset | Total Registers | Total Slices |
 +--------------+-----------------------+------------------------+-----------------+--------------+
 | No           | No                    | No                     |               0 |            0 |
-| No           | No                    | Yes                    |              18 |           11 |
+| No           | No                    | Yes                    |              18 |            8 |
 | No           | Yes                   | No                     |               0 |            0 |
 | Yes          | No                    | No                     |               0 |            0 |
-| Yes          | No                    | Yes                    |             286 |           67 |
+| Yes          | No                    | Yes                    |             310 |           83 |
 | Yes          | Yes                   | No                     |               0 |            0 |
 +--------------+-----------------------+------------------------+-----------------+--------------+
 
@@ -77,14 +77,14 @@ Table of Contents
 |  u_mmcm/inst/clk_out1 | u_rx_ja/sclk_r_reg_0            | u_div/rst_sync_reg          |                1 |              2 |         2.00 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter[4]_i_1_n_0  | u_div/rst_sync_reg          |                2 |              5 |         2.50 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[4]_0[0] | u_div/rst_sync_reg          |                2 |              5 |         2.50 |
-|  u_mmcm/inst/clk_out1 |                                 | u_div/rst_sync_reg          |               10 |             16 |         1.60 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/shift_reg[23]_i_1_n_0   | u_div/rst_sync_reg          |                4 |             24 |         6.00 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/channel_prev_reg_0[0]   | u_div/rst_sync_reg          |                8 |             24 |         3.00 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/sclk_prev_reg_0[0]      | u_div/rst_sync_reg          |                5 |             24 |         4.80 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[3]_0[0] | u_div/rst_sync_reg          |                9 |             29 |         3.22 |
+|  u_mmcm/inst/clk_out1 |                                 | u_div/rst_sync_reg          |                7 |             16 |         2.29 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/shift_reg[23]_i_1_n_0   | u_div/rst_sync_reg          |                7 |             24 |         3.43 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/sclk_prev_reg_0[0]      | u_div/rst_sync_reg          |                6 |             24 |         4.00 |
 |  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[3]_1[0] | u_div/rst_sync_reg          |                9 |             29 |         3.22 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/channel_prev_reg_1[0]   | u_div/rst_sync_reg          |               12 |             48 |         4.00 |
-|  u_mmcm/inst/clk_out1 | u_rx_ja/E[0]                    | u_div/rst_sync_reg          |               15 |             96 |         6.40 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/bit_counter_reg[3]_0[0] | u_div/rst_sync_reg          |                9 |             29 |         3.22 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/channel_prev_reg_1[0]   | u_div/rst_sync_reg          |               13 |             48 |         3.69 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/channel_prev_reg_0[0]   | u_div/rst_sync_reg          |               17 |             48 |         2.82 |
+|  u_mmcm/inst/clk_out1 | u_rx_ja/E[0]                    | u_div/rst_sync_reg          |               17 |             96 |         5.65 |
 +-----------------------+---------------------------------+-----------------------------+------------------+----------------+--------------+
 
 

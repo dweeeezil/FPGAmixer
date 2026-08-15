@@ -2,7 +2,7 @@
 // Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 // --------------------------------------------------------------------------------
 // Tool Version: Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-// Date        : Tue Aug 11 19:33:48 2026
+// Date        : Fri Aug 14 17:52:39 2026
 // Host        : DESKTOP-3RVCKQ3 running 64-bit major release  (build 9200)
 // Command     : write_verilog -force -mode funcsim -rename_top decalper_eb_ot_sdeen_pot_pi_dehcac_xnilix -prefix
 //               decalper_eb_ot_sdeen_pot_pi_dehcac_xnilix_ clk_wiz_audio_sim_netlist.v

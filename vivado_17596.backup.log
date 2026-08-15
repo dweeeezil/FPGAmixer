@@ -4,8 +4,8 @@ INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detect
 # SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
 # IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
 # SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-# Start of session at: Fri Aug 14 17:49:16 2026
-# Process ID         : 1132
+# Start of session at: Tue Aug 11 19:30:38 2026
+# Process ID         : 17596
 # Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer
 # Command line       : vivado.exe -source scripts/create_project.tcl
 # Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado.log
@@ -20,7 +20,7 @@ INFO: [Common 17-3922] A valid Vivado Design Suite BASIC license has been detect
 # Host memory        : 16505 MB
 # Swap memory        : 9126 MB
 # Total Virtual      : 25632 MB
-# Available Virtual  : 13701 MB
+# Available Virtual  : 15825 MB
 #-----------------------------------------------------------
 start_gui
 source scripts/create_project.tcl
@@ -56,7 +56,7 @@ source scripts/create_project.tcl
 # puts "INFO: phase '$current_phase' -> synth top '$synth_top', xdc '$xdc_file'"
 INFO: phase 'phase3' -> synth top 'phase3_top', xdc 'constraints/phase3_arty_z7.xdc'
 # puts "INFO: [llength $rtl_files] RTL files, [llength $sim_files] sim files (stub excluded)"
-INFO: 8 RTL files, 6 sim files (stub excluded)
+INFO: 8 RTL files, 5 sim files (stub excluded)
 # if {[file exists $proj_dir]} {
 #     puts "INFO: removing existing $proj_dir/"
 #     file delete -force $proj_dir
@@ -66,7 +66,7 @@ INFO: removing existing vivado_project/
 INFO: [IP_Flow 19-234] Refreshing IP repositories
 INFO: [IP_Flow 19-1704] No user IP repositories specified
 INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'C:/AMDDesignTools/2026.1/Vivado/data/ip'.
-create_project: Time (s): cpu = 00:00:38 ; elapsed = 00:00:26 . Memory (MB): peak = 1721.906 ; gain = 329.156
+create_project: Time (s): cpu = 00:00:23 ; elapsed = 00:00:13 . Memory (MB): peak = 1744.441 ; gain = 360.891
 # set_property BOARD_PART      $board_part [current_project]
 # set_property TARGET_LANGUAGE Verilog     [current_project]
 # add_files -norecurse -fileset sources_1 $rtl_files
@@ -75,7 +75,7 @@ create_project: Time (s): cpu = 00:00:38 ; elapsed = 00:00:26 . Memory (MB): pea
 # create_ip -name clk_wiz -vendor xilinx.com -library ip \
 #     -module_name clk_wiz_audio
 INFO: [Device 21-403] Loading part xc7z020clg400-1
-create_ip: Time (s): cpu = 00:00:08 ; elapsed = 00:00:33 . Memory (MB): peak = 1944.246 ; gain = 222.340
+create_ip: Time (s): cpu = 00:00:05 ; elapsed = 00:00:07 . Memory (MB): peak = 1942.973 ; gain = 198.531
 # set_property -dict [list \
 #     CONFIG.PRIM_IN_FREQ                {125.000} \
 #     CONFIG.CLK_IN1_BOARD_INTERFACE     {Custom} \
@@ -115,11 +115,11 @@ update_compile_order -fileset sources_1
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 INFO: [IP_Flow 19-1686] Generating 'Synthesis' target for IP 'clk_wiz_audio'...
 INFO: [IP_Flow 19-1686] Generating 'Implementation' target for IP 'clk_wiz_audio'...
-[Fri Aug 14 17:51:12 2026] Launched clk_wiz_audio_synth_1, synth_1...
+[Tue Aug 11 19:32:42 2026] Launched clk_wiz_audio_synth_1, synth_1...
 Run output will be captured here:
 clk_wiz_audio_synth_1: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/clk_wiz_audio_synth_1/runme.log
 synth_1: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/synth_1/runme.log
-[Fri Aug 14 17:51:12 2026] Launched impl_1...
+[Tue Aug 11 19:32:42 2026] Launched impl_1...
 Run output will be captured here: C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/runme.log
 open_hw_manager
 connect_hw_server -allow_non_jtag
@@ -143,28 +143,13 @@ INFO: [Labtools 27-2221] Launch Output:
 
 
 
-connect_hw_server: Time (s): cpu = 00:00:01 ; elapsed = 00:00:09 . Memory (MB): peak = 2014.266 ; gain = 8.238
+connect_hw_server: Time (s): cpu = 00:00:01 ; elapsed = 00:00:07 . Memory (MB): peak = 2004.117 ; gain = 2.641
 open_hw_target
 INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
 set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
 current_hw_device [get_hw_devices xc7z020_1]
 refresh_hw_device -update_hw_probes false [lindex [get_hw_devices xc7z020_1] 0]
 INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
-set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
-program_hw_devices [get_hw_devices xc7z020_1]
-INFO: [Labtools 27-3164] End of startup status: HIGH
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
-WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
 set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
@@ -184,4 +169,59 @@ program_hw_devices [get_hw_devices xc7z020_1]
 INFO: [Labtools 27-3164] End of startup status: HIGH
 refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
 INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
+close_hw_target: Time (s): cpu = 00:00:00 ; elapsed = 00:35:15 . Memory (MB): peak = 2095.207 ; gain = 0.000
+ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/003017BFAE92A
+WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
+INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
+WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
+WARNING: [Labtoolstcl 44-129] No matching hw_ila_data was found.
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1435] Device xc7z020 (JTAG device index = 1) is not programmed (DONE status = 0).
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+INFO: [Labtools 27-3164] End of startup status: HIGH
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
+open_run impl_1
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.003 . Memory (MB): peak = 2114.145 ; gain = 0.000
+INFO: [Netlist 29-17] Analyzing 32 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-479] Netlist was created with Vivado 2026.1
+INFO: [Project 1-570] Preparing netlist for logic optimization
+Read ShapeDB Complete: Time (s): cpu = 00:00:01 ; elapsed = 00:00:00.004 . Memory (MB): peak = 2167.926 ; gain = 0.137
+INFO: [Timing 38-478] Restoring timing data from binary archive.
+INFO: [Timing 38-479] Binary timing data restore complete.
+INFO: [Project 1-856] Restoring constraints from binary archive.
+INFO: [Project 1-853] Binary constraint restore complete.
+INFO: [Designutils 20-5722] Start Reading Physical Databases.
+Reading placement.
+Read Netlist Cache: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2774.027 ; gain = 0.000
+Reading placer database...
+Read Device Cache: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.012 . Memory (MB): peak = 2774.027 ; gain = 0.000
+Read PlaceDB: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2774.027 ; gain = 0.000
+Read placeStorage: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.015 . Memory (MB): peak = 2787.129 ; gain = 13.102
+Read PulsedLatchDB: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2787.129 ; gain = 0.000
+Reading routing.
+Read RouteStorage: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.016 . Memory (MB): peak = 2787.129 ; gain = 0.000
+Read Physdb Files: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.058 . Memory (MB): peak = 2787.129 ; gain = 13.102
+Restored from archive | CPU: 0.000000 secs | Memory: 0.000000 MB |
+Finished XDEF File Restore: Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.060 . Memory (MB): peak = 2787.129 ; gain = 13.102
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 2787.129 ; gain = 0.000
+INFO: [Project 1-111] Unisim Transformation Summary:
+No Unisim elements were transformed.
+
+open_run: Time (s): cpu = 00:00:27 ; elapsed = 00:00:16 . Memory (MB): peak = 3138.668 ; gain = 1043.461
+set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
+set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
+program_hw_devices [get_hw_devices xc7z020_1]
+INFO: [Labtools 27-3164] End of startup status: HIGH
+refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
+INFO: [Labtools 27-1434] Device xc7z020 (JTAG device index = 1) is programmed with a design that has no supported soft debug core(s) in it.
+close_hw_target: Time (s): cpu = 00:00:04 ; elapsed = 03:00:00 . Memory (MB): peak = 3381.031 ; gain = 0.000
 ERROR: [Labtoolstcl 44-513] HW Target shutdown. Closing target: localhost:3121/xilinx_tcf/Digilent/003017BFAE92A

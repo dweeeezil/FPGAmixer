@@ -7,7 +7,7 @@
 <Project Product="Vivado" Version="7" Minor="72" Path="C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.xpr">
   <DefaultLaunch Dir="$PRUNDIR"/>
   <Configuration>
-    <Option Name="Id" Val="0123f7b3a17b4691a3c90784c8bb1b72"/>
+    <Option Name="Id" Val="8cdf4aba6c654ce49309807f47c3e1cb"/>
     <Option Name="Part" Val="xc7z020clg400-1"/>
     <Option Name="CompiledLibDir" Val="$PCACHEDIR/compile_simlib"/>
     <Option Name="CompiledLibDirXSim" Val=""/>
@@ -185,6 +185,14 @@
         </FileInfo>
       </File>
       <File Path="$PPRDIR/../src/sim/tb_pcm_matrix.sv">
+        <FileInfo>
+          <Attr Name="AutoDisabled" Val="1"/>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PPRDIR/../src/sim/tb_phase3_dynamic.sv">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
           <Attr Name="UsedIn" Val="synthesis"/>

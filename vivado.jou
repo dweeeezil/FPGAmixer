@@ -3,8 +3,8 @@
 # SW Build 6511674 on Tue Jun 16 11:02:23 MDT 2026
 # IP Build 6504888 on Tue Jun 09 09:05:25 MDT 2026
 # SharedData Build 6501428 on Mon Jun 08 17:34:18 MDT 2026
-# Start of session at: Tue Aug 11 19:30:38 2026
-# Process ID         : 17596
+# Start of session at: Fri Aug 14 17:49:16 2026
+# Process ID         : 1132
 # Current directory  : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer
 # Command line       : vivado.exe -source scripts/create_project.tcl
 # Log file           : C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado.log
@@ -19,7 +19,7 @@
 # Host memory        : 16505 MB
 # Swap memory        : 9126 MB
 # Total Virtual      : 25632 MB
-# Available Virtual  : 15825 MB
+# Available Virtual  : 13701 MB
 #-----------------------------------------------------------
 start_gui
 source scripts/create_project.tcl
@@ -42,14 +42,11 @@ set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
 program_hw_devices [get_hw_devices xc7z020_1]
 refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
 set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
 program_hw_devices [get_hw_devices xc7z020_1]
 refresh_hw_device [lindex [get_hw_devices xc7z020_1] 0]
-open_run impl_1
 set_property PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property FULL_PROBES.FILE {} [get_hw_devices xc7z020_1]
 set_property PROGRAM.FILE {C:/Users/Alex/Desktop/FPGAmixer_main/FPGAmixer/vivado_project/FPGAmixer.runs/impl_1/phase3_top.bit} [get_hw_devices xc7z020_1]
