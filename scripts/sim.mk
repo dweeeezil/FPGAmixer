@@ -29,8 +29,8 @@ SIM      := src/sim
 CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv
 
-.PHONY: all rx tx loopback matrix phase3 dynamic clean
-all: rx tx loopback matrix phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix phase3 dynamic clean
+all: rx tx txphase loopback matrix phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -47,6 +47,15 @@ tx: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_i2s_transmitter -o $(BUILD)/tb_i2s_transmitter.vvp \
 		$(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_transmitter.sv
 	@$(VVP) $(BUILD)/tb_i2s_transmitter.vvp
+
+# Pin-phase regression: sdata_o may only change while SCLK is low. Catches
+# the launch-on-sampling-edge class of bug that functional capture checks
+# (which use the in-house receiver as monitor) are structurally blind to.
+txphase: | $(BUILD)
+	@echo ">>> Building tb_i2s_tx_pin_phase"
+	@$(IVERILOG) $(FLAGS) -s tb_i2s_tx_pin_phase -o $(BUILD)/tb_i2s_tx_pin_phase.vvp \
+		$(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_tx_pin_phase.sv
+	@$(VVP) $(BUILD)/tb_i2s_tx_pin_phase.vvp
 
 loopback: | $(BUILD)
 	@echo ">>> Building tb_i2s_loopback"
