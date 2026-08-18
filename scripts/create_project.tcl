@@ -91,6 +91,11 @@ set_property -dict [list \
 
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
 
+# ------ Methodology gate ------
+# Fail implementation if report_methodology finds any Critical Warning
+set_property STEPS.ROUTE_DESIGN.TCL.POST \
+    [file normalize scripts/check_methodology.tcl] [get_runs impl_1]
+
 # ------ Set synthesis and simulation tops ------
 set_property top $synth_top [current_fileset]
 update_compile_order -fileset sources_1

@@ -17,7 +17,6 @@
 
 # ------ System clock: 125 MHz on H16 ------
 set_property -dict { PACKAGE_PIN H16  IOSTANDARD LVCMOS33 } [get_ports { sysclk }]
-create_clock -add -name sys_clk_pin -period 8.00 -waveform {0 4} [get_ports { sysclk }]
 
 # =============================================================================
 # Pmod JA : Pmod I2S2 #1

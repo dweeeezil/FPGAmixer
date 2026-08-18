@@ -40,8 +40,14 @@ implementation, generate bitstream, and program over JTAG.
 
 ## Current phase
 
-**Phase 1 — Pmod I2S2 loopback on JA.** See `docs/phase1_i2s_loopback.md` for
-the design and how to verify it on hardware.
+**Phase 3 complete — static 4-in/4-out PCM matrix across both Pmod I2S2
+modules (JA + JB), hardware-verified 2026-08-18.** The Phase 3 noise bug
+(I2S TX pin-phase race) is fixed; see `docs/bugfix_2026-08-14_phase3-noise.md`.
+Next: Phase 4, PetaLinux bring-up, then OSC control per
+`docs/FPGA Mixer OSC Standard.md`.
+
+Command-line simulation (Icarus): `make -f scripts/sim.mk all` — seven
+testbenches, all expected to pass.
 
 ## Hardware
 

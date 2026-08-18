@@ -1,2 +1,14 @@
-# Icarus command-line sim outputs (scripts/sim.mk)
+# ---- Vivado: generated project (recreate with scripts/create_project.tcl) ----
+vivado_project/
+
+# ---- Vivado: session droppings at repo root ----
+*.jou
+*.log
+*.str
+.Xil/
+
+# ---- Icarus command-line sim outputs (scripts/sim.mk) ----
 build_sim/
+
+# ---- macOS ----
+.DS_Store
