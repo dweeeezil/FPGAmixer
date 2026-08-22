@@ -72,18 +72,23 @@ matrix: | $(BUILD)
 	@$(VVP) $(BUILD)/tb_pcm_matrix.vvp
 
 # --- Phase-3 integration: real phase3_top, MMCM stubbed, rx/tx as fixtures ---
+# -DSIM_ODDR selects the behavioral ODDR model inside oddr_out (the Xilinx
+# primitive doesn't elaborate under Icarus). Sim-only define -- Vivado
+# synthesis must see the real primitive. NOTE: a green run here only proves
+# the datapath logic; the ODDR/pin-constraint timing this guards is validated
+# by STA + hardware, not by this suite (handoff doc 6).
 phase3: | $(BUILD)
 	@echo ">>> Building tb_phase3_datapath"
-	@$(IVERILOG) $(FLAGS) -s tb_phase3_datapath -o $(BUILD)/tb_phase3_datapath.vvp \
-		$(CORE_RTL) $(RTL)/phase3_top.sv \
+	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_datapath -o $(BUILD)/tb_phase3_datapath.vvp \
+		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/phase3_top.sv \
 		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_datapath.sv
 	@$(VVP) $(BUILD)/tb_phase3_datapath.vvp
 
 # --- Phase-3 dynamic: changing value every frame, checked sample-by-sample ---
 dynamic: | $(BUILD)
 	@echo ">>> Building tb_phase3_dynamic"
-	@$(IVERILOG) $(FLAGS) -s tb_phase3_dynamic -o $(BUILD)/tb_phase3_dynamic.vvp \
-		$(CORE_RTL) $(RTL)/phase3_top.sv \
+	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_dynamic -o $(BUILD)/tb_phase3_dynamic.vvp \
+		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/phase3_top.sv \
 		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_dynamic.sv
 	@$(VVP) $(BUILD)/tb_phase3_dynamic.vvp
 

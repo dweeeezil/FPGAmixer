@@ -16,6 +16,11 @@
 //   sysclk 125MHz -> MMCM -> mclk -> reset_sync -> rst_n
 //                                 -> divider    -> sclk, lrck  (to BOTH Pmods)
 //
+// All codec-facing outputs (MCLK/SCLK/LRCK/SDIN, 14 pins) leave through ODDR
+// forwarders (oddr_out) clocked by mclk, so pin launch timing is set by the
+// dedicated OLOGIC path, not per-build fabric routing. SCLK/LRCK/SDIN share
+// one identical +1 MCLK relaunch -- see the invariant note at the instances.
+//
 //   ja_ad_sdout -> rx_ja -> {ja_l, ja_r} =ch0,ch1 -.
 //   jb_ad_sdout -> rx_jb -> {jb_l, jb_r} =ch2,ch3 --+-> pcm_matrix -.
 //                                                                    |
@@ -78,10 +83,34 @@ module phase3_top (
     );
 
     // ----- Fan the same clocks out to both Pmods, both sides -----
-    assign ja_da_mclk = mclk;  assign ja_da_lrck = lrck;  assign ja_da_sclk = sclk;
-    assign ja_ad_mclk = mclk;  assign ja_ad_lrck = lrck;  assign ja_ad_sclk = sclk;
-    assign jb_da_mclk = mclk;  assign jb_da_lrck = lrck;  assign jb_da_sclk = sclk;
-    assign jb_ad_mclk = mclk;  assign jb_ad_lrck = lrck;  assign jb_ad_sclk = sclk;
+    // Every codec-facing output leaves through an ODDR (oddr_out), one per
+    // physical pin, all clocked by mclk. MCLK pins use the clock-forwarding
+    // pattern (d1=1, d2=0); SCLK/LRCK (and SDIN below) pass through as SDR
+    // data (d1=d2=signal), which re-launches them on the mclk rising edge and
+    // adds one identical MCLK of pin latency to each.
+    //
+    // INVARIANT: SCLK, LRCK and SDIN must all get this same SDR treatment so
+    // their relative pin alignment (data changes mid-cell, half an SCLK before
+    // the DAC's sampling edge) is preserved. Mixing ODDR and combinational
+    // forwarding here re-creates the Phase 3 pin-phase race. See
+    // docs/handoff_codec_interface_timing.md 4.2 and oddr_out.sv.
+    //
+    // The pin-delay constraints in constraints/phase3_arty_z7.xdc name these
+    // instances (u_fwd_*/u_oddr/C) -- keep names in sync when editing.
+    oddr_out u_fwd_ja_da_mclk (.clk(mclk), .d1(1'b1), .d2(1'b0), .q(ja_da_mclk));
+    oddr_out u_fwd_ja_ad_mclk (.clk(mclk), .d1(1'b1), .d2(1'b0), .q(ja_ad_mclk));
+    oddr_out u_fwd_jb_da_mclk (.clk(mclk), .d1(1'b1), .d2(1'b0), .q(jb_da_mclk));
+    oddr_out u_fwd_jb_ad_mclk (.clk(mclk), .d1(1'b1), .d2(1'b0), .q(jb_ad_mclk));
+
+    oddr_out u_fwd_ja_da_sclk (.clk(mclk), .d1(sclk), .d2(sclk), .q(ja_da_sclk));
+    oddr_out u_fwd_ja_ad_sclk (.clk(mclk), .d1(sclk), .d2(sclk), .q(ja_ad_sclk));
+    oddr_out u_fwd_jb_da_sclk (.clk(mclk), .d1(sclk), .d2(sclk), .q(jb_da_sclk));
+    oddr_out u_fwd_jb_ad_sclk (.clk(mclk), .d1(sclk), .d2(sclk), .q(jb_ad_sclk));
+
+    oddr_out u_fwd_ja_da_lrck (.clk(mclk), .d1(lrck), .d2(lrck), .q(ja_da_lrck));
+    oddr_out u_fwd_ja_ad_lrck (.clk(mclk), .d1(lrck), .d2(lrck), .q(ja_ad_lrck));
+    oddr_out u_fwd_jb_da_lrck (.clk(mclk), .d1(lrck), .d2(lrck), .q(jb_da_lrck));
+    oddr_out u_fwd_jb_ad_lrck (.clk(mclk), .d1(lrck), .d2(lrck), .q(jb_ad_lrck));
 
     // ----- Receivers: I2S -> PCM (per Pmod, stereo) -----
     logic [SW-1:0] ja_l_in, ja_r_in, jb_l_in, jb_r_in;
@@ -149,13 +178,20 @@ module phase3_top (
     );
 
     // ----- Transmitters: PCM -> I2S (per Pmod, stereo) -----
+    // sdata leaves through the same SDR ODDR pattern as SCLK/LRCK above, so
+    // the mid-cell launch phase fixed in i2s_transmitter survives at the pin.
+    logic ja_sdin_int, jb_sdin_int;
+
     i2s_transmitter #(.DATA_WIDTH(SW)) u_tx_ja (
         .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
-        .left_data (ja_l_out), .right_data (ja_r_out), .sdata_o (ja_da_sdin)
+        .left_data (ja_l_out), .right_data (ja_r_out), .sdata_o (ja_sdin_int)
     );
     i2s_transmitter #(.DATA_WIDTH(SW)) u_tx_jb (
         .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
-        .left_data (jb_l_out), .right_data (jb_r_out), .sdata_o (jb_da_sdin)
+        .left_data (jb_l_out), .right_data (jb_r_out), .sdata_o (jb_sdin_int)
     );
+
+    oddr_out u_fwd_ja_da_sdin (.clk(mclk), .d1(ja_sdin_int), .d2(ja_sdin_int), .q(ja_da_sdin));
+    oddr_out u_fwd_jb_da_sdin (.clk(mclk), .d1(jb_sdin_int), .d2(jb_sdin_int), .q(jb_da_sdin));
 
 endmodule
