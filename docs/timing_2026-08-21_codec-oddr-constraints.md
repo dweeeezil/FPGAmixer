@@ -152,4 +152,4 @@ same file lists + `SIM_ODDR` define for the usual Icarus flow). Per handoff
 
 ## Hardware result
 
-*(pending — identity routing re-test, then DEMO routing, per §7 items 5)*
+Tested - Good to go.
