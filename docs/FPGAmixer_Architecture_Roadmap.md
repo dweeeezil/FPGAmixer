@@ -1,7 +1,18 @@
-# FPGAmixer — architecture scoping & build roadmap (restart)
+# FPGAmixer — architecture scoping & build roadmap
 
-**Date:** August 4, 2026
-**Hardware:** Arty Z7-20 (Zynq-7000), 2x Pmod I2S AD/DA, OWC Thunderbolt 10G (Mac AVB), RPi5 + Intel I350-T4V2
+**Date:** September 15, 2026
+**Hardware:** Genesys ZU-3EG (Zynq UltraScale+ MPSoC, XCZU3EG-SFVC784), 2× Pmod I2S2 AD/DA, RPi5 + Intel I350-T4V2 (optional network endpoint)
+
+> **Board migration note (Sept 2026):** the project has moved from the Arty
+> Z7-20 (Zynq-7000) to the **Genesys ZU-3EG** (Zynq UltraScale+ MPSoC). The
+> driving reason is network audio: the Zynq-7000's Ethernet MAC could not do
+> usable IEEE-1588/PTP hardware timestamping (see Decision 2), which is the one
+> capability AVB/gPTP hinges on. The UltraScale+ GEM fixes exactly that. Two
+> earlier hardware dead-ends (no PS PTP, USB host-only) are resolved on this
+> board, so Decisions 2 and 3 below have been re-opened in the project's
+> favour. The Arty-era version of this document is preserved at
+> `docs/archive/FPGAmixer_Architecture_Roadmap_arty_z7.md`, and the Arty-era
+> reports, datasheets, and per-phase notes now live under `docs/archive/`.
 
 ---
 
@@ -35,6 +46,8 @@ The most useful framing for scoping this: **the core (matrix + DSP + control + p
     from the same store, which is what gets saved/restored.)
 ```
 
+The core (Phases 1–3) is board-agnostic synthesizable SystemVerilog; the migration touches the platform layer (part, board, clocking, pins, PetaLinux target arch), not the datapath.
+
 ---
 
 ## 2. Key decisions
@@ -47,38 +60,38 @@ Your notes frame this as "AVB vs Milan," but Milan isn't an alternative to AVB �
 
 **Recommendation:** for v1, do gPTP sync + minimal IEEE 1722 (AAF-style) streaming with static, hardcoded stream connections. Skip 1722.1 AVDECC discovery/enumeration entirely at first. AVDECC is a large, separate control-plane project (device discovery, connection management) that's orthogonal to whether audio flows and stays in sync — bolt it on later if you actually want the device to show up automatically in tools like Hive Controller or talk to certified Milan gear at work.
 
-### Decision 2 — PTP / timestamping strategy on the Zynq-7000
+What *has* changed with the board move: because the ZU-3EG can now terminate gPTP itself (Decision 2), a later full-Milan/AVDECC endpoint can live on the Zynq board directly rather than requiring separate timestamp-capable hardware. That makes Phase 10 a real option rather than a hardware-blocked stretch.
 
-This is the crux of "where the pain begins" in your original notes, and it's worth being precise about, because it determines whether the rest of the network-audio plan is viable as originally conceived.
+### Decision 2 — PTP / timestamping strategy — *resolved by the board change*
 
-**Confirmed (AMD's own documentation, not just your earlier testing):** the Zynq-7000 GEM's 1588 timestamp capture register is *non-latching* — a new PTP event packet overwrites it before software can reliably read it, so there's no dependable way to associate a timestamp with the packet that produced it. AMD's driver docs state plainly that there is effectively no usable 1588/PTP support on Zynq-7000 for this reason (it's fixed on Zynq UltraScale+ and Versal, which have real hardware timestamp queues). This isn't a rare edge case — it's documented to fail specifically under normal traffic patterns like consecutive PTP event packets or short sync intervals, which real gPTP traffic produces routinely.
+This was the crux of "where the pain begins," and it's the reason for the migration, so it's worth restating precisely.
 
-This also explains why the EMIO route you explored before didn't pan out: EMIO just changes which physical pins the PS's Ethernet signals reach through — the timestamp capture hardware is still the same non-latching PS peripheral either way, so it doesn't fix the underlying limitation.
+**On the old Arty Z7-20 (Zynq-7000):** the GEM's 1588 timestamp capture register is *non-latching* — a new PTP event packet overwrites it before software can reliably read it, so there was no dependable way to associate a timestamp with the packet that produced it. AMD's own driver docs state there is effectively no usable 1588/PTP support on Zynq-7000 for this reason, and it's documented to fail specifically under normal gPTP traffic (consecutive event packets, short sync intervals). EMIO didn't help — it only re-routes the same non-latching PS peripheral's signals.
 
-Three real options:
+**On the Genesys ZU-3EG (Zynq UltraScale+ MPSoC):** this is fixed in silicon. The UltraScale+ GEM has real hardware timestamp support suitable for 802.1AS/1588. On this board the Gigabit Ethernet path is a **TI DP83867CR PHY → RGMII → PS GEM** (MIO Bank 501, 1.8 V), which is a standard, well-supported PetaLinux/`linuxptp` configuration.
+
+Revised options:
 
 | Option | What it means | Verdict |
 |---|---|---|
-| A. Use the PS GEM anyway | Software-timestamp against the non-latching register | Don't build on this — it's documented to be unreliable, not just imprecise |
-| B. Add a real PL-fabric MAC + PHY with hardware 1588 capture (e.g. AXI Ethernet Subsystem's 1588 timer) | The technically correct fix | Needs new hardware — the Arty Z7-20's only PHY is wired via RGMII straight to the PS's dedicated MIO pins; there's no second PHY broken out to PL fabric pins on this board |
-| **C. Move the "real AVB endpoint" job onto the RPi5 + I350** | The I350 has genuine hardware PTP timestamp support (it's a common choice in real AVB/TSN reference builds). Let the Pi5 terminate gPTP and the actual AVB/Milan network, then hand audio to the Zynq mixer over a simple point-to-point link that doesn't need sample-accurate network timestamping at all | **Recommended for v1** — reuses hardware you already have, no board rework |
+| **A. Terminate gPTP on the ZU-3EG's own PS GEM** | `linuxptp` (ptp4l) against the Cadence GEM driver's hardware timestamping, over the on-board DP83867CR | **Recommended for v1** — this is the capability the board was chosen for; no extra hardware |
+| B. PL-fabric MAC + 1588 timer (AXI Ethernet Subsystem) | Hardware timestamping in the PL instead of the PS | Only if you outgrow the PS GEM (e.g. want PTP on a second, PL-routed link); not needed for v1 |
+| C. Offload the AVB endpoint to RPi5 + I350 | Pi5 terminates gPTP/AVB, hands audio to the mixer over a simpler link | **Now a fallback, not the plan** — keep as a de-risking option / bring-up reference while the on-board PTP path is stood up |
 
-Option C repurposes the Pi5 from "network switch if needed" to "the thing that actually speaks AVB," with the Zynq mixer sitting downstream of it on a much easier link. Option B stays on the table as the eventual path if you want the Zynq board itself to be a first-class AVB endpoint someday.
+One honest caveat: "the GEM supports hardware timestamping" is a silicon/driver fact, but end-to-end gPTP grandmaster/slave behaviour against real Milan gear still needs a bench spike (`ptp4l` + a known-good gPTP peer) before Phase 9 leans on it. The Pi5 + I350 can serve as that known-good peer.
 
-One honest caveat: I'm confident in the non-latching-register finding since it's stated directly in AMD's documentation. I'm not certain how turnkey a Milan-capable stack is on RPi5 + I350 today — that's worth a short feasibility spike before committing to it as the backbone of the plan.
+### Decision 3 — USB audio — *host-mode recommended, device-mode now on the table*
 
-### Decision 3 — USB audio: this needs a correction, not just a decision
+**On the old Arty Z7:** its single PS USB port was host-only ("USB OTG and USB device modes are not supported"), so "FPGA as a USB soundcard" was simply impossible without different hardware.
 
-The Arty Z7 reference manual states this directly, in the USB section, twice: **"USB OTG and USB device modes are not supported."** The board's single PS USB port is wired as host-only — the VBUS/ID-pin sensing needed for device or OTG mode isn't present (the documented hardware mod adds host-qualifying capacitance, it doesn't add device support).
+**On the Genesys ZU-3EG:** the USB Type-C port is USB 3.0/2.0 with **Dual-Role-Data and Dual-Role-Power**, and the MPSoC's USB controller supports device/OTG mode. So both builds are now physically possible:
 
-This matters because "USB audio device implementation" in your original roadmap is ambiguous between two very different builds:
+- **(a) ZU-3EG as a USB audio device** — it enumerates on your Mac as a USB soundcard. **Now possible on this hardware** (was not on the Arty), via a UAC gadget (Linux `f_uac2`) on the PS, or PL-based USB device IP. This is a real sub-project (gadget descriptors, isochronous endpoints, feedback endpoint for rate matching) but no longer hardware-blocked.
+- **(b) ZU-3EG as a USB host** — you plug a class-compliant USB audio interface into it, and PetaLinux's standard `snd-usb-audio` ALSA driver talks to it. **Simplest path**, no custom USB gateware/firmware — just bridging ALSA capture/playback into the PCM matrix.
 
-- **(a) Arty Z7 as a USB audio device** — it appears to a computer as a USB soundcard. **Not supported on this hardware as-is.**
-- **(b) Arty Z7 as a USB host** — you plug a class-compliant USB audio interface into it, and PetaLinux's standard ALSA USB-audio driver (`snd-usb-audio`) talks to it. **Fully supported**, and genuinely simpler than (a) would have been — no custom USB device-class gateware/firmware needed, just bridging ALSA capture/playback into your PCM matrix.
+**Recommendation:** still start with (b) for Phase 8 — it's the least work and gets USB audio flowing. Keep (a) as an explicit, separately-scoped follow-on now that the hardware supports it, if you want the box to present as a soundcard to the Mac.
 
-**Recommendation:** go with (b) — it's both the only option this hardware supports and considerably less work. If you actually wanted the FPGA box to present as a USB soundcard to your Mac, that's a different sub-project needing different hardware (a Zynq board with OTG/device support, or PL-based soft USB device IP) and is worth scoping separately rather than folding into this build.
-
-Clock domain note either way: a plugged-in USB interface still runs on its own clock, independent of your FPGA's fixed audio clock. You still need an elastic buffer + rate estimation (ALSA handles a version of this itself) to bridge domains — same category of problem as network audio, just solved in Linux/ALSA rather than in gateware.
+Clock-domain note either way: a USB interface (or a USB host driving us as a device) runs on its own clock, independent of the FPGA's fixed audio clock. You still need an elastic buffer + rate estimation to bridge domains — the same category of problem as network audio, solved in Linux/ALSA (host mode) or in the UAC feedback endpoint (device mode).
 
 ### Decision 4 — Control protocol
 
@@ -88,37 +101,41 @@ No changes recommended here — TCP OSC with echo-confirmation, optional UDP rec
 
 ## 3. Build roadmap
 
-Phases 0–3 match your original draft closely — they were already well-sequenced (get audio moving in hardware before adding the SoC/software layer). The changes start after that: DSP moves earlier (it only depends on the core working, not on USB or network), and USB/network are reframed as parallel bolt-on sources rather than one blocking the other.
+Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified on the Arty Z7** (static 4-in/4-out matrix, 2026-08-18). On the ZU-3EG they need a **re-bring-up on the new silicon** (Phase 3.5 below) before the SoC/software layers stack on top — same RTL, new part/clocking/pins.
 
 | Phase | Goal | Key tasks | Exit criteria |
 |---|---|---|---|
-| 0 | Repo & tooling | Set up version control, build scripts | Clean environment to build in |
+| 0 | Repo & tooling | Version control, build scripts, board/part migration | Clean environment to build in on the ZU-3EG |
 | 1 | I2S loopback | Vivado-only, one Pmod in → one Pmod out, no reformatting | Audio passes through unmodified |
 | 2 | I2S ↔ PCM conversion | i2s rx → PCM → i2s tx, still loopback | Same audio, now through PCM in the middle |
 | 3 | Static PCM matrix | N-in/N-out matrix, crosspoints fixed at compile time | Can route any input to any output by rebuilding |
-| — | **Checkpoint** | You have a working (if inflexible) hardware router. Confirm it in silicon before adding SoC complexity. | |
-| 4 | PetaLinux bring-up | Boot Linux on the PS | Stable boot, can reach the board over UART/network |
-| 5 | Dynamic control | UDP OSC (write-to-memory), then TCP OSC server with echo-confirm | Crosspoints changeable live from your Mac app |
+| **3.5** | **ZU-3EG re-bring-up** | Rebuild Phases 1–3 on the new part/board: 25 MHz PL clock → 12.288 MHz MMCM, Pmod pins on JB/JC, re-run STA (codec timing carries over unchanged), re-verify in silicon | Same static matrix, now proven on the ZU-3EG hardware |
+| — | **Checkpoint** | You have a working (if inflexible) hardware router on the target board. Confirm it in silicon before adding SoC complexity. | |
+| 4 | PetaLinux bring-up | Boot Linux on the PS (now aarch64 quad A53, not armv7); Ethernet up on the PS GEM | Stable boot, reachable over UART/network |
+| 5 | Dynamic control | UDP OSC (write-to-memory), then TCP OSC server with echo-confirm | Crosspoints changeable live from the Mac app |
 | 6 | Parameter persistence | Save-on-change, auto-load on boot, single param store used everywhere | Power-cycle survives with routing intact |
-| — | **Checkpoint** | This is a complete, useful 4-in/4-out analog matrix mixer with saved state, controllable from your macOS app — a legitimate v1 on its own. | |
+| — | **Checkpoint** | A complete, useful 4-in/4-out analog matrix mixer with saved state, controllable from the macOS app — a legitimate v1 on its own. | |
 | 7 | DSP implementation | EQ, dynamics, delay — validate with hardcoded parameters first, then wire into the same OSC/param path as the matrix | Per-channel/bus processing works and is controllable |
 | 8 | USB audio (host mode) | ALSA `snd-usb-audio` capture/playback bridged into the PCM matrix as another source/sink; elastic buffer for clock bridging | A plugged-in USB interface behaves like any other input/output |
-| 9 | Network audio | Per Decisions 1–2: Pi5+I350 as the real AVB/gPTP endpoint, static IEEE 1722 streaming into the Zynq mixer | Network audio flows in sync, as a source/sink like any other |
-| 10 (stretch) | Full Milan / AVDECC compliance | 1722.1 discovery, conformance testing against real Milan gear; PL-based hardware timestamping on the Zynq itself if you decide the mixer needs to be a first-class AVB endpoint | Only pursue if real interop with commercial gear is a hard requirement |
+| 9 | Network audio | Per Decisions 1–2: **gPTP terminated on the ZU-3EG's own PS GEM** (`linuxptp`), static IEEE 1722 (AAF) streaming into the PCM matrix | Network audio flows in sync, as a source/sink like any other |
+| 10 (stretch) | Full Milan / AVDECC compliance | 1722.1 discovery + conformance against real Milan gear, on the ZU-3EG itself | Pursue if real interop with commercial gear is a hard requirement |
+| 11 (optional) | USB device mode | Present as a USB soundcard to the Mac via `f_uac2` gadget (now that the Type-C port supports device/OTG) | The Mac sees the box as a class-compliant soundcard |
 
 ---
 
 ## 4. Risks & open items to revisit
 
-- **RPi5 + I350 Milan/gPTP maturity** — needs a short feasibility spike (e.g. `linuxptp` against the `igb` driver) before Phase 9 depends on it.
-- **PS GEM PTP** — documented as unreliable under normal traffic, not just imprecise. Don't spend time trying to make it work for sync; it's a dead end on this silicon.
-- **No second PL-routed PHY on the Arty Z7-20** — if Phase 10 ever needs a real hardware-timestamped AVB endpoint on the Zynq itself, that's new hardware, not just new gateware.
-- **USB device mode is off the table** on this board — confirmed directly from Digilent's docs, not just inferred.
-- **Milan/AVDECC conformance is its own project** — scope it only if interop with your work's Milan devices is a real goal, not a nice-to-have.
+- **On-board gPTP maturity spike** — "the UltraScale+ GEM supports hardware timestamping" is a silicon fact, but stand up `ptp4l` against a known-good gPTP peer (the RPi5 + I350 is ideal for this) and confirm sync quality before Phase 9 depends on it.
+- **12.288 MHz from a 25 MHz reference** — the ZU-3EG PL clock is 25 MHz (from the DP83867CR PHY), not the Arty's 125 MHz. 12.288 MHz is not an integer ratio of 25 MHz, so the MMCM uses a fractional solution; check the generated `clk_wiz_audio` summary for the actual output frequency and jitter, and confirm it's within codec tolerance. (A cleaner alternative is to source the audio clock from a PS PLL / fabric clock — worth considering during Phase 4.)
+- **Codec timing carries over, but re-run STA** — the ODDR-forwarding + multicycle constraints are board-independent (same 12.288 MHz mclk / ÷4 sclk tree) and were copied verbatim into the ZU-3EG XDC. But routing and IO characteristics differ on UltraScale+, so re-read the RX-sampling WNS razor (the intentional ~+2 ns check) after the first ZU-3EG implementation, don't assume the Arty margins.
+- **Pmod remap** — the ZU-3EG's **Pmod JA is the analog XADC Pmod** (LVCMOS18, RC-filtered), unusable for the 3.3 V I2S2, so the two modules moved to the digital Pmods **JB and JC** (JD spare). The RTL ports were renamed to match the silkscreen: `jb_*` (module #1) and `jc_*` (module #2).
+- **10G is not on the 3EG** — the 10G SFP+ is a 5EV-only feature; the 3EG's Ethernet is Gigabit (10/100/1000). Gigabit is ample for AVB, but note it if bandwidth assumptions from earlier notes creep back in.
+- **Milan/AVDECC conformance is its own project** — scope it (Phase 10) only if interop with your work's Milan devices is a real goal, not a nice-to-have.
+- **USB device mode is a distinct sub-project** — now possible (Phase 11) but not free; isochronous + feedback-endpoint rate matching is the hard part.
 
 ## 5. Immediate next steps
 
-1. Finish repo/tooling setup (already in progress).
-2. Quick spike: confirm `linuxptp` + the I350's hardware timestamp support work as expected on the RPi5, before Phase 9 leans on it.
-3. Confirm the USB read in Decision 3 matches what you actually wanted — if you did want device mode, that's a separate scoping conversation.
-4. Start Phase 1 (I2S loopback).
+1. Finish the board/tooling migration (part, board_part, clocking, pins — in progress; `scripts/create_project.tcl` + `constraints/*_genesys_zu.xdc`).
+2. Phase 3.5: regenerate the project on the ZU-3EG, resynthesize/implement, and re-verify the static matrix in silicon. Read the post-route methodology + RX-sampling WNS before trusting the build.
+3. Bench spike: `ptp4l` + hardware timestamping on the ZU-3EG's PS GEM against a known-good gPTP peer, before Phase 9 leans on it.
+4. Confirm the audio-clock source decision (fractional MMCM off the 25 MHz PL clock vs. a PS-sourced clock) during Phase 4.

@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // phase2_top.sv
 //
-// Phase 2: I2S <-> PCM <-> I2S round-trip on JA.
+// Phase 2: I2S <-> PCM <-> I2S round-trip on JB.
 //
 // Same pin interface and same clocks as Phase 1, but now the FPGA
 // deserializes the ADC's bit stream into parallel 24-bit L/R registers, then
@@ -11,7 +11,7 @@
 //
 // Signal flow (inside the FPGA):
 //
-//   sysclk (125 MHz) --> MMCM --> mclk (~12.288 MHz)
+//   sysclk (25 MHz) --> MMCM --> mclk (~12.288 MHz)
 //                                    |
 //                                    +--> reset_sync --> rst_n (clean, mclk-domain)
 //                                    +--> divider --> sclk, lrck
@@ -25,17 +25,17 @@
 // Latency: one LRCK period (~21 us at 48 kHz). Inaudible; expected.
 // -----------------------------------------------------------------------------
 module phase2_top (
-    input  logic sysclk,      // 125 MHz, pin H16
+    input  logic sysclk,      // 25 MHz PL ref, pin E12 (LVCMOS18)
 
-    // Pmod JA - Pmod I2S2 (same pinout as Phase 1)
-    output logic ja_da_mclk,  // JA1
-    output logic ja_da_lrck,  // JA2
-    output logic ja_da_sclk,  // JA3
-    output logic ja_da_sdin,  // JA4
-    output logic ja_ad_mclk,  // JA7
-    output logic ja_ad_lrck,  // JA8
-    output logic ja_ad_sclk,  // JA9
-    input  logic ja_ad_sdout  // JA10
+    // Pmod JB - Pmod I2S2 (same pinout as Phase 1)
+    output logic jb_da_mclk,  // JB1
+    output logic jb_da_lrck,  // JB2
+    output logic jb_da_sclk,  // JB3
+    output logic jb_da_sdin,  // JB4
+    output logic jb_ad_mclk,  // JB7
+    output logic jb_ad_lrck,  // JB8
+    output logic jb_ad_sclk,  // JB9
+    input  logic jb_ad_sdout  // JB10
 );
 
     // ----- Clocking -----
@@ -67,12 +67,12 @@ module phase2_top (
     );
 
     // ----- Drive clocks to both sides of the Pmod -----
-    assign ja_da_mclk = mclk;
-    assign ja_da_lrck = lrck;
-    assign ja_da_sclk = sclk;
-    assign ja_ad_mclk = mclk;
-    assign ja_ad_lrck = lrck;
-    assign ja_ad_sclk = sclk;
+    assign jb_da_mclk = mclk;
+    assign jb_da_lrck = lrck;
+    assign jb_da_sclk = sclk;
+    assign jb_ad_mclk = mclk;
+    assign jb_ad_lrck = lrck;
+    assign jb_ad_sclk = sclk;
 
     // ----- Receiver: I2S -> PCM registers -----
     logic [23:0] left_data, right_data;
@@ -83,7 +83,7 @@ module phase2_top (
         .rst_n        (rst_n),
         .sclk_i       (sclk),
         .lrck_i       (lrck),
-        .sdata_i      (ja_ad_sdout),
+        .sdata_i      (jb_ad_sdout),
         .left_data    (left_data),
         .right_data   (right_data),
         .sample_valid (sample_valid)
@@ -101,7 +101,7 @@ module phase2_top (
         .lrck_i     (lrck),
         .left_data  (left_data),
         .right_data (right_data),
-        .sdata_o    (ja_da_sdin)
+        .sdata_o    (jb_da_sdin)
     );
 
 endmodule
