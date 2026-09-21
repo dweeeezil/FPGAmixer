@@ -1,11 +1,11 @@
 // -----------------------------------------------------------------------------
 // phase1_top.sv
 //
-// Phase 1: Pmod I2S2 loopback on JA.
+// Phase 1: Pmod I2S2 loopback on JB.
 //
 // Signal flow (fabric-level):
 //
-//   sysclk (125 MHz) --> MMCM (clk_wiz_audio) --> mclk (~12.288 MHz)
+//   sysclk (25 MHz) --> MMCM (clk_wiz_audio) --> mclk (~12.288 MHz)
 //                                                    |
 //                                                    +--> divider --> sclk, lrck
 //                                                    |
@@ -14,7 +14,7 @@
 //                                     the DAC side (pins 1..3) and the
 //                                     ADC side (pins 7..9) of the Pmod
 //
-//   ja_ad_sdout (from ADC, JA10) ---------> ja_da_sdin (to DAC, JA4)
+//   jb_ad_sdout (from ADC, JB10) ---------> jb_da_sdin (to DAC, JB4)
 //                          (combinational passthrough - no reformatting)
 //
 // Pmod I2S2 header layout (see Digilent reference manual):
@@ -33,20 +33,20 @@
 //   - Line In (3.5mm jack) is the ADC input; Line Out is the DAC output.
 // -----------------------------------------------------------------------------
 module phase1_top (
-    input  logic sysclk,      // 125 MHz, pin H16
+    input  logic sysclk,      // 25 MHz PL ref, pin E12 (LVCMOS18)
 
-    // Pmod JA - Pmod I2S2
+    // Pmod JB - Pmod I2S2
     // DAC side (CS4344, "Line Out"), bottom row of Pmod
-    output logic ja_da_mclk,  // JA1  -> Y18
-    output logic ja_da_lrck,  // JA2  -> Y19
-    output logic ja_da_sclk,  // JA3  -> Y16
-    output logic ja_da_sdin,  // JA4  -> Y17 (FPGA drives DAC data)
+    output logic jb_da_mclk,  // JB1  -> AE13
+    output logic jb_da_lrck,  // JB2  -> AG14
+    output logic jb_da_sclk,  // JB3  -> AH14
+    output logic jb_da_sdin,  // JB4  -> AG13 (FPGA drives DAC data)
 
     // ADC side (CS5343, "Line In"), top row of Pmod
-    output logic ja_ad_mclk,  // JA7  -> U18
-    output logic ja_ad_lrck,  // JA8  -> U19
-    output logic ja_ad_sclk,  // JA9  -> W18
-    input  logic ja_ad_sdout  // JA10 -> W19 (ADC drives, FPGA reads)
+    output logic jb_ad_mclk,  // JB7  -> AE14
+    output logic jb_ad_lrck,  // JB8  -> AF13
+    output logic jb_ad_sclk,  // JB9  -> AE15
+    input  logic jb_ad_sdout  // JB10 -> AH13 (ADC drives, FPGA reads)
 );
 
     // ----- Clocks -----
@@ -55,7 +55,7 @@ module phase1_top (
     logic sclk;
     logic lrck;
 
-    // MMCM: 125 MHz sysclk -> ~12.288 MHz mclk
+    // MMCM: 25 MHz sysclk -> ~12.288 MHz mclk
     // Configuration lives in scripts/create_project.tcl.
     clk_wiz_audio u_mmcm (
         .clk_in1  (sysclk),
@@ -81,19 +81,19 @@ module phase1_top (
     // ----- Drive clocks to both sides of the Pmod -----
     // The DAC and ADC are separate chips on the Pmod; each gets its own
     // dedicated clock pin. We drive the same signal to both.
-    assign ja_da_mclk = mclk;
-    assign ja_da_lrck = lrck;
-    assign ja_da_sclk = sclk;
+    assign jb_da_mclk = mclk;
+    assign jb_da_lrck = lrck;
+    assign jb_da_sclk = sclk;
 
-    assign ja_ad_mclk = mclk;
-    assign ja_ad_lrck = lrck;
-    assign ja_ad_sclk = sclk;
+    assign jb_ad_mclk = mclk;
+    assign jb_ad_lrck = lrck;
+    assign jb_ad_sclk = sclk;
 
     // ----- Loopback: ADC serial data -> DAC serial data -----
     // Combinational passthrough. No reformatting, no registering.
     // The ADC drives its SDOUT on the falling SCLK edge; the DAC samples
     // SDIN on the rising SCLK edge, half a bit period later, so there is
     // plenty of setup/hold margin even with fabric routing delay.
-    assign ja_da_sdin = ja_ad_sdout;
+    assign jb_da_sdin = jb_ad_sdout;
 
 endmodule

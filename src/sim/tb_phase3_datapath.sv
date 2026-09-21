@@ -33,52 +33,52 @@ module tb_phase3_datapath;
     always #4 sysclk = ~sysclk;   // nominal 125 MHz (unused by the stub, driven for form)
 
     // ----- DUT -----
-    logic ja_da_sdin, ja_ad_sdout;
     logic jb_da_sdin, jb_ad_sdout;
-    logic ja_da_mclk, ja_da_lrck, ja_da_sclk, ja_ad_mclk, ja_ad_lrck, ja_ad_sclk;
+    logic jc_da_sdin, jc_ad_sdout;
     logic jb_da_mclk, jb_da_lrck, jb_da_sclk, jb_ad_mclk, jb_ad_lrck, jb_ad_sclk;
+    logic jc_da_mclk, jc_da_lrck, jc_da_sclk, jc_ad_mclk, jc_ad_lrck, jc_ad_sclk;
 
     phase3_top u_dut (
         .sysclk (sysclk),
-        .ja_da_mclk(ja_da_mclk), .ja_da_lrck(ja_da_lrck), .ja_da_sclk(ja_da_sclk), .ja_da_sdin(ja_da_sdin),
-        .ja_ad_mclk(ja_ad_mclk), .ja_ad_lrck(ja_ad_lrck), .ja_ad_sclk(ja_ad_sclk), .ja_ad_sdout(ja_ad_sdout),
         .jb_da_mclk(jb_da_mclk), .jb_da_lrck(jb_da_lrck), .jb_da_sclk(jb_da_sclk), .jb_da_sdin(jb_da_sdin),
-        .jb_ad_mclk(jb_ad_mclk), .jb_ad_lrck(jb_ad_lrck), .jb_ad_sclk(jb_ad_sclk), .jb_ad_sdout(jb_ad_sdout)
+        .jb_ad_mclk(jb_ad_mclk), .jb_ad_lrck(jb_ad_lrck), .jb_ad_sclk(jb_ad_sclk), .jb_ad_sdout(jb_ad_sdout),
+        .jc_da_mclk(jc_da_mclk), .jc_da_lrck(jc_da_lrck), .jc_da_sclk(jc_da_sclk), .jc_da_sdin(jc_da_sdin),
+        .jc_ad_mclk(jc_ad_mclk), .jc_ad_lrck(jc_ad_lrck), .jc_ad_sclk(jc_ad_sclk), .jc_ad_sdout(jc_ad_sdout)
     );
 
     // Tap the DUT's generated clocks (what the real converters run on).
     wire mclk = u_dut.mclk;
-    wire sclk = ja_ad_sclk;
-    wire lrck = ja_ad_lrck;
+    wire sclk = jb_ad_sclk;
+    wire lrck = jb_ad_lrck;
 
     // Fixture reset: released once the stubbed MMCM has locked.
     logic fix_rst_n = 0;
 
     // ----- Source "ADCs": TB drives PCM, these serialize into the DUT -----
-    logic [SW-1:0] src_ja_l, src_ja_r, src_jb_l, src_jb_r;
+    logic [SW-1:0] src_jb_l, src_jb_r, src_jc_l, src_jc_r;
 
-    i2s_transmitter #(.DATA_WIDTH(SW)) src_ja (
-        .mclk (mclk), .rst_n (fix_rst_n), .sclk_i (sclk), .lrck_i (lrck),
-        .left_data (src_ja_l), .right_data (src_ja_r), .sdata_o (ja_ad_sdout)
-    );
     i2s_transmitter #(.DATA_WIDTH(SW)) src_jb (
         .mclk (mclk), .rst_n (fix_rst_n), .sclk_i (sclk), .lrck_i (lrck),
         .left_data (src_jb_l), .right_data (src_jb_r), .sdata_o (jb_ad_sdout)
     );
+    i2s_transmitter #(.DATA_WIDTH(SW)) src_jc (
+        .mclk (mclk), .rst_n (fix_rst_n), .sclk_i (sclk), .lrck_i (lrck),
+        .left_data (src_jc_l), .right_data (src_jc_r), .sdata_o (jc_ad_sdout)
+    );
 
     // ----- Monitor "DACs": recover PCM from the DUT's outputs -----
-    logic [SW-1:0] mon_ja_l, mon_ja_r, mon_jb_l, mon_jb_r;
-    logic          mon_valid_ja, mon_valid_jb;
+    logic [SW-1:0] mon_jb_l, mon_jb_r, mon_jc_l, mon_jc_r;
+    logic          mon_valid_jb, mon_valid_jc;
 
-    i2s_receiver #(.DATA_WIDTH(SW)) mon_ja (
-        .mclk (mclk), .rst_n (fix_rst_n), .sclk_i (sclk), .lrck_i (lrck),
-        .sdata_i (ja_da_sdin),
-        .left_data (mon_ja_l), .right_data (mon_ja_r), .sample_valid (mon_valid_ja)
-    );
     i2s_receiver #(.DATA_WIDTH(SW)) mon_jb (
         .mclk (mclk), .rst_n (fix_rst_n), .sclk_i (sclk), .lrck_i (lrck),
         .sdata_i (jb_da_sdin),
         .left_data (mon_jb_l), .right_data (mon_jb_r), .sample_valid (mon_valid_jb)
+    );
+    i2s_receiver #(.DATA_WIDTH(SW)) mon_jc (
+        .mclk (mclk), .rst_n (fix_rst_n), .sclk_i (sclk), .lrck_i (lrck),
+        .sdata_i (jc_da_sdin),
+        .left_data (mon_jc_l), .right_data (mon_jc_r), .sample_valid (mon_valid_jc)
     );
 
     // ----- Reference model of phase3_top's routing -----
@@ -92,10 +92,10 @@ module tb_phase3_datapath;
 
     // out = routing(in). MUST mirror phase3_top's active MATRIX_GAINS.
     // Currently IDENTITY: each output = its own input at unity.
-    function automatic logic signed [SW-1:0] ref_ja_l(input longint al,ar,bl,br); return sat24(GU*al); endfunction
-    function automatic logic signed [SW-1:0] ref_ja_r(input longint al,ar,bl,br); return sat24(GU*ar); endfunction
-    function automatic logic signed [SW-1:0] ref_jb_l(input longint al,ar,bl,br); return sat24(GU*bl); endfunction
-    function automatic logic signed [SW-1:0] ref_jb_r(input longint al,ar,bl,br); return sat24(GU*br); endfunction
+    function automatic logic signed [SW-1:0] ref_jb_l(input longint al,ar,bl,br); return sat24(GU*al); endfunction
+    function automatic logic signed [SW-1:0] ref_jb_r(input longint al,ar,bl,br); return sat24(GU*ar); endfunction
+    function automatic logic signed [SW-1:0] ref_jc_l(input longint al,ar,bl,br); return sat24(GU*bl); endfunction
+    function automatic logic signed [SW-1:0] ref_jc_r(input longint al,ar,bl,br); return sat24(GU*br); endfunction
 
     int errors = 0;
 
@@ -116,23 +116,23 @@ module tb_phase3_datapath;
                                    input logic [SW-1:0] al, input logic [SW-1:0] ar,
                                    input logic [SW-1:0] bl, input logic [SW-1:0] br);
         // Drive the sources and hold steady.
-        src_ja_l = al; src_ja_r = ar; src_jb_l = bl; src_jb_r = br;
+        src_jb_l = al; src_jb_r = ar; src_jc_l = bl; src_jc_r = br;
         // Let the full pipeline settle (src->rx->matrix->tx->mon).
-        repeat (10) @(posedge mon_valid_ja);
+        repeat (10) @(posedge mon_valid_jb);
         // Sample one clean frame.
-        @(posedge mon_valid_ja);
+        @(posedge mon_valid_jb);
         #1;
         $display("  %s: in = [%06h %06h %06h %06h]", label, al, ar, bl, br);
-        check1("JA_L", mon_ja_l, ref_ja_l(s24(al),s24(ar),s24(bl),s24(br)));
-        check1("JA_R", mon_ja_r, ref_ja_r(s24(al),s24(ar),s24(bl),s24(br)));
         check1("JB_L", mon_jb_l, ref_jb_l(s24(al),s24(ar),s24(bl),s24(br)));
         check1("JB_R", mon_jb_r, ref_jb_r(s24(al),s24(ar),s24(bl),s24(br)));
+        check1("JC_L", mon_jc_l, ref_jc_l(s24(al),s24(ar),s24(bl),s24(br)));
+        check1("JC_R", mon_jc_r, ref_jc_r(s24(al),s24(ar),s24(bl),s24(br)));
     endtask
 
     initial begin
         $display("");
         $display("=== tb_phase3_datapath ===");
-        src_ja_l = 0; src_ja_r = 0; src_jb_l = 0; src_jb_r = 0;
+        src_jb_l = 0; src_jb_r = 0; src_jc_l = 0; src_jc_r = 0;
 
         // Wait for the stubbed MMCM to lock, then release the fixture reset.
         wait (u_dut.mmcm_locked === 1'b1);
@@ -142,11 +142,11 @@ module tb_phase3_datapath;
 
         // Distinct values so any channel swap or mis-route is obvious.
         apply_and_check("distinct", 24'h111111, 24'h222222, 24'h333333, 24'h444444);
-        // Mix check: JB_L out should be 0.5*(JA_L + JB_L).
+        // Mix check: JC_L out should be 0.5*(JB_L + JC_L).
         apply_and_check("mix",      24'h400000, 24'h000000, 24'h200000, 24'h000000);
-        // Only JB_R driven: should appear only on JB_R out.
-        apply_and_check("jb_r_only",24'h000000, 24'h000000, 24'h000000, 24'h123456);
-        // Negative sample through the cross route (JB_L -> JA_R).
+        // Only JC_R driven: should appear only on JC_R out.
+        apply_and_check("jc_r_only",24'h000000, 24'h000000, 24'h000000, 24'h123456);
+        // Negative sample through the cross route (JC_L -> JB_R).
         apply_and_check("neg",      24'h000000, 24'h000000, 24'hFF0000, 24'h000000);
 
         $display("");
