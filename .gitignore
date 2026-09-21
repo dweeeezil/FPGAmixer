@@ -12,3 +12,9 @@ build_sim/
 
 # ---- macOS ----
 .DS_Store
+
+# ---- Local-only secrets (never commit) ----
+buildhost.local.md
+
+# ---- Generated System Device Tree (sdtgen output, see docs/setup_edf_hyperv_vm.md) ----
+build/
