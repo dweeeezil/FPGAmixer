@@ -72,7 +72,7 @@ This was the crux of "where the pain begins," and it's the reason for the migrat
 
 Revised options:
 
-| Option | What it means | Verdict |
+| Option | What it means | Verdict on Genesys ZU3EG |
 |---|---|---|
 | **A. Terminate gPTP on the ZU-3EG's own PS GEM** | `linuxptp` (ptp4l) against the Cadence GEM driver's hardware timestamping, over the on-board DP83867CR | **Recommended for v1** — this is the capability the board was chosen for; no extra hardware |
 | B. PL-fabric MAC + 1588 timer (AXI Ethernet Subsystem) | Hardware timestamping in the PL instead of the PS | Only if you outgrow the PS GEM (e.g. want PTP on a second, PL-routed link); not needed for v1 |
@@ -95,7 +95,7 @@ Clock-domain note either way: a USB interface (or a USB host driving us as a dev
 
 ### Decision 4 — Control protocol
 
-No changes recommended here — TCP OSC with echo-confirmation, optional UDP receive-only path, and a JSON-driven parameter store that all DSP/matrix stages read from is a solid design as specified. The main implication for sequencing: build the parameter store once, early, and have every stage (crosspoints, DSP) read from it — that's what makes persistence "just work" for everything added later instead of needing its own save/restore logic per feature.
+No changes recommended here — TCP OSC with echo-confirmation, optional UDP receive-only path, and a JSON-driven parameter store that all DSP/matrix stages read from is a solid design as specified. The main implication for sequencing: build the parameter store once, and have every stage (crosspoints, DSP, and now AVB stream connections) read from it — that's what makes persistence "just work" for everything, including network routing, instead of needing its own save/restore logic per feature.
 
 ---
 
