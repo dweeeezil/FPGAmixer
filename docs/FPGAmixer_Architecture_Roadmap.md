@@ -68,7 +68,9 @@ This was the crux of "where the pain begins," and it's the reason for the migrat
 
 **On the old Arty Z7-20 (Zynq-7000):** the GEM's 1588 timestamp capture register is *non-latching* — a new PTP event packet overwrites it before software can reliably read it, so there was no dependable way to associate a timestamp with the packet that produced it. AMD's own driver docs state there is effectively no usable 1588/PTP support on Zynq-7000 for this reason, and it's documented to fail specifically under normal gPTP traffic (consecutive event packets, short sync intervals). EMIO didn't help — it only re-routes the same non-latching PS peripheral's signals.
 
-**On the Genesys ZU-3EG (Zynq UltraScale+ MPSoC):** this is fixed in silicon. The UltraScale+ GEM has real hardware timestamp support suitable for 802.1AS/1588. On this board the Gigabit Ethernet path is a **TI DP83867CR PHY → RGMII → PS GEM** (MIO Bank 501, 1.8 V), which is a standard, well-supported PetaLinux/`linuxptp` configuration.
+**On the Genesys ZU-3EG (Zynq UltraScale+ MPSoC):** this is fixed in silicon. The UltraScale+ GEM has real hardware timestamp support suitable for 802.1AS/1588. On this board the Gigabit Ethernet path is a **TI DP83867CR PHY → RGMII → PS GEM0** (MIO 26–37, MDIO on MIO 76–77, per Digilent's board preset; earlier notes here said GEM3, which was wrong), which is a standard, well-supported PetaLinux/`linuxptp` configuration.
+
+**One trap, found and handled in Phase 4 (2026-09-22):** Digilent's board preset leaves the GEM time-stamp unit **off** (`PSU__ENET0__TSU__ENABLE = 0`, no `GEM_TSU` clock configured). The macb driver falls back to `pclk`'s rate when the device tree has no `tsu_clk`, so PTP would have come up running at the wrong rate instead of failing visibly. The PS config now enables it (IOPLL / 250 MHz), verified through the XSA and into the generated device tree. See `setup_edf_hyperv_vm.md` §8.
 
 Revised options:
 
@@ -109,9 +111,9 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 | 1 | I2S loopback | Vivado-only, one Pmod in → one Pmod out, no reformatting | Audio passes through unmodified |
 | 2 | I2S ↔ PCM conversion | i2s rx → PCM → i2s tx, still loopback | Same audio, now through PCM in the middle |
 | 3 | Static PCM matrix | N-in/N-out matrix, crosspoints fixed at compile time | Can route any input to any output by rebuilding |
-| **3.5** | **ZU-3EG re-bring-up** | Rebuild Phases 1–3 on the new part/board: 25 MHz PL clock → 12.288 MHz MMCM, Pmod pins on JB/JC, re-run STA (codec timing carries over unchanged), re-verify in silicon | Same static matrix, now proven on the ZU-3EG hardware |
+| **3.5** | **ZU-3EG re-bring-up** ✅ *done 2026-09-21* | Rebuild Phases 1–3 on the new part/board: 25 MHz PL clock → 12.288 MHz MMCM, Pmod pins on JB/JC, re-run STA (codec timing carries over unchanged), re-verify in silicon | Same static matrix, now proven on the ZU-3EG hardware. **Met:** audio loops back correctly; WNS +2.421 ns (RX sampling), WHS +0.034 ns, 0 failing endpoints |
 | — | **Checkpoint** | You have a working (if inflexible) hardware router on the target board. Confirm it in silicon before adding SoC complexity. | |
-| 4 | PetaLinux bring-up | Boot Linux on the PS (now aarch64 quad A53, not armv7); Ethernet up on the PS GEM | Stable boot, reachable over UART/network |
+| 4 | EDF/Yocto bring-up *(built 2026-09-22, boot pending)* | Boot Linux on the PS (now aarch64 quad A53, not armv7); Ethernet up on the PS GEM0. PS block design → XSA → SDT → machine conf → image: all done and clean | Stable boot, reachable over UART/network |
 | 5 | Dynamic control | UDP OSC (write-to-memory), then TCP OSC server with echo-confirm | Crosspoints changeable live from the Mac app |
 | 6 | Parameter persistence | Save-on-change, auto-load on boot, single param store used everywhere | Power-cycle survives with routing intact |
 | — | **Checkpoint** | A complete, useful 4-in/4-out analog matrix mixer with saved state, controllable from the macOS app — a legitimate v1 on its own. | |
@@ -127,6 +129,7 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 
 - **On-board gPTP maturity spike** — "the UltraScale+ GEM supports hardware timestamping" is a silicon fact, but stand up `ptp4l` against a known-good gPTP peer (the RPi5 + I350 is ideal for this) and confirm sync quality before Phase 9 depends on it.
 - **12.288 MHz from a 25 MHz reference** — the ZU-3EG PL clock is 25 MHz (from the DP83867CR PHY), not the Arty's 125 MHz. 12.288 MHz is not an integer ratio of 25 MHz, so the MMCM uses a fractional solution; check the generated `clk_wiz_audio` summary for the actual output frequency and jitter, and confirm it's within codec tolerance. (A cleaner alternative is to source the audio clock from a PS PLL / fabric clock — worth considering during Phase 4.)
+  - **Measured on 2026-09-21:** the MMCM uses 25 MHz × 40.625 ÷ 82.625, which gives **12.2919 MHz**. That's about **+324 ppm** high, so Fs ≈ 48.016 kHz. The MMCM's jitter figure is 409 ps pk-pk. The codecs are fine with this, and analog-only routing doesn't care because every I2S port shares the one clock. **It does matter for Phases 8–9.** AVB (and any AES67/USB peer) expects 48.000 kHz locked to the network's media clock. A free-running +324 ppm local clock would slip about 16 samples per second against a network stream. Phase 9 therefore needs one of two things: a media clock that can be steered from the gPTP/1722 timing, or an asynchronous sample-rate converter at the network boundary. Decide this with the Phase 4 audio-clock choice. A fixed PS-derived clock alone doesn't solve it.
 - **Codec timing carries over, but re-run STA** — the ODDR-forwarding + multicycle constraints are board-independent (same 12.288 MHz mclk / ÷4 sclk tree) and were copied verbatim into the ZU-3EG XDC. But routing and IO characteristics differ on UltraScale+, so re-read the RX-sampling WNS razor (the intentional ~+2 ns check) after the first ZU-3EG implementation, don't assume the Arty margins.
 - **Pmod remap** — the ZU-3EG's **Pmod JA is the analog XADC Pmod** (LVCMOS18, RC-filtered), unusable for the 3.3 V I2S2, so the two modules moved to the digital Pmods **JB and JC** (JD spare). The RTL ports were renamed to match the silkscreen: `jb_*` (module #1) and `jc_*` (module #2).
 - **10G is not on the 3EG** — the 10G SFP+ is a 5EV-only feature; the 3EG's Ethernet is Gigabit (10/100/1000). Gigabit is ample for AVB, but note it if bandwidth assumptions from earlier notes creep back in.
@@ -135,7 +138,8 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 
 ## 5. Immediate next steps
 
-1. Finish the board/tooling migration (part, board_part, clocking, pins — in progress; `scripts/create_project.tcl` + `constraints/*_genesys_zu.xdc`).
-2. Phase 3.5: regenerate the project on the ZU-3EG, resynthesize/implement, and re-verify the static matrix in silicon. Read the post-route methodology + RX-sampling WNS before trusting the build.
-3. Bench spike: `ptp4l` + hardware timestamping on the ZU-3EG's PS GEM against a known-good gPTP peer, before Phase 9 leans on it.
-4. Confirm the audio-clock source decision (fractional MMCM off the 25 MHz PL clock vs. a PS-sourced clock) during Phase 4.
+1. ~~Finish the board/tooling migration~~ Done.
+2. ~~Phase 3.5: re-verify the static matrix in silicon~~ Done 2026-09-21. The EDF build host is ready too (`buildhost_status_2026-09-21.md`).
+3. ~~Phase 4 build: block design → XSA → `sdtgen` → machine conf → image~~ Done 2026-09-22 (`phase4_status_2026-09-22.md`). **Next: write the SD card and boot it** — UART login + `eth0`, then `ethtool -T eth0` to confirm hardware timestamping, then `ptp4l` against the Pi 5 + I350.
+4. Bench spike: `ptp4l` + hardware timestamping on the ZU-3EG's PS GEM0 against a known-good gPTP peer, before Phase 9 leans on it. The image already ships `linuxptp` and `ethtool`, so this can run on the first boot.
+5. Confirm the audio-clock source decision. Phase 4 kept the fractional MMCM off the 25 MHz PL clock (+324 ppm, measured). A PS-sourced fixed clock would not fix that on its own — see the 12.288 MHz risk item above, which now frames this as "steerable media clock vs. ASRC at the network boundary" for Phase 9.

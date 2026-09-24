@@ -17,6 +17,8 @@
 Why a VM instead of WSL: EDF's release notes say plainly that Windows, including any Linux distribution running under WSL, is **not supported** as a build host. EDF's top-priority validated host is Ubuntu 24.04.3.
 
 > **Validated on 2026-09-21:** Ubuntu Server **24.04.5** (kernel 6.8.0-139), 12 vCPU / 32 GB / 400 GB VHDX. EDF tag **`amd-edf-rel-v26.06.1`**. Smoke build `MACHINE=amd-cortexa53-mali-common bitbake edf-linux-disk-image` passed in **43 min 25 s** with 0 warnings, and 96% of the sstate came from AMD's mirror. The build tree was 61 GB afterwards (downloads 32 GB, sstate 6.5 GB, tmp 22 GB). The VM never swapped. Details: `buildhost_status_2026-09-21.md`.
+>
+> **Genesys ZU-3EG build, 2026-09-22:** the real thing, end to end — Phase 4 XSA → `sdtgen` → `gen-machine-conf` → `bitbake edf-linux-disk-image xilinx-bootbin`. 15,526 tasks, all succeeded, **13 min** (71% sstate match, so the smoke build's cache paid for itself). Outputs: `BOOT-genesys-zu3eg.bin` 7.3 MB, rootfs `.wic` 4.3 GB. Details: `phase4_status_2026-09-22.md`.
 
 ---
 
@@ -132,7 +134,11 @@ Then copy the `sdt` directory into the VM:
 scp -r <repo>\build\sdt <user>@<vm-ip>:~/edf/sdt       # <repo> = your FPGAmixer checkout
 ```
 
-If the device-tree compiler later complains about stray `\r` characters, run `find ~/edf/sdt -type f -name '*.dts*' -exec dos2unix {} +`.
+**Run `dos2unix` every time, not just when something complains.** `sdtgen` on Windows writes CRLF line endings (confirmed 2026-09-22), so do this before `gen-machine-conf`:
+
+```bash
+find ~/edf/sdt -type f -name '*.dts*' -exec dos2unix -q {} +
+```
 
 **Option B: install Vivado 2026.1 in the VM** (ZynqMP device support only) and run `sdtgen` there. It costs tens of GB of disk and gives you a second install to keep in sync. Use it only if Option A isn't available on Windows.
 
@@ -145,26 +151,37 @@ cd ~/edf/2026.1
 source edf-init-build-env          # creates ./build, generates local.conf + bblayers.conf, cd's into build/
                                    # source it from bash; its header says it isn't dash-safe with arguments
 
+cd build
 gen-machine-conf parse-sdt --hw-description ~/edf/sdt \
-  -c conf -l conf/local.conf --machine-name genesys-zu3eg
+  -c conf --machine-name genesys-zu3eg
 ```
 
-This writes `conf/machine/genesys-zu3eg.conf` and wires it into `local.conf`. Check that `MACHINE = "genesys-zu3eg"` appears in `conf/local.conf`.
+Two things the earlier draft of this spec got wrong, both found by running it (2026-09-22, gen-machine-conf v2026.1):
 
-Also add to `conf/local.conf`:
+- **There is no `-l` option.** The config directory is given with `-c <config_dir>` and nothing else; `-l conf/local.conf` fails.
+- **It does not edit `local.conf` for you.** It *prints* the lines to add and leaves the file alone, so `MACHINE` stays unset unless you add it yourself.
+
+This writes `conf/machine/genesys-zu3eg.conf` (check it: `SERIAL_CONSOLES ?= "115200;ttyPS0"` should match UART0). Then add to `conf/local.conf` yourself:
 
 ```
+MACHINE = "genesys-zu3eg"
+SKIP_META_SECURITY_SANITY_CHECK = "1"
+
 BB_NUMBER_THREADS = "12"   # ≈ RAM_GB / 2.5 is safe; raise it if the VM never swaps
 PARALLEL_MAKE     = "-j 12"
 INHERIT += "rm_work"       # deletes per-recipe work dirs after they build; saves ~100 GB
+
+# gPTP bring-up tools, so `ethtool -T eth0` and ptp4l can run on the first boot
+IMAGE_INSTALL:append = " linuxptp ethtool"
 ```
 
-Build, inside tmux:
+Build, inside tmux (one bitbake call builds both):
 
 ```bash
-bitbake edf-linux-disk-image
-bitbake xilinx-bootbin      # BOOT.BIN (FSBL + PMUFW + ATF + U-Boot + your bitstream)
+bitbake edf-linux-disk-image xilinx-bootbin   # BOOT.BIN = FSBL + PMUFW + ATF + U-Boot + bitstream
 ```
+
+**Expect one warning, and ignore it:** "This image is not supported on genesys-zu3eg, only machine(s) amd-cortexa53-common, amd-cortexa53-mali-common, … are supported." It comes from `meta-amd-edf/classes-global/amd-edf-check-image.bbclass`, whose comment says it warns when you build an image "intended for a 'common' build". It means AMD validates its reference images only on their generic machines. It is not an error, and a custom board machine always trips it.
 
 The EDF `local.conf` template already points `SOURCE_MIRROR_URL` and `SSTATE_MIRRORS` at `edf.amd.com/sswreleases/amd-edf/26.06/`. Most tasks therefore restore from AMD's prebuilt sstate instead of compiling. The stock-machine smoke build pulled 96% of its tasks from the mirror and finished in about 45 min, with about 32 GB of downloads. A custom machine like `genesys-zu3eg` will match less of the mirror, because its kernel, device tree and boot firmware are machine-specific, but the shared rootfs packages still restore from it. Rebuilds are much faster after that.
 
@@ -175,14 +192,31 @@ Outputs are in `build/tmp/deploy/images/genesys-zu3eg/` (roughly: a `.wic` image
 ## 7. SD card
 
 1. Copy the `.wic` image to Windows (`scp <user>@<vm-ip>:~/edf/2026.1/build/tmp/deploy/images/genesys-zu3eg/*.wic .`) and write it with balenaEtcher or Rufus.
-2. **On ZynqMP, copy `BOOT.BIN` onto the FAT boot partition by hand.** Unlike Versal, the ZynqMP `.wic` doesn't include it.
+2. **Check whether `BOOT.BIN` is already on the card — with EDF 26.06.1 it is.** The generated `.wic` carries it in the FAT boot partition, byte-identical to the standalone `BOOT-genesys-zu3eg.bin` (verified 2026-09-24 by md5). Older ZynqMP flows required copying it by hand; this one does not. If a future image lacks it, copy `BOOT-genesys-zu3eg.bin` to the FAT partition renamed to exactly `BOOT.BIN`.
 3. Set the Genesys ZU boot-mode switch to SD. Connect PuTTY or Tera Term to the board's FTDI COM port at 115200 8N1.
 
 **Phase 4 exit:** the U-Boot → kernel → login prompt appears on the UART console, `eth0` gets an address, and the Mac can `ping` and `ssh` into the board.
 
 ## 8. Vivado-side prerequisite (differs from the Arty Stage A spec)
 
-On ZynqMP, the PS block has to be the **Zynq UltraScale+ MPSoC** IP with **Apply Board Preset** from the Digilent Genesys ZU board files. The board preset provides the board-specific **DDR4** settings, plus UART, SD, GEM3/RGMII, and USB. The Arty-era approach of turning off every PS interface doesn't carry over: without DDR, UART, and SD configured, there's nothing to boot into. Export as before with `write_hw_platform -fixed -include_bit`.
+On ZynqMP, the PS block has to be the **Zynq UltraScale+ MPSoC** IP with **Apply Board Preset** from the Digilent Genesys ZU board files. The board preset provides the board-specific **DDR4** settings, plus UART, SD, GEM0/RGMII, and USB. The Arty-era approach of turning off every PS interface doesn't carry over: without DDR, UART, and SD configured, there's nothing to boot into. Export as before with `write_hw_platform -fixed -include_bit`.
+
+`scripts/create_project.tcl` does all of this (`set current_phase "phase4"`). What it does, and why:
+
+**Install the board files first.** Without them there is no Apply Board Preset, and the DDR4 part and MIO map would have to be typed in by hand. They are in the Vivado XHub store as `digilentinc.com:xilinx_board_store:gzu_3eg` (1.1 installed 2026-09-22, board rev D.0). Installing is not enough on its own: `get_board_parts` stays empty until `board.repoPaths` points at the store's `boards/` directory, which the script now sets.
+
+**What the preset configures** (read from Digilent's `preset.xml`, not from memory): DDR4-1866L 64-bit; UART0 on MIO 18–19; SD1 on MIO 39–51 with card detect; USB0/USB1; Ethernet on **ENET0 / GEM0**, MIO 26–37, MDIO on MIO 76–77. Earlier drafts of this doc said GEM3. That was wrong.
+
+**Enable the GEM0 TSU by hand — the preset leaves it off.** `PSU__ENET0__TSU__ENABLE = 1`; Vivado then derives GEM_TSU = IOPLL / 250 MHz. Why it matters, from the driver source (`linux-xlnx`, `drivers/net/ethernet/cadence/`):
+
+- `macb_main.c: gem_get_tsu_rate()` reads the device-tree clock `tsu_clk`, and **silently falls back to `pclk`'s rate if it is missing**.
+- `macb_ptp.c: gem_ptp_init_timer()` turns that rate into the PTP timer increment, so a wrong rate means a PTP clock that runs at the wrong speed rather than one that visibly fails.
+- `zynqmp.dtsi` binds gem0's `tsu_clk` to the PS `GEM_TSU` clock, whose frequency comes from this PS configuration.
+- 250 MHz divides 1e9 exactly, giving a 4 ns increment with no sub-ns remainder.
+
+Verify it survives into the SDT: `grep enet-tsu-clk-freq-hz ~/edf/sdt/pcw.dtsi` should print `<250000000>`.
+
+**Do not wrap the RTL top to add the PS.** `constraints/phase3_genesys_zu.xdc` names ODDR instances by absolute path (`u_fwd_*/u_oddr/C`). Adding a level of hierarchy above `phase3_top` invalidates 25 constraints, which Vivado reports only as critical warnings during XDC parsing, and implementation then fails in `place_design` with "IO Clock Placer failed" (tried 2026-09-22). The PS is instead instantiated **inside** `phase3_top` under `` `ifdef INCLUDE_PS ``. The BD wrapper has no ports — on ZynqMP the PS's DDR and MIO never enter the fabric — so there is nothing to connect and no constraints to add.
 
 ## 9. Board-specific snags to expect (no Digilent EDF BSP exists)
 

@@ -200,4 +200,26 @@ module phase3_top (
     oddr_out u_fwd_jb_da_sdin (.clk(mclk), .d1(jb_sdin_int), .d2(jb_sdin_int), .q(jb_da_sdin));
     oddr_out u_fwd_jc_da_sdin (.clk(mclk), .d1(jc_sdin_int), .d2(jc_sdin_int), .q(jc_da_sdin));
 
+    // ----- Phase 4: the PS, alongside the audio datapath -----
+    // Instantiated HERE, inside the top module, rather than from a wrapper
+    // above it. The XDC names these instances by absolute path
+    // (u_fwd_*/u_oddr/C, see the note at the ODDR forwarders above), so adding
+    // a level of hierarchy above phase3_top silently invalidates 25 timing
+    // constraints and implementation then fails in IO clock placement
+    // (observed 2026-09-22).
+    //
+    // ps_sys_wrapper has no ports: on ZynqMP the PS's DDR and MIO are internal
+    // to the PS8 block, so nothing here connects to the fabric and no extra
+    // constraints are needed. Its purpose is to put the PS configuration into
+    // the design, which is what makes the exported XSA usable for EDF/Yocto.
+    // Phase 5 will connect it (M_AXI_HPM0_LPD, clocked from pl_clk0).
+    //
+    // Guarded by a define, not a parameter, so the text is removed by the
+    // preprocessor: phase1-3 projects and the Icarus sim never reference a
+    // module that only exists once scripts/create_project.tcl builds the BD.
+    // create_project.tcl sets INCLUDE_PS for phase4 onwards.
+`ifdef INCLUDE_PS
+    ps_sys_wrapper u_ps ();
+`endif
+
 endmodule

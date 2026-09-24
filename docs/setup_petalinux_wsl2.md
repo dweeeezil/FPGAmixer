@@ -115,7 +115,7 @@ plnx && petalinux-util --help >/dev/null && echo OK
 
 ## 6. Smoke test: project from the XSA
 
-**Vivado-side prerequisite (not covered by the Arty Stage A spec):** on ZynqMP, the PS block has to be the *Zynq UltraScale+ MPSoC* IP with **Apply Board Preset** from the Digilent Genesys ZU board files. The board preset carries the board-specific **DDR4** settings, plus UART, SD, GEM3/RGMII, and USB. The Arty-era approach of turning off every PS interface doesn't carry over: without DDR, UART, and SD configured, there's nothing to boot into. Export with `write_hw_platform -fixed -include_bit` as before.
+**Vivado-side prerequisite (not covered by the Arty Stage A spec):** on ZynqMP, the PS block has to be the *Zynq UltraScale+ MPSoC* IP with **Apply Board Preset** from the Digilent Genesys ZU board files. The board preset carries the board-specific **DDR4** settings, plus UART, SD, GEM0/RGMII, and USB. The Arty-era approach of turning off every PS interface doesn't carry over: without DDR, UART, and SD configured, there's nothing to boot into. Export with `write_hw_platform -fixed -include_bit` as before.
 
 ```bash
 cp /mnt/c/Users/<you>/Documents/FPGAmixer/<path-to>.xsa ~/xsa/
