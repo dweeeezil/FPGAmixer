@@ -193,6 +193,18 @@ if {$include_ps} {
 
     set_property -dict [list CONFIG.PSU__ENET0__TSU__ENABLE {1}] $ps
 
+    # The preset also turns on PSU_DYNAMIC_DDR_CONFIG_EN. That defines
+    # XPAR_DYNAMIC_DDR_ENABLED, which makes psu_init() skip the static DDR init
+    # and has FSBL call XFsbl_DdrInit() instead (embeddedsw zynqmp_fsbl,
+    # xfsbl_initialization.c). XFsbl_IicReadSpdEeprom() is hard-wired to the
+    # ZCU102/106 topology: I2C1, a TCA9548 mux at 0x75, channel 0x08, then the
+    # SODIMM SPD. On this board it fails, FSBL returns XFSBL_FAILURE (0x3FFFFFFF)
+    # from stage 1, falls back (multiboot++ and a soft reset), and the ROM ends
+    # with CSU_BR_ERROR 0x4B -- a silent board that looks like a ROM failure.
+    # The static values the preset generates are proven: psu_init.tcl brings
+    # DDR up over JTAG every time.
+    set_property -dict [list CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN {0}] $ps
+
     # The preset enables M_AXI_HPM0_LPD and S_AXI_HPC0_FPD. Their aclk pins are
     # unconnected out of the box and validate_bd_design fails on that, so clock
     # them from pl_clk0 (100 MHz). Nothing uses these ports until Phase 5 wires

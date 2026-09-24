@@ -1,14 +1,15 @@
 # Claude Code prompt: get the Genesys ZU-3EG to boot Linux from SD
 
-**Context for you (Claude Code):** You're on the maintainer's Windows 11 machine in the FPGAmixer repo. Phase 4 is built — PS block design, XSA, system device tree, machine config, EDF/Yocto image, flashed SD card — but the board stays silent and the APU never leaves reset. Read these before touching anything:
+**Context for you (Claude Code):** You're on the maintainer's Windows 11 machine in the FPGAmixer repo. Phase 4 is built — PS block design, XSA, system device tree, machine config, EDF/Yocto image, flashed SD card. FSBL boots from SD and **fails loading the PL bitstream** (`XFSBL_ERROR_BITSTREAM_LOAD_FAIL`, partition 4, error `0x37`), so ATF and U-Boot never run. Read these before touching anything:
 
 - `docs/handoff_2026-09-24_phase4_sd_boot.md` — **read this first.** What's verified good, what's ruled out, the evidence, and the environment. Don't re-derive what's already in it.
+- `docs/logs/fsbl-bitstream-fail_2026-09-24.log` — the captured console output of the failure.
 - `docs/phase4_status_2026-09-22.md` — what was built and how.
 - `docs/setup_edf_hyperv_vm.md` — the toolchain spec (§5–§9 matter here).
 
 ## Goal
 
-Find out why FSBL doesn't run, fix it, and get to the **Phase 4 exit criteria**: a login prompt on the UART console with `eth0` up. Then run `ethtool -T eth0` and confirm hardware timestamping, which is the Phase 9 (AVB/gPTP) prerequisite the board was chosen for.
+Get past the bitstream failure and reach the **Phase 4 exit criteria**: a login prompt on the UART console with `eth0` up. Then run `ethtool -T eth0` and confirm hardware timestamping, which is the Phase 9 (AVB/gPTP) prerequisite the board was chosen for.
 
 ## Ground rules
 
@@ -22,28 +23,43 @@ Find out why FSBL doesn't run, fix it, and get to the **Phase 4 exit criteria**:
 
 ## Suggested order
 
-### 1. Make FSBL talk
+### 1. Get past the bitstream failure
 
-It's currently built silent, so we're blind. Find the EDF/meta-xilinx knob for FSBL debug output and rebuild `xilinx-bootbin` with it. Then reflash and capture the console.
+Rebuild `BOOT.BIN` without the PL partition: drop `bitstream` from `BIF_PARTITION_ATTR`
+(currently `fsbl pmufw bitstream arm-trusted-firmware device-tree u-boot-xlnx
+bootbin-version-header`). FSBL should then continue to ATF and U-Boot. Reflash and capture
+the console. The PL can be loaded from Linux later via fpga_manager, which is where Phase 5
+wants it anyway.
 
-**CHECKPOINT:** report what FSBL prints, or that it prints nothing at all — both are informative.
+**CHECKPOINT:** report how far the boot gets, with the console log.
 
-### 2. Bisect BOOT.BIN
+### 2. Reach the Phase 4 exit criteria
 
-Build it without the PL bitstream (drop `bitstream` from `BIF_PARTITION_ATTR`). The bitstream is a 5.5 MB partition and a plausible early-hang cause. If the board boots without it, that localises the fault.
+- Login prompt on the console, and `eth0` up with an address.
+- `ethtool -T eth0` — expect `hardware-transmit`, `hardware-receive`, `hardware-raw-clock`
+  and a PTP hardware clock index. If it reports software-only, dig in: the device tree was
+  verified to carry `gem0` with `tsu_clk` at 250 MHz.
+- `ptp4l` against the Pi 5 + I350 as a known-good gPTP peer.
+- Watch for the two predicted board snags (spec §9): DP83867 RGMII delay properties, and SD
+  `no-1-8-v`/`disable-wp`. Fixes belong in a `meta-fpgamixer` layer, not the generated DT.
 
-**CHECKPOINT:** report whether it boots, and what changed in the partition headers.
+**CHECKPOINT:** report boot success and the `ethtool -T` output.
 
-### 3. Known-good reference, if still stuck
+### 3. Then fix the bitstream path properly
 
-Digilent publish a Genesys ZU demo image. Booting theirs proves the board, card and reader are fine, and their FSBL/U-Boot could load *our* kernel to unblock Phase 4 while ours gets fixed. Ask the user before downloading anything.
+`0x37` is raised *after* "DMA transfer done" — the data moved, the PL did not come up. Note
+the same bitstream programs fine over JTAG (Phase 3.5 was verified that way), so the design
+is good and the fault is in the FSBL/bootgen path. Check from sources, not guesswork: which
+bitstream file bootgen was handed, the partition attributes (`0x26`) against what FSBL
+expects for a PL partition, and whether PS-PL isolation or PL power needs anything the board
+preset did not configure.
 
-### 4. Once it boots
+### 4. Secondary, unexplained
 
-- Confirm the login prompt and that `eth0` gets an address. That's Phase 4 done.
-- `ethtool -T eth0` — expect `hardware-transmit`, `hardware-receive`, `hardware-raw-clock` and a PTP hardware clock index. If it reports software-only, dig in: the device tree was verified to carry `gem0` with `tsu_clk` at 250 MHz.
-- Then `ptp4l` against the Pi 5 + I350 as a known-good gPTP peer.
-- Watch for the two predicted board snags (spec §9): the DP83867 RGMII delay properties and SD `no-1-8-v`/`disable-wp`. Fixes belong in a `meta-fpgamixer` layer, not in the generated device tree.
+For most of the previous session the board produced no console output at all after a
+power-cycle, with the APU reading `APU Reset` over JTAG; FSBL output only appeared later,
+after an `xsdb` probe. Don't assume a power-cycle alone always starts FSBL. If you see
+silence, that is this open question rather than a new bug.
 
 ## Useful facts
 
@@ -57,6 +73,8 @@ Digilent publish a Genesys ZU demo image. Booting theirs proves the board, card 
 
 Phases 5+ (OSC control, persistence, DSP, USB, AVB streaming), the `meta-fpgamixer` layer beyond device-tree fixes needed to boot, and any RTL change to the verified Phase 3.5 datapath.
 
-## Uncommitted work to be aware of
+## Repo state
 
-The branch `docs/phase3.5-verified` carries RTL, script and doc changes from the previous sessions (the PS instance in `phase3_top`, `create_project.tcl` phase4 mode, the JTAG scripts, and the Phase 3.5/4 docs). Check `git status` early and agree with the user on branch naming before committing.
+All of the above is committed on the branch `docs/phase3.5-verified` (unpushed as of
+2026-09-24). The branch name predates the Phase 4 work it now carries — agree a better name
+with the user before pushing.
