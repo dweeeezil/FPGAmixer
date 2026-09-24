@@ -49,12 +49,17 @@ implementation, generate bitstream, and program over JTAG.
 
 ## Current phase
 
-**Phase 3 was hardware-verified on the Arty Z7 (static 4-in/4-out PCM matrix,
-2026-08-18); the project is now migrating that same RTL to the Genesys ZU-3EG
-(Phase 3.5 — re-bring-up on the new silicon).** The Phase 3 noise bug (I2S TX
-pin-phase race) is fixed; see `docs/archive/bugfix_2026-08-14_phase3-noise.md`.
-Next: rebuild/re-verify on the ZU-3EG, then Phase 4 (PetaLinux bring-up) and OSC
-control per `docs/archive/FPGA Mixer OSC Standard.md`.
+**Phase 3.5 is hardware-verified on the Genesys ZU-3EG (static 4-in/4-out PCM
+matrix, 2026-09-21).** Audio loops back correctly on JB and JC. Post-route
+results: WNS +2.421 ns, which is the codec RX-sampling path (it was +1.908 ns on
+the Arty); WHS +0.034 ns; 0 failing endpoints; routing clean. The only
+methodology findings are the known TIMING-18 advisories and one CLKC-56 advisory.
+**Phase 4 is built and awaiting its first boot:** the PS block design, XSA,
+system device tree, machine config, and a full EDF/Yocto image for the board all
+build clean (`docs/phase4_status_2026-09-22.md`). What's left is writing the SD
+card and confirming a login prompt on the UART with `eth0` up.
+Next after that: Phase 5, OSC control per
+`docs/archive/FPGA Mixer OSC Standard.md`.
 
 Command-line simulation: `make -f scripts/sim.mk all` — seven testbenches, all
 expected to pass. (The RTL and testbenches are board-independent.)

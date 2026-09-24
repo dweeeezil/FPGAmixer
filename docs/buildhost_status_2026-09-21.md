@@ -29,7 +29,7 @@ Phase 4 prep. The Hyper-V build VM is set up and has proven it can build a ZynqM
 
 ## Remaining before the first Genesys ZU build
 
-1. **Phase 4 PS block design in Vivado.** Add the Zynq UltraScale+ MPSoC IP and run **Apply Board Preset**, which brings in the Genesys ZU board files: DDR4, UART, SD, GEM3/RGMII and USB. Spec §8 has the details.
+1. **Phase 4 PS block design in Vivado.** Add the Zynq UltraScale+ MPSoC IP and run **Apply Board Preset**, which brings in the Genesys ZU board files: DDR4, UART, SD, GEM0/RGMII and USB. Spec §8 has the details.
 2. **Export the XSA:** `write_hw_platform -fixed -include_bit`.
 3. **Run `sdtgen`** on Windows, then `scp` the SDT directory to `~/edf/sdt`. Spec §5 has the steps.
 4. **Generate the machine config:** `gen-machine-conf parse-sdt --hw-description ~/edf/sdt -c conf -l conf/local.conf --machine-name genesys-zu3eg`.

@@ -21,19 +21,42 @@ set proj_dir      "vivado_project"
 set part          "xczu3eg-sfvc784-1-e"
 set board_part    "digilentinc.com:gzu_3eg:part0:1.0"
 
-# NOTE (batch mode): Vivado in -mode batch may not see the Digilent board files
-# and will then fail on BOARD_PART. If so, set the board repo path before
-# sourcing this script (adjust the version/path to your install), e.g.:
-#   set_param board.repoPaths \
-#     "C:/Users/<you>/AppData/Roaming/Xilinx/Vivado/2026.1/xhub/board_store/xilinx_board_store"
-# GUI sessions with the board files installed do not need this.
+# NOTE (board files): board files installed from the XHub board store are NOT
+# picked up automatically -- get_board_parts returns nothing until
+# board.repoPaths points at the store's boards/ directory (verified 2026-09-22,
+# Vivado 2026.1). The block below sets it when that directory exists. Without a
+# board part there is no "Apply Board Preset", so phase4 cannot configure the PS.
+# To install the board files: Vivado XHub Store, or
+#   xhub::install [xhub::get_xitems -filter {NAME =~ *gzu_3eg*}]
+set xhub_boards \
+  "$::env(APPDATA)/Xilinx/Vivado/2026.1/xhub/board_store/xilinx_board_store/XilinxBoardStore/Vivado/2026.1/boards"
+if {[file isdirectory $xhub_boards]} {
+    set_param board.repoPaths $xhub_boards
+    puts "INFO: board.repoPaths -> $xhub_boards"
+}
 
 # ------ Phase selection -------------------------------------------------------
-# current_phase drives BOTH the synthesis top module and which XDC is used.
-set current_phase "phase3"
+# current_phase drives the synthesis top module, which XDC is used, and (phase4
+# onwards) whether the PS block design is built.
+set current_phase "phase4"
 set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
+
+# phase4 = the hardware-verified phase3 datapath + the PS, so it keeps BOTH
+# phase3_top and the Phase 3 XDC. The PS is instantiated inside phase3_top
+# under `ifdef INCLUDE_PS.
+#
+# Do NOT wrap phase3_top in a higher-level top to add the PS: the XDC names
+# instances by absolute path (u_fwd_*/u_oddr/C), so an extra hierarchy level
+# drops 25 constraints and implementation fails in IO clock placement. Tried
+# 2026-09-22; that is what the `ifdef exists to avoid.
+set include_ps 0
+if {$current_phase eq "phase4"} {
+    set include_ps 1
+    set synth_top "phase3_top"
+    set xdc_file  "constraints/phase3_genesys_zu.xdc"
+}
 
 # ------ Verify we're at the repo root ------
 foreach d {src/rtl src/sim constraints scripts} {
@@ -96,6 +119,14 @@ if {$bp ne ""} {
     puts "         '$part' alone. The build does not need it (pins from XDC,"
     puts "         Custom MMCM clock). To install it: Vivado XHub board store, or"
     puts "         set board.repoPaths to Digilent's vivado-boards/new/board_files."
+    if {$include_ps} {
+        puts "ERROR: phase '$current_phase' needs the board file: the PS is configured"
+        puts "       by Apply Board Preset (DDR4 part/timing + the MIO map for UART,"
+        puts "       SD, Ethernet and USB). Those values come from Digilent's"
+        puts "       preset.xml and must not be entered by hand. Install the board"
+        puts "       file, then re-run."
+        return
+    }
 }
 
 # ------ Add sources ------
@@ -131,6 +162,61 @@ set_property -dict [list \
 ] [get_ips clk_wiz_audio]
 
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
+
+# ------ PS block design (phase4+) --------------------------------------------
+# The BD holds ONE cell: the Zynq UltraScale+ PS. Everything board-specific in
+# it comes from Apply Board Preset (Digilent's preset.xml), never from values
+# typed in here. The preset provides DDR4 (DDR4_1866L, 64-bit), UART0 on
+# MIO18-19, SD1 on MIO39-51 with card detect, USB0/USB1, and Ethernet on
+# *ENET0/GEM0*, MIO26-37, MDIO on MIO76-77.
+#
+# GEM0 TSU (IEEE 1588 time stamp unit) is the one setting added on top of the
+# preset, which leaves it off. Why it's needed, from the driver source
+# (Xilinx linux-xlnx, drivers/net/ethernet/cadence/):
+#   - macb_main.c gem_get_tsu_rate() reads the "tsu_clk" clock from the device
+#     tree; if it is absent it silently falls back to pclk's rate.
+#   - macb_ptp.c gem_ptp_init_timer() turns that rate into the timer increment
+#     (ns + sub-ns per tick). A wrong rate => a PTP clock that runs at the wrong
+#     speed, which is far worse to debug than one that plainly doesn't work.
+#   - zynqmp.dtsi wires gem0's "tsu_clk" to the PS GEM_TSU clock, and that
+#     clock's frequency is programmed from THIS PS configuration.
+# Enabling it makes Vivado configure GEM_TSU_REF_CTRL = IOPLL / 250 MHz
+# (divisors 6/1). 250 MHz divides 1e9 exactly -> a whole-number 4 ns increment
+# with no sub-ns remainder. Phase 9 (gPTP/AVB) depends on this being right.
+if {$include_ps} {
+    set bd_name "ps_sys"
+    create_bd_design $bd_name
+    set ps [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == zynq_ultra_ps_e}] zynq_ultra_ps_e_0]
+    apply_bd_automation -rule xilinx.com:bd_rule:zynq_ultra_ps_e \
+        -config {apply_board_preset "1"} $ps
+
+    set_property -dict [list CONFIG.PSU__ENET0__TSU__ENABLE {1}] $ps
+
+    # The preset enables M_AXI_HPM0_LPD and S_AXI_HPC0_FPD. Their aclk pins are
+    # unconnected out of the box and validate_bd_design fails on that, so clock
+    # them from pl_clk0 (100 MHz). Nothing uses these ports until Phase 5 wires
+    # up OSC control; they are left enabled so that step needs no PS re-config
+    # (which would mean regenerating the XSA, the SDT and the machine config).
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] \
+                   [get_bd_pins zynq_ultra_ps_e_0/maxihpm0_lpd_aclk] \
+                   [get_bd_pins zynq_ultra_ps_e_0/saxihpc0_fpd_aclk]
+
+    puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
+    puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \
+(src [get_property CONFIG.PSU__CRL_APB__GEM_TSU_REF_CTRL__SRCSEL $ps], \
+[get_property CONFIG.PSU__CRL_APB__GEM_TSU_REF_CTRL__ACT_FREQMHZ $ps] MHz)"
+    puts "INFO: PS DDR          = [get_property CONFIG.PSU__DDRC__MEMORY_TYPE $ps] \
+[get_property CONFIG.PSU__DDRC__SPEED_BIN $ps]"
+
+    validate_bd_design
+    save_bd_design
+    add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
+
+    # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in phase3_top.
+    set_property verilog_define {INCLUDE_PS} [get_filesets sources_1]
+    puts "INFO: verilog_define INCLUDE_PS set -- phase3_top instantiates the PS"
+}
 
 # ------ Methodology gate ------
 # Fail implementation if report_methodology finds any Critical Warning
