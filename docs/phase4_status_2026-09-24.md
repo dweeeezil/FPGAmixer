@@ -75,7 +75,7 @@ Digilent's own PetaLinux dtsi (`Digilent/Genesys-ZU-OS`, branch `3eg/master`) ke
 ```
 MACHINE = "genesys-zu3eg"
 SKIP_META_SECURITY_SANITY_CHECK = "1"
-IMAGE_INSTALL:append = " linuxptp ethtool"
+IMAGE_INSTALL:append = " linuxptp linuxptp-configs ethtool"   # -configs added for the gPTP spike (gPTP.cfg)
 IMAGE_FSTYPES:pn-core-image-minimal = "cpio.gz"
 IMAGE_FEATURES:append:pn-core-image-minimal = " debug-tweaks"
 INITRAMFS_MAXSIZE = "524288"
@@ -96,10 +96,10 @@ MACHINE_FEATURES:remove = "efi"                         # EDF msdos layout: edf-
 
 ## 5. Follow-ups (not blocking Phase 4)
 
-1. **DP83867 driver not bound.** The PHY binds "Generic PHY". DHCP works on the PHY's strap defaults, but the proper driver should apply the RGMII delays from the device tree before Phase 9 timing work. Check `CONFIG_DP83867_PHY` in the kernel config, then the `ti,*-internal-delay` properties (spec §9).
-2. **No MAC address:** `macb: invalid hw address, using random`, so the MAC and the DHCP lease change on every boot. AVB needs a stable one. Find where the board's MAC lives and set it via the device tree or U-Boot env.
+1. ~~**DP83867 driver not bound.**~~ Fixed 2026-09-24. The generated DT had no PHY node, so `dp83867_of_init()` returned `-ENODEV`. There's now a PHY node with Digilent's delays (`gptp_spike_2026-09-24.md` §2.1).
+2. ~~**No MAC address.**~~ Fixed 2026-09-24. The factory MAC is at QSPI `0x1FFF000`; `local-mac-address` hard-codes this board's copy (§2.2 there). Reading it from flash in Linux is still open.
 3. **SD at 3.3 V HS.** Enough for boot and config. If UHS is ever wanted, convert Digilent's tap delays to `clk-phase-*`.
 4. **SPD-based DDR** would make the design follow SODIMM swaps. It needs FSBL's SPD reader patched for a mux-less bus. Only worth it if modules get swapped.
-5. **`ptp4l` against the Pi 5 + I350.** The board is currently cabled to a Mac, so this needs the PTP test network.
+5. ~~**`ptp4l` against the Pi 5 + I350.**~~ Done 2026-09-24, PASS, after an FPGA fix to the GEM TSU increment control (`gptp_spike_2026-09-24.md`).
 6. Remove `FSBL_DEBUG_INFO` once the boot path has been stable for a while.
 7. U-Boot prints "No ethernet found" and a generic "Xilinx ZynqMP" model. That's harmless for SD boot; revisit if network boot is ever wanted.

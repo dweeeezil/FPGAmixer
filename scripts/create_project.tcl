@@ -164,7 +164,8 @@ set_property -dict [list \
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
 
 # ------ PS block design (phase4+) --------------------------------------------
-# The BD holds ONE cell: the Zynq UltraScale+ PS. Everything board-specific in
+# The BD holds the Zynq UltraScale+ PS plus one constant (the GEM0 TSU
+# increment-control tie-off, below). Everything board-specific in
 # it comes from Apply Board Preset (Digilent's preset.xml), never from values
 # typed in here. The preset provides DDR4 (DDR4_1866L, 64-bit), UART0 on
 # MIO18-19, SD1 on MIO39-51 with card detect, USB0/USB1, and Ethernet on
@@ -192,6 +193,20 @@ if {$include_ps} {
         -config {apply_board_preset "1"} $ps
 
     set_property -dict [list CONFIG.PSU__ENET0__TSU__ENABLE {1}] $ps
+
+    # Enabling the TSU exposes emio_enet0_tsu_inc_ctrl[1:0], and the BD ties an
+    # unconnected input to 2'b00. UG1085 (v2.5) ch.34 "Precision Time Protocol
+    # via EMIO": "Whenever exposed, gem_tsu_inc_ctrl[1:0] SHOULD BE tied to 0b11
+    # in order for GEM TSU to increment normally". With 00, GEM0 (gem_tsu_ms = 1)
+    # clears the ns register and bumps seconds on every tsu_clk cycle. Measured
+    # over JTAG before this tie-off (2026-09-24): tsu_timer_nsec stuck at 0,
+    # tsu_timer_sec rising ~250 M/s; ptp4l saw constant RX timestamps ("bad
+    # timestamps in nrate calculation").
+    set tsu_inc [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == xlconstant}] tsu_inc_ctrl_normal]
+    set_property -dict [list CONFIG.CONST_WIDTH {2} CONFIG.CONST_VAL {3}] $tsu_inc
+    connect_bd_net [get_bd_pins $tsu_inc/dout] \
+                   [get_bd_pins zynq_ultra_ps_e_0/emio_enet0_tsu_inc_ctrl]
 
     # The preset also turns on PSU_DYNAMIC_DDR_CONFIG_EN. That defines
     # XPAR_DYNAMIC_DDR_ENABLED, which makes psu_init() skip the static DDR init

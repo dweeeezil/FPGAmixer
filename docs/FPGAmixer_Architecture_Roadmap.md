@@ -127,7 +127,12 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 
 ## 4. Risks & open items to revisit
 
-- **On-board gPTP maturity spike** — "the UltraScale+ GEM supports hardware timestamping" is a silicon fact, but stand up `ptp4l` against a known-good gPTP peer (the RPi5 + I350 is ideal for this) and confirm sync quality before Phase 9 depends on it.
+- ~~**On-board gPTP maturity spike**~~ **Done 2026-09-24, PASS** (`gptp_spike_2026-09-24.md`). The board runs gPTP against the RPi5 + I350 at **3–4 ns RMS, ≤22 ns worst** over one hop, as slave and as grandmaster. The agreed Phase 9 criterion is 1 µs end to end. It needed three fixes:
+  - the DP83867 PHY node, so the TI driver binds instead of Generic PHY;
+  - a fixed MAC;
+  - an FPGA design fix: `emio_enet0_tsu_inc_ctrl` must be tied to `2'b11`. Left at `00`, the GEM TSU counted seconds on every clock and timestamps were garbage (UG1085 ch. 34).
+
+  Still open: a multi-hop soak through an AVB switch in Phase 9, and reading the MAC from QSPI instead of hard-coding it.
 - **12.288 MHz from a 25 MHz reference** — the ZU-3EG PL clock is 25 MHz (from the DP83867CR PHY), not the Arty's 125 MHz. 12.288 MHz is not an integer ratio of 25 MHz, so the MMCM uses a fractional solution; check the generated `clk_wiz_audio` summary for the actual output frequency and jitter, and confirm it's within codec tolerance. (A cleaner alternative is to source the audio clock from a PS PLL / fabric clock — worth considering during Phase 4.)
   - **Measured on 2026-09-21:** the MMCM uses 25 MHz × 40.625 ÷ 82.625, which gives **12.2919 MHz**. That's about **+324 ppm** high, so Fs ≈ 48.016 kHz. The MMCM's jitter figure is 409 ps pk-pk. The codecs are fine with this, and analog-only routing doesn't care because every I2S port shares the one clock. **It does matter for Phases 8–9.** AVB (and any AES67/USB peer) expects 48.000 kHz locked to the network's media clock. A free-running +324 ppm local clock would slip about 16 samples per second against a network stream. Phase 9 therefore needs one of two things: a media clock that can be steered from the gPTP/1722 timing, or an asynchronous sample-rate converter at the network boundary. Decide this with the Phase 4 audio-clock choice. A fixed PS-derived clock alone doesn't solve it.
 - **Codec timing carries over, but re-run STA** — the ODDR-forwarding + multicycle constraints are board-independent (same 12.288 MHz mclk / ÷4 sclk tree) and were copied verbatim into the ZU-3EG XDC. But routing and IO characteristics differ on UltraScale+, so re-read the RX-sampling WNS razor (the intentional ~+2 ns check) after the first ZU-3EG implementation, don't assume the Arty margins.
@@ -140,6 +145,6 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 
 1. ~~Finish the board/tooling migration~~ Done.
 2. ~~Phase 3.5: re-verify the static matrix in silicon~~ Done 2026-09-21. The EDF build host is ready too (`buildhost_status_2026-09-21.md`).
-3. ~~Phase 4 build: block design → XSA → `sdtgen` → machine conf → image~~ Done 2026-09-22 (`phase4_status_2026-09-22.md`). **Next: write the SD card and boot it** — UART login + `eth0`, then `ethtool -T eth0` to confirm hardware timestamping, then `ptp4l` against the Pi 5 + I350.
-4. Bench spike: `ptp4l` + hardware timestamping on the ZU-3EG's PS GEM0 against a known-good gPTP peer, before Phase 9 leans on it. The image already ships `linuxptp` and `ethtool`, so this can run on the first boot.
+3. ~~Phase 4 build and first boot~~ Done: built 2026-09-22 (`phase4_status_2026-09-22.md`), and it boots from SD to a login prompt with `end0` up and hardware timestamping (`phase4_status_2026-09-24.md`). The DP83867 driver now binds and the MAC is stable (`gptp_spike_2026-09-24.md` §2).
+4. ~~Bench spike: `ptp4l` on the ZU-3EG's PS GEM0 against a known-good gPTP peer~~ Done 2026-09-24, PASS against the 1 µs criterion: 3–4 ns RMS over one hop in both roles (`gptp_spike_2026-09-24.md`).
 5. Confirm the audio-clock source decision. Phase 4 kept the fractional MMCM off the 25 MHz PL clock (+324 ppm, measured). A PS-sourced fixed clock would not fix that on its own — see the 12.288 MHz risk item above, which now frames this as "steerable media clock vs. ASRC at the network boundary" for Phase 9.
