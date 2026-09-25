@@ -9,8 +9,8 @@ Starting point (end of Phase 5): the OSC server already saved every change to a 
 | Piece | Where | Status |
 |---|---|---|
 | **P1** Harden the store | `tools/mixer_state.py` (new, split out of the server) | done, §2 |
-| **P2** Server as a boot service | `meta-fpgamixer/recipes-apps/fpgamixer-osc` | built, §3; hardware test pending |
-| **P3** Bench network config | `meta-fpgamixer/recipes-apps/fpgamixer-bench-network` (separate: bench-only) | built, §3; hardware test pending |
+| **P2** Server as a boot service | `meta-fpgamixer/recipes-apps/fpgamixer-osc` | done, §3; verified on hardware §5 |
+| **P3** Bench network config | `meta-fpgamixer/recipes-apps/fpgamixer-bench-network` (separate: bench-only) | done, §3; verified on hardware §5 |
 | **P4** One source of truth for board software | recipe packages the repo's `tools/`; `.gitattributes` keeps `tools/` LF; `scripts/sync_buildhost.sh` | done, §4 |
 
 Findings from the Phase 5 image that shaped this (read from the rootfs tarball and manifest on the build VM):
@@ -72,7 +72,28 @@ Before: the VM had a hand-copied `~/edf/2026.1/sources/meta-fpgamixer`, which ha
 
 **Workflow from now on:** edit in the repo → `scripts/sync_buildhost.sh` → `bitbake edf-linux-disk-image xilinx-bootbin` on the VM. The `sdtgen` → `gen-machine-conf` steps are only needed when the Vivado design changes.
 
-## 5. Hardware test plan (Phase 6 exit criterion)
+## 5. Hardware result, 2026-09-25: exit criterion met
+
+Image `build/sd/phase6-20260925.wic.xz` (layer at `4d12e67`; bitstream unchanged from the D1–D4 refactor build, MD5 `aa817b3f…`). Checked in the rootfs before flashing: both packages installed, `multi-user.target.wants/fpgamixer-osc.service` present, packaged `mixer_hw.py` byte-identical to the synced repo copy.
+
+| Step | Result |
+|---|---|
+| Boot, no commands typed on the board | `ssh board` worked (the first attempt got "No route to host" while the board was still booting). `end0` came up as 10.0.0.2 by itself. |
+| Service | `active (running)`, enabled by preset. Journal: `No usable state file … starting empty` (fresh card) → `PL window 'matrix' at 0x80000000: matrix 4 in x 4 out, Q2.16` → `Pushed 16 inputMatrix level(s) to the PL (… 'commits': 1)` → listening on 8000/8001 |
+| OSC suite from the Pi | **18/19** (the known unframed-TCP case). Round trip **min 0.3 / mean 0.4 / max 1.2 ms**, down from 2.1 / 2.6 / 8.7 ms on the Phase 5 server: sets no longer wait for a synchronous SD write |
+| Route over OSC (`osc_console.py` on the Pi) | `inputMatrix/0_2/level 0` (JB_L → JC_L), `inputMatrix/2_2/level -90` (JC_L's own input off); both echoed; heard |
+| **Power pulled** (~1 min after the last change, no shutdown), rebooted, nothing typed | **the route was back by ear**: the JB source on JC left, JC's own input still off |
+
+**Phase 6 exit criterion (a power cycle keeps the routing): met.**
+
+Observations:
+
+- The board clock starts at 2025-05-29 on every boot: no RTC battery, and no NTP on the bench link. It only affects log timestamps and the names of `.corrupt-*` files, not persistence. Revisit when gPTP/PHC time is used system-wide (Phase 9).
+- The test ran with the suite's leftovers in the state (e.g. `inputMatrix/0_0/level` −3 dB, `inputChannel/*` values). Those restored as well, but weren't separately checked by ear.
+
+**Follow-up requested by the user:** repeat the power-cycle restore test once a multichannel source exists (USB or AVB front door), to verify restore with real multichannel audio on every crosspoint. The Pmod bench can only drive and hear the two left channels.
+
+## 6. Original test plan (kept for reference)
 
 1. Flash, full power-off, boot. With no manual network commands, `ssh board` should work (10.0.0.2 comes up by itself).
 2. `systemctl status fpgamixer-osc`: active; the journal shows "Pushed 16 inputMatrix level(s) to the PL".
