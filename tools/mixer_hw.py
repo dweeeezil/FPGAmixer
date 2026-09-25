@@ -28,9 +28,13 @@ there is no safe way to scan for windows, because an access where no block
 is mapped is answered with a bus error, and Linux turns that into a kernel
 fault. Each entry is checked by its ID register when opened.
 
-Access is by mmap of /dev/mem (root). WARNING: only run this against a
-bitstream that has these windows (Phase 5 or later). On an older image nothing
-answers at 0x8000_0000, and the first access hangs the interconnect.
+Access is by mmap of /dev/mem (root). On a bitstream without these windows
+(anything before Phase 5) nothing answers at 0x8000_0000 and the first access
+hangs the interconnect -- at boot, if the service does it. So before mapping
+/dev/mem, a window must be present in the running device tree: sdtgen puts
+a node named <something>@<base> (M_AXI_CTRL@80000000) into it, and the device
+tree and the bitstream come from the same XSA, so the node exists exactly
+when the bitstream has the window. No node -> refuse, without touching the bus.
 
 As a bring-up CLI, on the board:
     python3 mixer_hw.py info                  # every window: ID, CONFIG, CTRL
@@ -59,6 +63,23 @@ REG_COEF0 = 0x100
 OFF_DB = -90.0
 
 
+DEVICE_TREE = "/proc/device-tree"
+
+
+def dt_node_for(base, root=None, max_depth=4):
+    """Path of a device-tree node named '<name>@<base in hex>', or None."""
+    root = root or DEVICE_TREE
+    suffix = f"@{base:x}"
+    root_depth = root.rstrip("/").count("/")
+    for path, dirs, _files in os.walk(root):
+        for d in dirs:
+            if d.endswith(suffix):
+                return os.path.join(path, d)
+        if path.count("/") - root_depth >= max_depth:
+            dirs[:] = []
+    return None
+
+
 class RegWindow:
     """One axil_coef_window, mapped from /dev/mem."""
 
@@ -67,6 +88,11 @@ class RegWindow:
     def __init__(self, base, dev="/dev/mem"):
         self.base = base
         self._lock = threading.Lock()
+        if dev == "/dev/mem" and not dt_node_for(base):
+            raise RuntimeError(
+                f"no device-tree node for a register window at 0x{base:08x} under "
+                f"{DEVICE_TREE}: this image's bitstream doesn't have it (pre-Phase 5?). "
+                f"Refusing to touch the bus, since an access there would hang it.")
         fd = os.open(dev, os.O_RDWR | os.O_SYNC)
         try:
             self._mm = mmap.mmap(fd, WINDOW_SIZE, mmap.MAP_SHARED,

@@ -51,6 +51,7 @@ There are four kinds of block:
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
+| Platform (image) | `yocto/meta-fpgamixer/` | board DT fixes; `fpgamixer-osc` (server as a boot service); `fpgamixer-bench-network` (bench-only addressing, switchable); synced with `tools/` by `scripts/sync_buildhost.sh` |
 
 ---
 
