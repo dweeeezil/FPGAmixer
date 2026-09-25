@@ -60,6 +60,11 @@ made here so you can compare against the real firmware once it exists):
         bitstream resets to -- so a get always reports what is in effect.
     With --hw the full matrix is written to the PL on startup (restored
     state included), then each set is applied as it arrives.
+  - Zones and backends: each OSC zone that drives hardware is served by one
+    backend (a Backend subclass), listed in BACKENDS; one backend drives one
+    register window (mixer_hw.WINDOWS). A set goes to the backend for its
+    zone; zones with no backend are stored and echoed generically. A new core
+    block = a new window in mixer_hw + a new Backend + one BACKENDS entry.
 
 Usage:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --mixer-name mixer
@@ -455,42 +460,58 @@ OFF_DB = -90.0            # mirrors mixer_hw.OFF_DB
 SIM_MAX_DB = 20.0 * math.log10(((1 << 17) - 1) / (1 << 16))  # Q2.16 ceiling
 
 
-class Matrix:
-    """Applies inputMatrix/<in>_<out>/level to the PL matrix (hw given) or
-    just validates and clamps it the same way (hw None, simulator)."""
+class Backend:
+    """Serves one OSC zone. apply() gets the path below the zone (e.g.
+    ('0_1', 'level')) and returns (accepted, value_to_store_and_echo); a
+    backend may ignore paths it doesn't drive by accepting them unchanged.
+    seed_and_push() runs once at startup, after the state file is loaded."""
 
-    def __init__(self, hw, n_in, n_out):
+    def __init__(self, zone):
+        self.zone = zone
+
+    def apply(self, rest, value, via):
+        return True, value
+
+    def seed_and_push(self, state):
+        pass
+
+
+class MatrixBackend(Backend):
+    """<zone>/<in>_<out>/level -> one pcm_matrix. With hw (a mixer_hw.MatrixHW)
+    the level goes to the PL; with hw None it is only validated and clamped
+    the same way (simulator)."""
+
+    def __init__(self, zone, hw, n_in, n_out):
+        super().__init__(zone)
         self.hw = hw
         self.n_in = n_in
         self.n_out = n_out
 
-    @staticmethod
-    def crosspoint_key(inp, out):
-        return f"{MATRIX_ZONE}/{inp}_{out}/level"
+    def crosspoint_key(self, inp, out):
+        return f"{self.zone}/{inp}_{out}/level"
 
     @staticmethod
-    def parse(tail):
-        """(in, out) if tail is a crosspoint level address, else None."""
-        parts = tail.split("/")
-        if len(parts) != 3 or parts[0] != MATRIX_ZONE or parts[2] != "level":
+    def parse(rest):
+        """(in, out) if rest is ('<in>_<out>', 'level'), else None."""
+        if len(rest) != 2 or rest[1] != "level":
             return None
-        a, sep, b = parts[1].partition("_")
+        a, sep, b = rest[0].partition("_")
         if not (sep and a.isdigit() and b.isdigit()):
             return None
         return int(a), int(b)
 
-    def apply(self, tail, value, via):
-        """Returns (accepted, value_to_store_and_echo)."""
-        xp = self.parse(tail)
+    def apply(self, rest, value, via):
+        xp = self.parse(rest)
         if xp is None:
-            return True, value  # not a crosspoint: generic store/echo
+            return True, value  # e.g. .../delay: no hardware yet, generic store/echo
         inp, out = xp
         if not (0 <= inp < self.n_in and 0 <= out < self.n_out):
             log(f"    [{via}] crosspoint {inp}_{out} outside the "
                 f"{self.n_in}x{self.n_out} matrix, ignored")
             return False, value
         if isinstance(value, (str, bool)):
-            log(f"    [{via}] non-numeric level {value!r} for {tail}, ignored")
+            log(f"    [{via}] non-numeric level {value!r} for "
+                f"{self.crosspoint_key(inp, out)}, ignored")
             return False, value
         db = float(value)  # finite: apply_set remaps NaN/inf first
         if self.hw is not None:
@@ -519,17 +540,31 @@ class Matrix:
                 log(f"    could not seed {tail}: {why}")
         if self.hw is not None:
             self.hw.set_bank_db(levels)
-            log(f"Pushed {len(levels)} crosspoint level(s) to the PL matrix "
+            log(f"Pushed {len(levels)} {self.zone} level(s) to the PL "
                 f"({self.hw.status()})")
 
 
-MATRIX = None  # set in main()
+BACKENDS = {}  # zone -> Backend, filled in main()
+
+
+def build_backends(use_hw, matrix_size):
+    """The zone -> backend table. With use_hw each backend opens its register
+    window (mixer_hw.WINDOWS, checked by ID); without, the same backends run
+    in simulation with the given sizes."""
+    if use_hw:
+        import mixer_hw  # next to this script; needs /dev/mem
+        m = mixer_hw.open_window("matrix")
+        log(f"PL window 'matrix' at 0x{m.base:08x}: {m.describe()}")
+        backends = [MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out)]
+    else:
+        backends = [MatrixBackend(MATRIX_ZONE, None, matrix_size, matrix_size)]
+    return {b.zone: b for b in backends}
 
 
 def apply_set(tail, value, state, registry, via):
     """The one path every set takes (TCP and UDP): check the value fits the
-    state tree, apply it to the matrix if it is a crosspoint, store, then
-    broadcast the confirmation."""
+    state tree, hand it to its zone's backend (if the zone has one), store,
+    then broadcast the confirmation."""
     why = state.check(tail)
     if why is not None:
         log(f"    [{via}] set {tail!r} ignored: {why}")
@@ -538,9 +573,12 @@ def apply_set(tail, value, state, registry, via):
     if remapped is not value:
         log(f"    [{via}] {tail}: non-finite {value!r} remapped to {remapped}")
         value = remapped
-    accepted, value = MATRIX.apply(tail, value, via)
-    if not accepted:
-        return
+    path = split_path(tail)
+    backend = BACKENDS.get(path[0])
+    if backend is not None:
+        accepted, value = backend.apply(path[1:], value, via)
+        if not accepted:
+            return
     state.set(tail, value)
     if VERBOSE:
         log(f"    [{via}] SET {tail} = {value!r}")
@@ -708,26 +746,17 @@ def main():
                          "pass an empty string to disable persistence)")
     p.add_argument("--verbose", action="store_true", help="log every set/get, not just connects and notable events")
     p.add_argument("--hw", action="store_true",
-                   help="drive the PL matrix through /dev/mem (on the board, as root; "
-                        "Phase 5+ bitstream only)")
-    p.add_argument("--hw-base", type=lambda x: int(x, 0), default=0x8000_0000,
-                   help="physical address of the matrix registers (default: 0x80000000)")
+                   help="drive the PL register windows (mixer_hw.WINDOWS) through /dev/mem "
+                        "(on the board, as root; Phase 5+ bitstream only)")
     p.add_argument("--matrix-size", type=int, default=4,
                    help="simulated matrix size N (NxN) without --hw (default: 4)")
     args = p.parse_args()
     VERBOSE = args.verbose
 
-    global MATRIX
     state = MixerState(args.mixer_name, args.state_file or None)
-    if args.hw:
-        from mixer_hw import MatrixHW  # next to this script; needs /dev/mem
-        hw = MatrixHW(base=args.hw_base)
-        log(f"PL matrix at 0x{args.hw_base:08x}: {hw.n_in} in x {hw.n_out} out, "
-            f"Q{hw.gain_width - hw.gain_frac}.{hw.gain_frac}")
-        MATRIX = Matrix(hw, hw.n_in, hw.n_out)
-    else:
-        MATRIX = Matrix(None, args.matrix_size, args.matrix_size)
-    MATRIX.seed_and_push(state)
+    BACKENDS.update(build_backends(args.hw, args.matrix_size))
+    for backend in BACKENDS.values():
+        backend.seed_and_push(state)
     registry = ClientRegistry()
 
     threading.Thread(target=udp_serve, args=(args.host, args.udp_port, state, registry), daemon=True).start()
