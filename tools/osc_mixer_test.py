@@ -435,6 +435,13 @@ def test_multi_client_broadcast(ctx):
     b = ctx.new_tcp()
     try:
         target = ctx.addr("set", "inputChannel", 0, "level")
+        # B's connect() returning only means the kernel finished the TCP
+        # handshake; the server may not have accepted it yet, and no server can
+        # broadcast to a connection still in its listen backlog. One round trip
+        # on B (a get, as a controller does to sync on connect) proves the
+        # server has B before A's change -- without it this test is racy.
+        b.send_message(ctx.addr("get", "inputChannel", 0, "level"), [])
+        b.read_message()
         a.send_message(target, [-9.0])
         reply_a = a.read_message()
         assert reply_a.address == target, f"client A's own echo malformed: {reply_a}"

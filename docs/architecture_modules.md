@@ -50,6 +50,7 @@ There are four kinds of block:
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
+| Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
 
 ---
 
@@ -129,7 +130,7 @@ Adding a block = one more SmartConnect master port, one more window, one more re
     "inputMatrix":  { "0_0": { "level": 0.0, "delay": 2.39 } }
   }
   ```
-  The mixer name (the address root) lives only at `system.deviceName`. A value can't sit where the tree has a branch, or the other way round; such a set is ignored, not stored or echoed. That's the tree's only rule, and addresses that follow the standard's `zone/index/module` shape never hit it. Every stored value is finite, so the file is strict JSON: the server remaps NaN and −inf to −99.9 (off) and +inf to +99.9 before applying, storing or echoing a value. Full rules: the `STATE FILE FORMAT` section of `tools/osc_mixer_server.py`. This format is a contract, not an implementation detail. Phase 6 persistence and any future server read and write the same tree, and adding a zone or module never changes the format.
+  The mixer name (the address root) lives only at `system.deviceName`. A value can't sit where the tree has a branch, or the other way round; such a set is ignored, not stored or echoed. That's the tree's only rule, and addresses that follow the standard's `zone/index/module` shape never hit it. Every stored value is finite, so the file is strict JSON: the server remaps NaN and −inf to −99.9 (off) and +inf to +99.9 before applying, storing or echoing a value. Full rules, including durability: the docstring of `tools/mixer_state.py`. This format is a contract, not an implementation detail. Phase 6 persistence and any future server read and write the same tree, and adding a zone or module never changes the format.
 - The Python server is **interim**; the final server is a separate design. The backend/window split is the part meant to survive into it.
 
 ---
