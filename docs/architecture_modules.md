@@ -51,6 +51,8 @@ There are four kinds of block:
 | Control plane (generic) | `src/rtl/axil_coef_window.sv` | AXI4-Lite slave, common header, shadow bank |
 | Control plane (generic) | `src/rtl/coef_bank_handoff.sv` + `constraints/coef_bank_handoff.xdc` | COMMIT + CDC; the XDC is scoped to the module, so every instance is constrained |
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
+| Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
+| Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`) |
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
@@ -106,6 +108,7 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 | 0x00C | COMMITS | commits applied |
 | 0x100… | coefficients | block-specific |
 
+- **Status windows** (since Phase 8) use the same header with the data flowing the other way: `axil_stat_window` shows read-only words that a `coef_bank_handoff` (src = the block's clock, dst = the AXI clock) delivers as one consistent snapshot per frame. CTRL reads 0 and 0x00C is a snapshot sequence number. There is no CLEAR: counters are free-running and software takes differences.
 - Writes go to a shadow bank; COMMIT hands the whole bank to `mclk` (toggle handshake in `coef_bank_handoff`). This is what satisfies the "whole bank on one edge" rule in §3.
 - A block's register binding is small: it instantiates `axil_coef_window` + `coef_bank_handoff` and supplies an ID, a CONFIG word and a bank size (see `matrix_regs_axil.sv`, about 40 lines of logic).
 

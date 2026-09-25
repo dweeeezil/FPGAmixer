@@ -137,7 +137,7 @@ Three independent clocks: the **Mac's USB clock** (SOF), **`mclk`** (12.2919 MHz
 |---|---|---|
 | 0x000 | ID | block type + version (link: `0x4C4B_5001`, "LK" v1) |
 | 0x004 | CONFIG | block geometry (link: channels in, channels out, FIFO depth) |
-| 0x008 | CTRL | bit0 CLEAR (write 1: zero the counters) |
+| 0x008 | CTRL | ~~bit0 CLEAR~~ reads 0. **Changed in P8.3:** no CLEAR; counters are free-running, software takes differences (§12) |
 | 0x00C | SNAPSHOTS | snapshots taken (so software can tell a stale read from a live one) |
 | 0x100… | counters | block-specific, read-only |
 
@@ -264,6 +264,21 @@ Needs the full image (`edf-linux-disk-image xilinx-bootbin`, building) flashed, 
 
 ---
 
-## 12. Log
+## 12. P8.3: the link's read-only status window (simulation)
+
+| File | What |
+|---|---|
+| `src/rtl/axil_stat_window.sv` (new, generic) | read-only AXI4-Lite window: ID / CONFIG / CTRL (0) / SNAPSHOTS header, `N_STAT` words at 0x100. Writes accepted and ignored. The counterpart of `axil_coef_window`. |
+| `src/rtl/pcm_link_stat_regs.sv` (new, binding) | ID `0x4C4B_5001`, CONFIG `[31:24]` ch PL→PS, `[23:16]` ch PS→PL, `[15:0]` FIFO words; ten words (FRAMES_RX/TX, UNDERRUNS, STARVED, OVERRUNS, TID_ERRORS, RX_FILL, RX_FILL_LOW/HIGH since the stream last started, FLAGS.RX_RUNNING). Map in its header. |
+| `coef_bank_handoff` | **reused unchanged, in reverse** (src = `mclk`, dst = AXI clock): one snapshot per frame, all words from one `mclk` edge. Its scoped XDC covers the instance (the captured bank is held ≥ 2 destination periods, the same argument as forward). |
+| `src/sim/tb_link_stat_regs.sv` + `sim.mk` target `linkstat` | below |
+
+**Design change against §6: no CLEAR.** Counters are free-running and wrap, and software takes differences (like network interface counters). That needs no second CDC path, and two readers (the CLI, a bridge service's log) can't reset each other's view. The fill watermarks restart by themselves whenever the stream starts running.
+
+**`tb_link_stat_regs` (XSim), unrelated clocks: PASS.** Header and write-ignoring; SNAPSHOTS +10 in 10 frames; live counters; watermarks (low 12 / high 50 across a dip and a peak, restart at 25 after a stop/start). **Atomicity:** every counter input changes on every `mclk` edge, each a different function of one cycle count; the monitor decodes the AXI-side bank on every AXI edge: **4975 banks, 0 torn.** Mutation: feeding one word from the previous `mclk` edge → 4975 of 4975 torn, FAIL. So the monitor does see a two-edge snapshot.
+
+---
+
+## 13. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
