@@ -115,7 +115,7 @@ The four seams listed in `architecture_modules.md` §5 were fixed one at a time,
 
 Identical utilization says the refactor changed the structure of the source, not the hardware. Two build notes: Vivado on Windows fails when a project path passes 248 characters (a first attempt from a deep scratch-directory worktree died in the PS IP synthesis), so build from the repo checkout. And `phase4` in `create_project.tcl` now builds the same thing as `phase5`; the PS-only Phase 4 design is at `82d4386`.
 
-**Still to do: re-run the board tests on this bitstream** (same steps as §3) to close the refactor on hardware.
+**Hardware re-test, 2026-09-25: PASS, refactor closed.** Image `build/sd/refactor-d1d4-20260925.wic.xz`; the deployed bitstream's MD5 matched `build/sdt/fpgamixer_d1d2.bit` (`aa817b3f…`); bitbake showed the same 22 benign warnings as the Phase 5 build. On the board: the `mixer_hw` bring-up, the left-channel routing test by ear ("sounds great"), and `osc_mixer_test.py` from the Pi **18/19**, the same as before the refactor (the known unframed-TCP case). The NaN/±inf remap was confirmed in the server log on hardware. Round trip: min 2.1 / mean 2.6 / max 8.7 ms.
 
 ## 4. Decisions (2026-09-25)
 
