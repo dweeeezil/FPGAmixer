@@ -13,6 +13,7 @@
 # Usage (from repo root):
 #   make -f scripts/sim.mk matrix     # matrix unit test
 #   make -f scripts/sim.mk matrix_rect  # non-square matrices (3->5, 5->2)
+#   make -f scripts/sim.mk link       # Phase 8 PS<->PL link front door (AXIS <-> PCM, two clocks)
 #   make -f scripts/sim.mk regs       # Phase 5 AXI gain registers + CDC + matrix
 #   make -f scripts/sim.mk phase3     # full phase-3 datapath integration test
 #   make -f scripts/sim.mk all        # both (default)
@@ -34,8 +35,8 @@ CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.s
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect regs phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect regs phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect regs link phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect regs link phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -82,6 +83,13 @@ matrix_rect: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix_rect -o $(BUILD)/tb_pcm_matrix_rect.vvp \
 		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix_rect.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix_rect.vvp
+
+# --- Phase 8: PS<->PL link front door, formatter AXIS <-> PCM on unrelated clocks ---
+link: | $(BUILD)
+	@echo ">>> Building tb_pcm_link"
+	@$(IVERILOG) $(FLAGS) -s tb_pcm_link -o $(BUILD)/tb_pcm_link.vvp \
+		$(RTL)/async_fifo.sv $(RTL)/pcm_link.sv $(SIM)/tb_pcm_link.sv
+	@$(VVP) $(BUILD)/tb_pcm_link.vvp
 
 # --- Phase 5: AXI4-Lite gain registers across aclk/mclk into the matrix ---
 regs: | $(BUILD)

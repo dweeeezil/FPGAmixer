@@ -44,6 +44,9 @@ There are four kinds of block:
 | Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
 | Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding |
+| Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8, in progress: `phase8_status_2026-09-25.md`) |
+| Generic | `src/rtl/async_fifo.sv` + `constraints/async_fifo.xdc` | dual-clock FIFO; XDC scoped to the module like `coef_bank_handoff.xdc` |
+| Platform (image) | `yocto/meta-fpgamixer/recipes-kernel/`, `recipes-apps/fpgamixer-usb-gadget` | kernel fragment for USB device mode; the UAC2 gadget (USB front door, Linux half) |
 | PCM core | `src/rtl/pcm_matrix.sv` | N_IN × N_OUT crosspoint matrix |
 | Control plane (generic) | `src/rtl/axil_coef_window.sv` | AXI4-Lite slave, common header, shadow bank |
 | Control plane (generic) | `src/rtl/coef_bank_handoff.sv` + `constraints/coef_bank_handoff.xdc` | COMMIT + CDC; the XDC is scoped to the module, so every instance is constrained |

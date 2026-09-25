@@ -239,6 +239,31 @@ Needs the full image (`edf-linux-disk-image xilinx-bootbin`, building) flashed, 
 
 ---
 
-## 11. Log
+## 11. P8.2: `pcm_link`, the link's PL front door (simulation)
+
+| File | What |
+|---|---|
+| `src/rtl/async_fifo.sv` (new, generic) | dual-clock FIFO: Gray pointers, 2FF syncs, power-of-two depth, first-word-fall-through, a level on each side. Plain SV (no XPM), so Icarus and XSim both run it. |
+| `constraints/async_fifo.xdc` (new) | scoped to the module like `coef_bank_handoff.xdc`: 10 ns `-datapath_only` on both Gray crossings and on the LUTRAM read path. **Hooked into `create_project.tcl` (SCOPED_TO_REF) in P8.4**, when the module first enters the build. |
+| `src/rtl/pcm_link.sv` (new, front door) | formatter AXIS ↔ PCM contract, `N_CH` 2–8, one frame strobe for both directions, zeros on underrun, whole-frame drop on overrun, TID sequencing with hunt-for-TID-0 recovery, status counters (mclk). Header documents the AXIS format, timing and counters. |
+| `src/sim/tb_pcm_link.sv` (new) + `scripts/sim.mk` target `link` | see below |
+
+**AXIS sample position:** `[27:4]`, the AES3-subframe layout PG330 gives for 24-bit data (Table 1), with sideband bits zero. It is a parameter (`SAMPLE_LSB`). Bench S2 confirms it with a known pattern through `arecord`; a wrong position shows up as a factor of 16 in level.
+
+**`tb_pcm_link` (XSim), unrelated clocks (aclk 100 MHz, mclk 12.2919 MHz), 8 channels, each sample tagged {channel, frame number}: PASS.**
+
+| Phase | Result |
+|---|---|
+| A paced (like the formatter's `aud_mclk` pacing) | 58 frames, consecutive, channels correct; 1 zero frame at start-up |
+| B burst (source flat out) | FIFO full (64 words), TREADY back-pressure, **no frame lost**, 0 underruns |
+| C source paused | zeros delivered (never stale), `starved` +32, **`underruns` +1** (one interruption), resumes in sequence |
+| D out-of-range TID in one frame | `tid_errors` +6 (the bad beat + the 5 discarded after it), exactly that frame lost, **no channel rotation** |
+| S2MM sink stalled for 40 frames | `overruns` +33, one gap in the stream, resumes on TID 0; `TDATA[31:28]` and `[3:0]` always zero |
+
+**Mutation check:** swapping channel pairs in the assembler and the serializer (`tid ^ 1`) makes the TB fail with 3616 errors, so a PASS does exercise the channel mapping.
+
+---
+
+## 12. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
