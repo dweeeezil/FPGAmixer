@@ -38,7 +38,7 @@ if {[file isdirectory $xhub_boards]} {
 # ------ Phase selection -------------------------------------------------------
 # current_phase drives the synthesis top module, which XDC is used, and (phase4
 # onwards) whether the PS block design is built.
-set current_phase "phase4"
+set current_phase "phase5"
 set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
@@ -51,11 +51,19 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 # instances by absolute path (u_fwd_*/u_oddr/C), so an extra hierarchy level
 # drops 25 constraints and implementation fails in IO clock placement. Tried
 # 2026-09-22; that is what the `ifdef exists to avoid.
+#
+# phase5 = phase4 + the AXI4-Lite gain registers (matrix_regs_axil, reached
+# through M_AXI_CTRL on the BD) and their CDC constraints. The PS itself is
+# configured identically.
 set include_ps 0
-if {$current_phase eq "phase4"} {
+set extra_xdc  {}
+if {$current_phase in {phase4 phase5}} {
     set include_ps 1
     set synth_top "phase3_top"
     set xdc_file  "constraints/phase3_genesys_zu.xdc"
+}
+if {$current_phase eq "phase5"} {
+    lappend extra_xdc "constraints/phase5_cdc.xdc"
 }
 
 # ------ Verify we're at the repo root ------
@@ -133,6 +141,9 @@ if {$bp ne ""} {
 add_files -norecurse -fileset sources_1 $rtl_files
 add_files -norecurse -fileset sim_1     $sim_files
 add_files -norecurse -fileset constrs_1 $xdc_file
+foreach f $extra_xdc {
+    add_files -norecurse -fileset constrs_1 $f
+}
 
 # ------ Clocking Wizard IP: 25 MHz -> ~12.288 MHz ------
 # The ZU-3EG PL reference (sysclk on E12) is 25 MHz, not the Arty's 125 MHz, so
@@ -242,12 +253,63 @@ if {$include_ps} {
 
     # The preset enables M_AXI_HPM0_LPD and S_AXI_HPC0_FPD. Their aclk pins are
     # unconnected out of the box and validate_bd_design fails on that, so clock
-    # them from pl_clk0 (100 MHz). Nothing uses these ports until Phase 5 wires
-    # up OSC control; they are left enabled so that step needs no PS re-config
-    # (which would mean regenerating the XSA, the SDT and the machine config).
+    # them from pl_clk0 (100 MHz). S_AXI_HPC0_FPD is still unused.
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] \
                    [get_bd_pins zynq_ultra_ps_e_0/maxihpm0_lpd_aclk] \
                    [get_bd_pins zynq_ultra_ps_e_0/saxihpc0_fpd_aclk]
+
+    # ----- Phase 5: AXI4-Lite control port for the matrix gains -----
+    # M_AXI_HPM0_LPD -> SmartConnect (AXI4 -> AXI4-Lite, ID/burst handling)
+    # -> external port M_AXI_CTRL, which phase3_top connects to
+    # matrix_regs_axil. The register block is plain RTL outside the BD so the
+    # Icarus/XSim testbenches exercise the same source that is synthesized.
+    # Mapped at 0x8000_0000 (start of the LPD PL window), 4 KB.
+    #
+    # No PS configuration changes: the PS8 settings (and so psu_init, the
+    # FSBL, and the machine config) are identical to Phase 4. The XSA still
+    # changes (new bitstream, new hwh), so the sdtgen -> bitbake chain is rerun.
+    set rst [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == proc_sys_reset}] rst_ctrl]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] \
+                   [get_bd_pins $rst/slowest_sync_clk]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0] \
+                   [get_bd_pins $rst/ext_reset_in]
+
+    set smc [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc]
+    set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $smc
+    connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
+                        [get_bd_intf_pins $smc/S00_AXI]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
+    connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $smc/aresetn]
+
+    set pl_clk0_hz [get_property CONFIG.FREQ_HZ [get_bd_pins zynq_ultra_ps_e_0/pl_clk0]]
+    set m_ctrl [create_bd_intf_port -mode Master \
+        -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_CTRL]
+    set_property -dict [list \
+        CONFIG.PROTOCOL   {AXI4LITE} \
+        CONFIG.DATA_WIDTH {32} \
+        CONFIG.ADDR_WIDTH {32} \
+        CONFIG.FREQ_HZ    $pl_clk0_hz \
+    ] $m_ctrl
+    connect_bd_intf_net [get_bd_intf_pins $smc/M00_AXI] $m_ctrl
+
+    set ctrl_clk [create_bd_port -dir O -type clk ctrl_aclk]
+    set_property -dict [list \
+        CONFIG.FREQ_HZ          $pl_clk0_hz \
+        CONFIG.ASSOCIATED_BUSIF {M_AXI_CTRL} \
+        CONFIG.ASSOCIATED_RESET {ctrl_aresetn} \
+    ] $ctrl_clk
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] $ctrl_clk
+    set ctrl_rst [create_bd_port -dir O -type rst ctrl_aresetn]
+    set_property CONFIG.POLARITY {ACTIVE_LOW} $ctrl_rst
+    connect_bd_net [get_bd_pins $rst/peripheral_aresetn] $ctrl_rst
+
+    assign_bd_address -offset 0x80000000 -range 4K \
+        -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+        [get_bd_addr_segs M_AXI_CTRL/Reg]
+    puts "INFO: M_AXI_CTRL      = [get_property OFFSET [get_bd_addr_segs \
+zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
     puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \

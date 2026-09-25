@@ -27,7 +27,13 @@
 //   ch0,ch1 -> tx_jb -> jb_da_sdin   <-------------------------------+
 //   ch2,ch3 -> tx_jc -> jc_da_sdin   <-- (matrix outputs)
 //
-// Active routing = IDENTITY / loopback (rows = outputs, cols = inputs; see
+// Phase 5 (INCLUDE_PS builds): the gains are runtime registers, written by the
+// PS over AXI4-Lite (matrix_regs_axil, M_AXI_HPM0_LPD at 0x8000_0000). Their
+// reset value is MATRIX_GAINS, so the board still boots into the routing below
+// until software changes it. Without INCLUDE_PS (phase1-3 projects, Icarus
+// sims) MATRIX_GAINS is tied straight to the matrix, as in Phase 3.
+//
+// Default routing = IDENTITY / loopback (rows = outputs, cols = inputs; see
 // MATRIX_GAINS): each channel loops straight back to itself at unity, so every
 // Pmod passes its own ADC input through to its own DAC output.
 //   JB_L out = JB_L in,  JB_R out = JB_R in,  JC_L out = JC_L in,  JC_R out = JC_R in
@@ -172,12 +178,77 @@ module phase3_top (
     //     G_ZERO,  G_ZERO,  G_ZERO,  G_UNITY    // out0 JB_L = JB_L in
     // };
 
+    logic [N*N*18-1:0] gains;
+
+`ifdef INCLUDE_PS
+    // ----- Phase 5: runtime gains from the PS -----
+    // ps_sys_wrapper exports M_AXI_CTRL (AXI4-Lite, through a SmartConnect off
+    // M_AXI_HPM0_LPD) plus its clock (pl_clk0) and a synchronized reset.
+    // Only the low 12 bits of the address reach the register block; the BD
+    // maps a 4 KB window at 0x8000_0000.
+    logic        ctrl_aclk, ctrl_aresetn;
+    logic [31:0] ctrl_awaddr, ctrl_araddr;
+    logic [2:0]  ctrl_awprot, ctrl_arprot;
+    logic        ctrl_awvalid, ctrl_awready, ctrl_wvalid, ctrl_wready;
+    logic [31:0] ctrl_wdata, ctrl_rdata;
+    logic [3:0]  ctrl_wstrb;
+    logic [1:0]  ctrl_bresp, ctrl_rresp;
+    logic        ctrl_bvalid, ctrl_bready, ctrl_arvalid, ctrl_arready;
+    logic        ctrl_rvalid, ctrl_rready;
+
+    ps_sys_wrapper u_ps (
+        .ctrl_aclk            (ctrl_aclk),
+        .ctrl_aresetn         (ctrl_aresetn),
+        .M_AXI_CTRL_awaddr    (ctrl_awaddr),
+        .M_AXI_CTRL_awprot    (ctrl_awprot),
+        .M_AXI_CTRL_awvalid   (ctrl_awvalid),
+        .M_AXI_CTRL_awready   (ctrl_awready),
+        .M_AXI_CTRL_wdata     (ctrl_wdata),
+        .M_AXI_CTRL_wstrb     (ctrl_wstrb),
+        .M_AXI_CTRL_wvalid    (ctrl_wvalid),
+        .M_AXI_CTRL_wready    (ctrl_wready),
+        .M_AXI_CTRL_bresp     (ctrl_bresp),
+        .M_AXI_CTRL_bvalid    (ctrl_bvalid),
+        .M_AXI_CTRL_bready    (ctrl_bready),
+        .M_AXI_CTRL_araddr    (ctrl_araddr),
+        .M_AXI_CTRL_arprot    (ctrl_arprot),
+        .M_AXI_CTRL_arvalid   (ctrl_arvalid),
+        .M_AXI_CTRL_arready   (ctrl_arready),
+        .M_AXI_CTRL_rdata     (ctrl_rdata),
+        .M_AXI_CTRL_rresp     (ctrl_rresp),
+        .M_AXI_CTRL_rvalid    (ctrl_rvalid),
+        .M_AXI_CTRL_rready    (ctrl_rready)
+    );
+
+    // Instance name u_regs is referenced by the CDC constraints in the XDC.
+    matrix_regs_axil #(
+        .N (N), .GAIN_WIDTH (18), .GAIN_FRAC (16), .ADDR_WIDTH (12),
+        .RESET_GAINS (MATRIX_GAINS)
+    ) u_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (ctrl_awaddr[11:0]), .s_axi_awvalid (ctrl_awvalid),
+        .s_axi_awready (ctrl_awready),
+        .s_axi_wdata   (ctrl_wdata),  .s_axi_wstrb  (ctrl_wstrb),
+        .s_axi_wvalid  (ctrl_wvalid), .s_axi_wready (ctrl_wready),
+        .s_axi_bresp   (ctrl_bresp),  .s_axi_bvalid (ctrl_bvalid),
+        .s_axi_bready  (ctrl_bready),
+        .s_axi_araddr  (ctrl_araddr[11:0]), .s_axi_arvalid (ctrl_arvalid),
+        .s_axi_arready (ctrl_arready),
+        .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
+        .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
+        .mclk (mclk), .mrst_n (rst_n),
+        .gains_flat (gains)
+    );
+`else
+    assign gains = MATRIX_GAINS;
+`endif
+
     pcm_matrix #(
-        .N (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (18), .GAIN_FRAC (16),
-        .GAINS_FLAT (MATRIX_GAINS)
+        .N (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (18), .GAIN_FRAC (16)
     ) u_matrix (
         .mclk (mclk), .rst_n (rst_n),
         .sample_valid_i (valid_jb),
+        .gains_flat (gains),
         .in_flat  (mtx_in),
         .out_flat (mtx_out),
         .sample_valid_o ()
@@ -200,26 +271,17 @@ module phase3_top (
     oddr_out u_fwd_jb_da_sdin (.clk(mclk), .d1(jb_sdin_int), .d2(jb_sdin_int), .q(jb_da_sdin));
     oddr_out u_fwd_jc_da_sdin (.clk(mclk), .d1(jc_sdin_int), .d2(jc_sdin_int), .q(jc_da_sdin));
 
-    // ----- Phase 4: the PS, alongside the audio datapath -----
-    // Instantiated HERE, inside the top module, rather than from a wrapper
-    // above it. The XDC names these instances by absolute path
-    // (u_fwd_*/u_oddr/C, see the note at the ODDR forwarders above), so adding
-    // a level of hierarchy above phase3_top silently invalidates 25 timing
-    // constraints and implementation then fails in IO clock placement
-    // (observed 2026-09-22).
-    //
-    // ps_sys_wrapper has no ports: on ZynqMP the PS's DDR and MIO are internal
-    // to the PS8 block, so nothing here connects to the fabric and no extra
-    // constraints are needed. Its purpose is to put the PS configuration into
-    // the design, which is what makes the exported XSA usable for EDF/Yocto.
-    // Phase 5 will connect it (M_AXI_HPM0_LPD, clocked from pl_clk0).
+    // ----- The PS lives inside this module, not in a wrapper above it -----
+    // ps_sys_wrapper (instantiated with the Phase 5 register block, above) sits
+    // HERE rather than in a wrapper above phase3_top. The XDC names these
+    // instances by absolute path (u_fwd_*/u_oddr/C, see the note at the ODDR
+    // forwarders above), so adding a level of hierarchy above phase3_top
+    // silently invalidates 25 timing constraints and implementation then fails
+    // in IO clock placement (observed 2026-09-22).
     //
     // Guarded by a define, not a parameter, so the text is removed by the
     // preprocessor: phase1-3 projects and the Icarus sim never reference a
     // module that only exists once scripts/create_project.tcl builds the BD.
     // create_project.tcl sets INCLUDE_PS for phase4 onwards.
-`ifdef INCLUDE_PS
-    ps_sys_wrapper u_ps ();
-`endif
 
 endmodule

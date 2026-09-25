@@ -12,6 +12,7 @@
 #
 # Usage (from repo root):
 #   make -f scripts/sim.mk matrix     # matrix unit test
+#   make -f scripts/sim.mk regs       # Phase 5 AXI gain registers + CDC + matrix
 #   make -f scripts/sim.mk phase3     # full phase-3 datapath integration test
 #   make -f scripts/sim.mk all        # both (default)
 #   make -f scripts/sim.mk clean
@@ -29,8 +30,8 @@ SIM      := src/sim
 CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv
 
-.PHONY: all rx tx txphase loopback matrix phase3 dynamic clean
-all: rx tx txphase loopback matrix phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix regs phase3 dynamic clean
+all: rx tx txphase loopback matrix regs phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -70,6 +71,13 @@ matrix: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix -o $(BUILD)/tb_pcm_matrix.vvp \
 		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix.vvp
+
+# --- Phase 5: AXI4-Lite gain registers across aclk/mclk into the matrix ---
+regs: | $(BUILD)
+	@echo ">>> Building tb_matrix_regs"
+	@$(IVERILOG) $(FLAGS) -s tb_matrix_regs -o $(BUILD)/tb_matrix_regs.vvp \
+		$(RTL)/matrix_regs_axil.sv $(RTL)/pcm_matrix.sv $(SIM)/tb_matrix_regs.sv
+	@$(VVP) $(BUILD)/tb_matrix_regs.vvp
 
 # --- Phase-3 integration: real phase3_top, MMCM stubbed, rx/tx as fixtures ---
 # -DSIM_ODDR selects the behavioral ODDR model inside oddr_out (the Xilinx

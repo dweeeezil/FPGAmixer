@@ -18,3 +18,7 @@ buildhost.local.md
 
 # ---- Generated System Device Tree (sdtgen output, see docs/setup_edf_hyperv_vm.md) ----
 build/
+
+# ---- OSC server runtime state + Python caches (tools/) ----
+mixer_state.json
+__pycache__/

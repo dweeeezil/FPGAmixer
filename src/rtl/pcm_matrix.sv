@@ -1,12 +1,15 @@
 // -----------------------------------------------------------------------------
 // pcm_matrix.sv
 //
-// Static N-in / N-out PCM crosspoint matrix mixer.
+// N-in / N-out PCM crosspoint matrix mixer.
 //
 //   out[o] = saturate( sum over i of ( in[i] * GAIN[o][i] ) )
 //
-// Every crosspoint gain is a compile-time constant (Phase 3 has no runtime
-// control yet). Samples are signed two's-complement PCM. Gains are signed
+// Crosspoint gains arrive on the gains_flat port (Phase 5: from the PS via
+// matrix_regs_axil; Phase 3 tied it to a constant). gains_flat must be in the
+// mclk domain and only change between frames -- it is sampled on the same edge
+// as sample_valid_i, so a whole-bank update lands atomically on one frame.
+// Samples are signed two's-complement PCM. Gains are signed
 // fixed-point in Q(GAIN_WIDTH-GAIN_FRAC . GAIN_FRAC) format, so with the
 // defaults (GAIN_WIDTH=18, GAIN_FRAC=16) a gain of 1.0 is 18'sh10000, 0.5 is
 // 18'sh08000, -1.0 (phase invert) is 18'sh30000, and 0.0 mutes the crosspoint.
@@ -23,15 +26,16 @@
 // hand-checkable. Rounding is a one-line half-LSB add before the shift and can
 // be added later without changing the interface.
 //
-// The SAMPLE_WIDTH operand + 18-bit gain maps to one DSP48E1 per crosspoint on
-// the Zynq-7 (25x18 signed multiplier), so an N=4 matrix infers 16 DSP48s.
+// The SAMPLE_WIDTH operand + 18-bit gain maps to one DSP48E2 per crosspoint
+// (27x18 signed multiplier), so an N=4 matrix infers 16 DSPs. With constant
+// gains (Phase 3) synthesis folded most of them away; runtime gains keep them.
 //
 // PORT FORMAT: samples are carried as flat PACKED vectors (channel c occupies
 // bits [c*SAMPLE_WIDTH +: SAMPLE_WIDTH], interpreted signed), not unpacked
 // arrays. Packed vectors propagate identically across every simulator and
 // synthesizer; unpacked-array *output* ports do not (Icarus, in particular,
-// drops them). GAINS are likewise passed flattened, indexed
-//   GAIN[o][i] = GAINS_FLAT[(o*N + i)*GAIN_WIDTH +: GAIN_WIDTH].
+// drops them). Gains are likewise passed flattened, indexed
+//   GAIN[o][i] = gains_flat[(o*N + i)*GAIN_WIDTH +: GAIN_WIDTH].
 //
 // Timing: out is a function of in only. Outputs register on sample_valid_i
 // (one pulse per audio frame); sample_valid_o is sample_valid_i delayed one
@@ -41,13 +45,13 @@ module pcm_matrix #(
     parameter int N            = 4,
     parameter int SAMPLE_WIDTH = 24,
     parameter int GAIN_WIDTH   = 18,
-    parameter int GAIN_FRAC    = 16,
-    // Default: N x N identity (out[k] = in[k] at unity). Override per design.
-    parameter logic [N*N*GAIN_WIDTH-1:0] GAINS_FLAT = build_identity()
+    parameter int GAIN_FRAC    = 16
 ) (
     input  logic mclk,
     input  logic rst_n,
     input  logic sample_valid_i,
+
+    input  logic [N*N*GAIN_WIDTH-1:0] gains_flat, // packed, see header; signed Q
 
     input  logic [N*SAMPLE_WIDTH-1:0] in_flat,   // packed: ch c = [c*SW +: SW], signed
     output logic [N*SAMPLE_WIDTH-1:0] out_flat,  // packed, same layout
@@ -62,15 +66,6 @@ module pcm_matrix #(
     localparam signed [SAMPLE_WIDTH-1:0] SAMP_MAX =  (1 <<< (SAMPLE_WIDTH-1)) - 1;
     localparam signed [SAMPLE_WIDTH-1:0] SAMP_MIN = -(1 <<< (SAMPLE_WIDTH-1));
 
-    // Default-gain helper: unity on the diagonal, zero elsewhere.
-    function automatic logic [N*N*GAIN_WIDTH-1:0] build_identity();
-        logic [N*N*GAIN_WIDTH-1:0] g;
-        g = '0;
-        for (int o = 0; o < N; o++)
-            g[(o*N + o)*GAIN_WIDTH +: GAIN_WIDTH] = (1 <<< GAIN_FRAC);
-        return g;
-    endfunction
-
     // ----- Unpack flat ports/params into arrays at elaboration -----
     // All part-selects here use genvar-constant bases, which every tool
     // supports; the always block below then does plain array reads.
@@ -82,7 +77,7 @@ module pcm_matrix #(
         for (go = 0; go < N; go++)
             for (gi = 0; gi < N; gi++)
                 assign gain_arr[go][gi] =
-                    $signed(GAINS_FLAT[(go*N + gi)*GAIN_WIDTH +: GAIN_WIDTH]);
+                    $signed(gains_flat[(go*N + gi)*GAIN_WIDTH +: GAIN_WIDTH]);
 
         for (gk = 0; gk < N; gk++)
             assign in_arr[gk] = $signed(in_flat[gk*SAMPLE_WIDTH +: SAMPLE_WIDTH]);
