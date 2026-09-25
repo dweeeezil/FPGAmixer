@@ -2,7 +2,7 @@
 // clk_wiz_audio_stub.sv   (SIMULATION ONLY -- never synthesized)
 //
 // Behavioral stand-in for the Vivado Clocking Wizard IP `clk_wiz_audio`, so
-// phase3_top can be elaborated and simulated in a plain command-line simulator
+// fpgamixer_top can be elaborated and simulated in a plain command-line simulator
 // that has no Xilinx IP. Generates a free-running ~12.288 MHz clk_out1 and
 // asserts `locked` after a short delay. Frequency accuracy is irrelevant in
 // sim -- only the ratios produced by i2s_clock_divider matter.

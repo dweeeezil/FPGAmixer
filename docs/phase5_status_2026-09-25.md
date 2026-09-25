@@ -91,6 +91,32 @@ The server used to save `{"mixer_name": ..., "values": {"zone/index/module": v}}
 - The rename test (`--include-destructive`) now also passes: **19/20** against the simulator, and the only failure is the known unframed-TCP case.
 - Old flat files are converted on load, and the original is kept as `mixer_state.json.flat.bak`. The board's current `~/mixer_state.json` is in the flat format and converts itself on the next server start; nothing needs doing by hand.
 
+### Refactor D1–D4 (2026-09-25), after the hardware proved the Phase 5 build
+
+The four seams listed in `architecture_modules.md` §5 were fixed one at a time, each verified and committed on its own. Design and file map: `architecture_modules.md` §1.1 and §5.
+
+| Step | Commit | Change | Verified by |
+|---|---|---|---|
+| D3 | `165b0b3` | `pcm_matrix` takes `N_IN`/`N_OUT` | new `tb_pcm_matrix_rect` (3→5, 5→2); a planted stride bug fails it (984 mismatches) and passes the 4×4 TB |
+| D2 | `1974c1d` | `axil_coef_window` + `coef_bank_handoff` (generic); `matrix_regs_axil` is only the binding; CDC XDC scoped to the module | `tb_matrix_regs` unchanged apart from parameter names; Vivado (below) |
+| D4 | `ee9b952` | server zone → `Backend` table; `mixer_hw` `RegWindow` / `MatrixHW` / explicit `WINDOWS` map | OSC suite 19/20 in simulation; the hw path on Linux against a fake register file |
+| D1 | *(this commit)* | `fpgamixer_top` (wiring only) + `audio_clocking` + 2 × `i2s_port`; board XDC renamed, 9 paths updated | all 10 TBs; Vivado (below) |
+
+**Vivado, D1 + D2 together** (`build/d1d2_*.rpt`, `build/fpgamixer_d1d2.xsa`):
+
+| | Phase 5 build | After D1+D2 |
+|---|---|---|
+| WNS / WHS | +2.296 / +0.029 ns | +2.282 / +0.032 ns (routing variation; the WNS path is still the codec RX-sampling check) |
+| LUTs / FFs / DSP48E2 | 955 / 1711 / 16 | 955 / 1711 / 16, identical |
+| CDC report | 2 × CDC-3, 288 × CDC-15 | same |
+| CDC exceptions | from `phase5_cdc.xdc` (instance paths) | from the **scoped** `coef_bank_handoff.xdc`: 288 + 1 + 1 paths, all `MaxDelay 10 ns -datapath_only`, worst slack +9.155 ns |
+| Forwarded clocks | 8 | 8 (`fwd_{mclk,sclk}_{jb,jc}_{da,ad}`), so every moved XDC path resolved |
+| Critical warnings | 0 | 0 |
+
+Identical utilization says the refactor changed the structure of the source, not the hardware. Two build notes: Vivado on Windows fails when a project path passes 248 characters (a first attempt from a deep scratch-directory worktree died in the PS IP synthesis), so build from the repo checkout. And `phase4` in `create_project.tcl` now builds the same thing as `phase5`; the PS-only Phase 4 design is at `82d4386`.
+
+**Still to do: re-run the board tests on this bitstream** (same steps as §3) to close the refactor on hardware.
+
 ## 4. Decisions (2026-09-25)
 
 | Question | Decision |

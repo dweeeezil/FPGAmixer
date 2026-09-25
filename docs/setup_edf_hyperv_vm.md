@@ -216,7 +216,7 @@ On ZynqMP, the PS block has to be the **Zynq UltraScale+ MPSoC** IP with **Apply
 
 Verify it survives into the SDT: `grep enet-tsu-clk-freq-hz ~/edf/sdt/pcw.dtsi` should print `<250000000>`.
 
-**Do not wrap the RTL top to add the PS.** `constraints/phase3_genesys_zu.xdc` names ODDR instances by absolute path (`u_fwd_*/u_oddr/C`). Adding a level of hierarchy above `phase3_top` invalidates 25 constraints, which Vivado reports only as critical warnings during XDC parsing, and implementation then fails in `place_design` with "IO Clock Placer failed" (tried 2026-09-22). The PS is instead instantiated **inside** `phase3_top` under `` `ifdef INCLUDE_PS ``. The BD wrapper has no ports — on ZynqMP the PS's DDR and MIO never enter the fabric — so there is nothing to connect and no constraints to add.
+**Do not wrap the RTL top to add the PS.** The board XDC (now `constraints/fpgamixer_genesys_zu.xdc`) names a few instances by path. Adding a level of hierarchy above the top invalidates those constraints, which Vivado reports only as critical warnings during XDC parsing, and implementation then fails in `place_design` with "IO Clock Placer failed" (tried 2026-09-22). The PS is instead instantiated **inside** the top (`fpgamixer_top`, formerly `phase3_top`) under `` `ifdef INCLUDE_PS ``. In Phase 4 the BD wrapper had no ports; since Phase 5 it exports the `M_AXI_CTRL` control port (`docs/architecture_modules.md` §4.1). *Updated 2026-09-25 for the D1 refactor: the instance paths are now `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*/u_oddr`.*
 
 ## 9. Board-specific snags to expect (no Digilent EDF BSP exists)
 

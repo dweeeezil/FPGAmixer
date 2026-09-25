@@ -43,18 +43,19 @@ set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 
-# phase4 = the hardware-verified phase3 datapath + the PS, so it keeps BOTH
-# phase3_top and the Phase 3 XDC. The PS is instantiated inside phase3_top
-# under `ifdef INCLUDE_PS.
+# phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top).
+# phase3          : fpgamixer_top WITHOUT the PS -- the static matrix, gains
+#                   tied to MATRIX_GAINS.
+# phase4, phase5  : fpgamixer_top WITH the PS (INCLUDE_PS): the BD, the
+#                   M_AXI_CTRL port and the matrix gain registers. Since the
+#                   Phase 5 control plane landed these are the same build; the
+#                   PS-only Phase 4 design is in git history (82d4386).
 #
-# Do NOT wrap phase3_top in a higher-level top to add the PS: the XDC names
-# instances by absolute path (u_fwd_*/u_oddr/C), so an extra hierarchy level
-# drops 25 constraints and implementation fails in IO clock placement. Tried
-# 2026-09-22; that is what the `ifdef exists to avoid.
-#
-# phase5 = phase4 + the AXI4-Lite gain registers (matrix_regs_axil, reached
-# through M_AXI_CTRL on the BD) and their CDC constraints. The PS itself is
-# configured identically.
+# The top-level XDC names a few instances by path (u_clk/u_mmcm and
+# u_jb|u_jc/u_fwd_*/u_oddr). Adding hierarchy ABOVE fpgamixer_top, or renaming
+# those instances, needs that file updated in the same change: a missed path is
+# only a critical warning at parse time, and implementation then fails in IO
+# clock placement (seen 2026-09-22).
 #
 # scoped_xdc: module-scoped constraint files, as {file module} pairs. Each is
 # applied to EVERY instance of its module (SCOPED_TO_REF), with cell names
@@ -62,12 +63,12 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 # naming instance paths in the top-level XDC (docs/architecture_modules.md).
 set include_ps 0
 set scoped_xdc {}
+if {$current_phase in {phase3 phase4 phase5}} {
+    set synth_top "fpgamixer_top"
+    set xdc_file  "constraints/fpgamixer_genesys_zu.xdc"
+}
 if {$current_phase in {phase4 phase5}} {
     set include_ps 1
-    set synth_top "phase3_top"
-    set xdc_file  "constraints/phase3_genesys_zu.xdc"
-}
-if {$current_phase eq "phase5"} {
     lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
 }
 
@@ -268,7 +269,7 @@ if {$include_ps} {
 
     # ----- Phase 5: AXI4-Lite control port for the matrix gains -----
     # M_AXI_HPM0_LPD -> SmartConnect (AXI4 -> AXI4-Lite, ID/burst handling)
-    # -> external port M_AXI_CTRL, which phase3_top connects to
+    # -> external port M_AXI_CTRL, which fpgamixer_top connects to
     # matrix_regs_axil. The register block is plain RTL outside the BD so the
     # Icarus/XSim testbenches exercise the same source that is synthesized.
     # Mapped at 0x8000_0000 (start of the LPD PL window), 4 KB.
@@ -337,9 +338,9 @@ dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
     save_bd_design
     add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
 
-    # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in phase3_top.
+    # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in fpgamixer_top.
     set_property verilog_define {INCLUDE_PS} [get_filesets sources_1]
-    puts "INFO: verilog_define INCLUDE_PS set -- phase3_top instantiates the PS"
+    puts "INFO: verilog_define INCLUDE_PS set -- fpgamixer_top instantiates the PS"
 }
 
 # ------ Methodology gate ------

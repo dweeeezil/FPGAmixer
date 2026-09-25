@@ -52,9 +52,9 @@ set_property -dict {PACKAGE_PIN A13 IOSTANDARD LVCMOS33} [get_ports jc_ad_sdout]
 # is acceptable here: the MMCM reconditions the clock and the 12.288 MHz audio
 # domain has ~81 ns of margin. The cleaner long-term fix is to source the PL
 # clock from the PS (pl_clk) once the PS is brought up at Phase 4, instead of
-# this HDIO pin. Net name is the clk_wiz (u_mmcm) input; matches Vivado's own
+# this HDIO pin. Net name is the clk_wiz (u_clk/u_mmcm) input; matches Vivado's own
 # suggestion in the placer error.
-set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets u_mmcm/inst/clk_in1_clk_wiz_audio]
+set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets u_clk/u_mmcm/inst/clk_in1_clk_wiz_audio]
 
 # =============================================================================
 # Pmod JB : Pmod I2S2 #1   (jb_* ports)
@@ -79,7 +79,7 @@ set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets u_mmcm/inst/clk_in1_
 # datasheet numbers, and the 12.288 MHz mclk / /4 sclk tree is identical to the
 # Arty build, so it is carried over unchanged from the archived Arty XDC.
 #
-# Companion to the ODDR forwarders in phase3_top (u_fwd_*/u_oddr) -- see the
+# Companion to the ODDR forwarders in i2s_port (u_jb|u_jc/u_fwd_*/u_oddr) -- see the
 # archived docs/archive/handoff_codec_interface_timing.md. Every codec-facing
 # pin launches from an ODDR clocked by mclk (clk_out1_clk_wiz_audio,
 # 12.288 MHz, T=81.380 ns).
@@ -111,15 +111,15 @@ set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets u_mmcm/inst/clk_in1_
 # =============================================================================
 
 # ------ Forwarded-clock definitions at the pins (one per ODDR) ------
-create_generated_clock -name fwd_mclk_jb_da -source [get_pins u_fwd_jb_da_mclk/u_oddr/C] -divide_by 1 [get_ports jb_da_mclk]
-create_generated_clock -name fwd_mclk_jb_ad -source [get_pins u_fwd_jb_ad_mclk/u_oddr/C] -divide_by 1 [get_ports jb_ad_mclk]
-create_generated_clock -name fwd_mclk_jc_da -source [get_pins u_fwd_jc_da_mclk/u_oddr/C] -divide_by 1 [get_ports jc_da_mclk]
-create_generated_clock -name fwd_mclk_jc_ad -source [get_pins u_fwd_jc_ad_mclk/u_oddr/C] -divide_by 1 [get_ports jc_ad_mclk]
+create_generated_clock -name fwd_mclk_jb_da -source [get_pins u_jb/u_fwd_da_mclk/u_oddr/C] -divide_by 1 [get_ports jb_da_mclk]
+create_generated_clock -name fwd_mclk_jb_ad -source [get_pins u_jb/u_fwd_ad_mclk/u_oddr/C] -divide_by 1 [get_ports jb_ad_mclk]
+create_generated_clock -name fwd_mclk_jc_da -source [get_pins u_jc/u_fwd_da_mclk/u_oddr/C] -divide_by 1 [get_ports jc_da_mclk]
+create_generated_clock -name fwd_mclk_jc_ad -source [get_pins u_jc/u_fwd_ad_mclk/u_oddr/C] -divide_by 1 [get_ports jc_ad_mclk]
 
-create_generated_clock -name fwd_sclk_jb_da -source [get_pins u_fwd_jb_da_sclk/u_oddr/C] -divide_by 4 [get_ports jb_da_sclk]
-create_generated_clock -name fwd_sclk_jb_ad -source [get_pins u_fwd_jb_ad_sclk/u_oddr/C] -divide_by 4 [get_ports jb_ad_sclk]
-create_generated_clock -name fwd_sclk_jc_da -source [get_pins u_fwd_jc_da_sclk/u_oddr/C] -divide_by 4 [get_ports jc_da_sclk]
-create_generated_clock -name fwd_sclk_jc_ad -source [get_pins u_fwd_jc_ad_sclk/u_oddr/C] -divide_by 4 [get_ports jc_ad_sclk]
+create_generated_clock -name fwd_sclk_jb_da -source [get_pins u_jb/u_fwd_da_sclk/u_oddr/C] -divide_by 4 [get_ports jb_da_sclk]
+create_generated_clock -name fwd_sclk_jb_ad -source [get_pins u_jb/u_fwd_ad_sclk/u_oddr/C] -divide_by 4 [get_ports jb_ad_sclk]
+create_generated_clock -name fwd_sclk_jc_da -source [get_pins u_jc/u_fwd_da_sclk/u_oddr/C] -divide_by 4 [get_ports jc_da_sclk]
+create_generated_clock -name fwd_sclk_jc_ad -source [get_pins u_jc/u_fwd_ad_sclk/u_oddr/C] -divide_by 4 [get_ports jc_ad_sclk]
 
 # ------ DAC data outputs: SDIN vs the same Pmod's forwarded SCLK ------
 set_output_delay -clock fwd_sclk_jb_da -max 20.000 [get_ports jb_da_sdin]

@@ -27,9 +27,12 @@ BUILD    ?= build_sim
 RTL      := src/rtl
 SIM      := src/sim
 
-# RTL needed by the datapath (excludes phaseN_top except phase3).
+# RTL for the full non-PS top (fpgamixer_top without INCLUDE_PS): the platform
+# clocking, the I2S front doors and the PCM core. Excludes the legacy
+# phase1/phase2 tops and the control plane (not instantiated without the PS).
 CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
-            $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv
+            $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
+            $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
 .PHONY: all rx tx txphase loopback matrix matrix_rect regs phase3 dynamic clean
 all: rx tx txphase loopback matrix matrix_rect regs phase3 dynamic
@@ -88,7 +91,7 @@ regs: | $(BUILD)
 		$(RTL)/pcm_matrix.sv $(SIM)/tb_matrix_regs.sv
 	@$(VVP) $(BUILD)/tb_matrix_regs.vvp
 
-# --- Phase-3 integration: real phase3_top, MMCM stubbed, rx/tx as fixtures ---
+# --- Phase-3 integration: real fpgamixer_top (no PS), MMCM stubbed, rx/tx as fixtures ---
 # -DSIM_ODDR selects the behavioral ODDR model inside oddr_out (the Xilinx
 # primitive doesn't elaborate under Icarus). Sim-only define -- Vivado
 # synthesis must see the real primitive. NOTE: a green run here only proves
@@ -97,7 +100,7 @@ regs: | $(BUILD)
 phase3: | $(BUILD)
 	@echo ">>> Building tb_phase3_datapath"
 	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_datapath -o $(BUILD)/tb_phase3_datapath.vvp \
-		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/phase3_top.sv \
+		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_datapath.sv
 	@$(VVP) $(BUILD)/tb_phase3_datapath.vvp
 
@@ -105,7 +108,7 @@ phase3: | $(BUILD)
 dynamic: | $(BUILD)
 	@echo ">>> Building tb_phase3_dynamic"
 	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_dynamic -o $(BUILD)/tb_phase3_dynamic.vvp \
-		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/phase3_top.sv \
+		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_dynamic.sv
 	@$(VVP) $(BUILD)/tb_phase3_dynamic.vvp
 
