@@ -193,8 +193,27 @@ Each step is committed separately and verified before the next. The status doc a
 | 5 | **Status window:** new generic `axil_stat_window` (RO counters, same header) at 0x8000_1000? Exposed over OSC now or later? | **New window; OSC later.** |
 | 6 | **Clock bridging:** feedback-endpoint servo in Linux, trying stock `alsaloop` first? | **Yes.** ASRC stays a Phase 9 question. |
 
+### 9.1 Decisions (user, 2026-09-25)
+
+| # | Decision |
+|---|---|
+| 1 | **Device mode**, and **also host mode**: the board should be able to host a class-compliant USB audio device and route its audio through the matrix. See §9.2. |
+| 2 | **(a)** Audio Formatter + our own ASoC machine driver. |
+| 3 | **8 + 8** link channels for the Mac, core **12 × 12**, Pmods stay 0–3. |
+| 4 | New crosspoints seeded as **identity** (Mac out *k* → Mac in *k*). |
+| 5 | New generic **`axil_stat_window`** at 0x8000_1000; OSC exposure later. |
+| 6 | **Feedback-pitch servo in Linux**, trying stock `alsaloop` first. |
+
+### 9.2 Host mode as well: what it means for the design
+
+- **No role switching is needed.** Host mode uses **USB1** (the Type-A ports via the USB2513B hub), which is a separate controller and stays `dr_mode = "host"`. Device mode uses **USB0** (Type-C). So the Mac on Type-C and an interface on Type-A can be connected **at the same time**. `CONFIG_SND_USB_AUDIO=y` is already in the kernel.
+- **It is a second front door, so it gets its own link.** A second `pcm_link` + formatter instance gives a second ALSA card; nothing in the first changes. `pcm_link` and the machine driver are written for *N* instances from the start (a parameter and a DT node each, no USB-specific code).
+- **Clock bridging differs:** an interface's clock can't be steered, so its bridge resamples in Linux (`alsaloop` samplerate mode, or the C bridge with a resampler). That is still inside that front door's Linux half.
+- **The DSP budget is the real constraint.** 4 + 8 + 8 = 20 channels fully parallel = 400 crosspoints > 360 DSP48E2s. So host mode arrives together with a **time-multiplexed `pcm_matrix`** (256 `mclk` cycles per frame are available; same ports and coefficient contract, so nothing around it changes), or with a smaller host link (the formatter supports 2/4/6/8). **Decided when that step is reached**; the device-mode steps below don't depend on it.
+- New step **P8.8** (after P8.7): host-mode link instance + resampling bridge + the matrix-size decision.
+
 ---
 
 ## 10. Log
 
-- **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. No code yet.
+- **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
