@@ -101,6 +101,15 @@ Adding a block = one more SmartConnect master port, one more window, one more re
 - The OSC address `/<name>/<set|get>/<zone>/<index>/<module>` selects a **zone**; each zone is served by one **backend** that knows one block type and one register window.
 - Today: zone `inputMatrix` → `Matrix` (in `tools/osc_mixer_server.py`) → `MatrixHW` (`tools/mixer_hw.py`) → window 0x8000_0000. Everything else is stored and echoed generically.
 - A backend validates and converts units (dB → Q2.16), and the echo carries the value actually applied.
+- **Stored state mirrors the OSC tree.** The state file (`mixer_state.json`) is the address tail `<zone>/<index>/<module>` as nested JSON objects, with the values as leaves; the zones are the top-level keys, and nothing wraps them:
+  ```json
+  {
+    "system":       { "deviceName": "FOHmixer" },
+    "inputChannel": { "0": { "level": -6.0 } },
+    "inputMatrix":  { "0_0": { "level": 0.0, "delay": 2.39 } }
+  }
+  ```
+  The mixer name (the address root) lives only at `system.deviceName`. A value can't sit where the tree has a branch, or the other way round; such a set is ignored, not stored or echoed. That's the tree's only rule, and addresses that follow the standard's `zone/index/module` shape never hit it. Full rules: the `STATE FILE FORMAT` section of `tools/osc_mixer_server.py`. This format is a contract, not an implementation detail. Phase 6 persistence and any future server read and write the same tree, and adding a zone or module never changes the format.
 - The Python server is **interim**; the final server is a separate design. The backend/window split is the part meant to survive into it.
 
 ---

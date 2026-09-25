@@ -83,6 +83,14 @@ Phase 5's goal (roadmap §3): crosspoints changeable live from the Mac app over 
 
 **Phase 5 exit criterion status:** crosspoints are changeable live over OSC, verified by the test suite, by ear through `mixer_hw.py`, and through the server. What's still missing is the Mac app itself, which needs a network path from the Mac to the board (§5).
 
+### State file restructured to mirror the OSC tree (2026-09-25)
+
+The server used to save `{"mixer_name": ..., "values": {"zone/index/module": v}}`, a flat dict that also held the device name twice. It now saves the OSC address tree itself (format and rules in `architecture_modules.md` §4.2 and the server header):
+
+- `system/deviceName/` and `system/deviceName` are the same node. Setting either one renames the mixer, and a non-string name is ignored. Before, only the trailing-slash spelling renamed, while the other just stored a value.
+- The rename test (`--include-destructive`) now also passes: **19/20** against the simulator, and the only failure is the known unframed-TCP case.
+- Old flat files are converted on load, and the original is kept as `mixer_state.json.flat.bak`. The board's current `~/mixer_state.json` is in the flat format and converts itself on the next server start; nothing needs doing by hand.
+
 ## 4. Decisions (2026-09-25)
 
 | Question | Decision |
@@ -95,7 +103,8 @@ Phase 5's goal (roadmap §3): crosspoints changeable live from the Mac app over 
 
 ## 5. Open / next
 
-- **Mac ↔ board network path.** The board's single Ethernet port is cabled to the Pi's I350 for gPTP, on the private 10.0.0.x link, so the Mac can't reach the OSC server yet. Options: route the Pi between Wi-Fi and `eth4`; move the board onto the LAN when no PTP work is going on; or add a USB-Ethernet adapter on the board.
+- **Mac app: a separate subproject, deferred** (decided 2026-09-25). OSC control is exercised with the user's existing tools (TouchDesigner, Python, Ableton), so the Mac app isn't a Phase 5 blocker. Those tools still need a network path to the board, whose single Ethernet port is on the Pi's private 10.0.0.x gPTP link. The options are to route through the Pi, move the board onto the LAN, or add a USB-Ethernet adapter; this is decided whenever it's needed.
+- **Non-finite values in the state file.** The server accepts NaN/±inf (the test suite sends them) and Python's `json` writes them as `NaN`/`Infinity`, which isn't strict JSON, so other tools may refuse such a file. Decide: reject non-finite values at the protocol level, or clamp them.
 - **Refactor D1–D4** (`architecture_modules.md` §5) once the Phase 5 bitstream is proven on hardware.
 - **Zipper noise** (deferred, see §4).
 - **`/dev/mem` → UIO.** A `generic-uio` node in `system-user.dtsi` would drop the root/`/dev/mem` requirement; needs `CONFIG_UIO_PDRV_GENIRQ` and the `of_id` bootarg checked in the EDF kernel.

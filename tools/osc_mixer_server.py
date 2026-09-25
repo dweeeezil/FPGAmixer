@@ -67,9 +67,31 @@ Usage:
     # next to this script:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --hw
 
-State persists to mixer_state.json (next to this script by default) and is
-reloaded on the next launch, simulating power-cycle restore. Pass
+State persists to mixer_state.json (in the working directory by default)
+and is reloaded on the next launch, simulating power-cycle restore. Pass
 --state-file '' to disable persistence.
+
+STATE FILE FORMAT: the file mirrors the OSC address tree. The address tail
+'<zone>/<index>/<module>' becomes nested JSON objects, and the value is the
+leaf:
+
+    /FOHmixer/set/inputChannel/0/level -6.0      ->  {"inputChannel": {"0": {"level": -6.0}}}
+    /FOHmixer/set/inputMatrix/5_8/delay 2.39     ->  {"inputMatrix": {"5_8": {"delay": 2.39}}}
+    /mixer/set/system/deviceName/ "FOHmixer"     ->  {"system": {"deviceName": "FOHmixer"}}
+
+  - Nothing wraps the tree: the top-level keys ARE the zones.
+  - The mixer name (the address root) is stored only at system.deviceName.
+    --mixer-name is just the default for a file that doesn't have one.
+  - Trailing empty segments are dropped, so the standard's literal
+    'system/deviceName/' and 'system/deviceName' are the same node.
+  - A path that would put a value where the tree already has a branch, or a
+    branch where it has a value (say 'inputChannel/0' = 1 when
+    'inputChannel/0/level' exists), can't be stored in a tree. Such a set is
+    ignored: not stored, not echoed, logged. Empty segments inside a path
+    ('a//b') are ignored the same way.
+  - A get on a missing path, or on a branch, replies with the default 0.0.
+  - Files in the earlier flat format ({"mixer_name": ..., "values": {...}})
+    are converted on load; the original is kept as <file>.flat.bak.
 """
 
 import argparse
@@ -177,6 +199,7 @@ def decode_message(data: bytes, offset: int = 0):
 # ---------------------------------------------------------------------------
 
 DEVICE_NAME_KEY = "system/deviceName/"  # mirrors the doc's own literal example format
+DEVICE_NAME_PATH = ("system", "deviceName")
 
 VERBOSE = False
 
@@ -190,56 +213,165 @@ def log(msg):
         print(msg, flush=True)
 
 
+def split_path(tail):
+    """'zone/index/module' -> ('zone', 'index', 'module'), or None if the
+    tail can't name a tree node. Trailing empty segments are dropped (the
+    standard writes 'system/deviceName/'); any other empty segment is invalid."""
+    parts = tail.split("/")
+    while parts and parts[-1] == "":
+        parts.pop()
+    if not parts or any(p == "" for p in parts):
+        return None
+    return tuple(parts)
+
+
+def is_device_name(tail):
+    return split_path(tail) == DEVICE_NAME_PATH
+
+
 class MixerState:
-    """Generic address(-tail) -> value store. Any 'zone/index/module' string
-    is a valid key — nothing is pre-declared, matching a standard that
-    doesn't enumerate a fixed parameter list."""
+    """Value store shaped like the OSC address tree (see STATE FILE FORMAT in
+    the module docstring). Any 'zone/index/module' path is valid -- nothing is
+    pre-declared, matching a standard that doesn't enumerate a fixed parameter
+    list -- as long as it fits the tree."""
 
-    def __init__(self, mixer_name, persist_path):
+    def __init__(self, default_name, persist_path):
         self.lock = threading.RLock()
-        self.mixer_name = mixer_name
         self.persist_path = persist_path
-        self.values = {}
+        self.tree = {}
         self._load()
+        if not isinstance(self._lookup(DEVICE_NAME_PATH), str):
+            self._put(DEVICE_NAME_PATH, default_name)
+            self._save()
 
+    # ----- tree primitives (caller holds the lock) -----
+    def _lookup(self, path):
+        node = self.tree
+        for seg in path:
+            if not isinstance(node, dict) or seg not in node:
+                return None
+            node = node[seg]
+        return node
+
+    def _conflict(self, path):
+        """Why a value can't be stored at path, or None if it can."""
+        node = self.tree
+        for i, seg in enumerate(path[:-1]):
+            nxt = node.get(seg)
+            if nxt is None:
+                return None  # the rest of the branch gets created
+            if not isinstance(nxt, dict):
+                return f"'{'/'.join(path[:i + 1])}' already holds a value"
+            node = nxt
+        if isinstance(node.get(path[-1]), dict):
+            return f"'{'/'.join(path)}' is a branch with values under it"
+        return None
+
+    def _put(self, path, value):
+        node = self.tree
+        for seg in path[:-1]:
+            node = node.setdefault(seg, {})
+        node[path[-1]] = value
+
+    # ----- persistence -----
     def _load(self):
-        if self.persist_path and os.path.exists(self.persist_path):
-            try:
-                with open(self.persist_path) as f:
-                    data = json.load(f)
-                self.mixer_name = data.get("mixer_name", self.mixer_name)
-                self.values = data.get("values", {})
-                print(f"Restored {len(self.values)} value(s), mixer name "
-                      f"{self.mixer_name!r}, from {self.persist_path}")
-            except (OSError, json.JSONDecodeError) as e:
-                print(f"Could not load {self.persist_path} ({e}); starting fresh")
+        if not (self.persist_path and os.path.exists(self.persist_path)):
+            return
+        try:
+            with open(self.persist_path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            log(f"Could not load {self.persist_path} ({e}); starting fresh")
+            return
+        if not isinstance(data, dict):
+            log(f"{self.persist_path} is not a JSON object; starting fresh")
+            return
+
+        if isinstance(data.get("values"), dict) and "mixer_name" in data:
+            self._convert_flat(data)
+        else:
+            self.tree = data
+        log(f"Restored {self._count(self.tree)} value(s), mixer name "
+            f"{self.mixer_name!r}, from {self.persist_path}")
+
+    def _convert_flat(self, data):
+        """Earlier format: {"mixer_name": ..., "values": {"zone/index/module": v}}."""
+        backup = f"{self.persist_path}.flat.bak"
+        os.replace(self.persist_path, backup)
+        for key, value in sorted(data["values"].items()):
+            path = split_path(key)
+            why = "not a valid path" if path is None else self._conflict(path)
+            if why:
+                log(f"    converting {backup}: dropped {key!r} = {value!r} ({why})")
+                continue
+            self._put(path, value)
+        name = data.get("mixer_name")
+        if isinstance(name, str):
+            self._put(DEVICE_NAME_PATH, name)
+        self._save()
+        log(f"Converted flat state file to the OSC-tree format; original kept as {backup}")
 
     def _save(self):
         if not self.persist_path:
             return
         tmp = f"{self.persist_path}.tmp"
         with open(tmp, "w") as f:
-            json.dump({"mixer_name": self.mixer_name, "values": self.values}, f, indent=2, sort_keys=True)
+            json.dump(self.tree, f, indent=2, sort_keys=True)
         os.replace(tmp, self.persist_path)  # atomic-ish, avoids a half-written file on a crash
 
-    def get(self, key, default=0.0):
-        with self.lock:
-            return self.values.get(key, default)
+    @staticmethod
+    def _count(node):
+        if not isinstance(node, dict):
+            return 1
+        return sum(MixerState._count(v) for v in node.values())
 
-    def set(self, key, value):
+    # ----- public API (address tails, as they appear after /<name>/<kind>/) -----
+    @property
+    def mixer_name(self):
         with self.lock:
-            self.values[key] = value
-            self._save()
+            return self._lookup(DEVICE_NAME_PATH)
+
+    def check(self, tail):
+        """None if a value can be stored at tail, else the reason it can't."""
+        path = split_path(tail)
+        if path is None:
+            return "not a valid path (empty segment)"
+        with self.lock:
+            return self._conflict(path)
+
+    def get(self, tail, default=0.0):
+        path = split_path(tail)
+        if path is None:
+            return default
+        with self.lock:
+            value = self._lookup(path)
+        return default if value is None or isinstance(value, dict) else value
+
+    def set(self, tail, value):
+        """Store one value. Returns None on success, else the reason it wasn't stored."""
+        with self.lock:
+            why = self.check(tail)
+            if why is None:
+                self._put(split_path(tail), value)
+                self._save()
+            return why
 
     def set_many(self, updates):
+        """Store several values with one save. Returns {tail: reason} for any rejected."""
+        rejected = {}
         with self.lock:
-            self.values.update(updates)
+            for tail, value in updates.items():
+                why = self.check(tail)
+                if why is None:
+                    self._put(split_path(tail), value)
+                else:
+                    rejected[tail] = why
             self._save()
+        return rejected
 
     def rename(self, new_name):
         with self.lock:
-            self.values[DEVICE_NAME_KEY] = new_name
-            self.mixer_name = new_name
+            self._put(DEVICE_NAME_PATH, new_name)
             self._save()
 
 
@@ -360,7 +492,8 @@ class Matrix:
                     seeded[key] = db
                 levels[(out, inp)] = db
         if seeded:
-            state.set_many(seeded)
+            for tail, why in state.set_many(seeded).items():
+                log(f"    could not seed {tail}: {why}")
         if self.hw is not None:
             self.hw.set_bank_db(levels)
             log(f"Pushed {len(levels)} crosspoint level(s) to the PL matrix "
@@ -371,8 +504,13 @@ MATRIX = None  # set in main()
 
 
 def apply_set(tail, value, state, registry, via):
-    """The one path every set takes (TCP and UDP): apply to the matrix if it
-    is a crosspoint, store, then broadcast the confirmation."""
+    """The one path every set takes (TCP and UDP): check the value fits the
+    state tree, apply it to the matrix if it is a crosspoint, store, then
+    broadcast the confirmation."""
+    why = state.check(tail)
+    if why is not None:
+        log(f"    [{via}] set {tail!r} ignored: {why}")
+        return
     accepted, value = MATRIX.apply(tail, value, via)
     if not accepted:
         return
@@ -399,8 +537,11 @@ def handle_set(tail, args, state, registry, via):
         log(f"    [{via}] set for {tail!r} carried {len(args)} args, using the first")
     value = args[0]
 
-    if tail == DEVICE_NAME_KEY and isinstance(value, str):
-        handle_devicename_change(value, state, registry, via)
+    if is_device_name(tail):
+        if isinstance(value, str):
+            handle_devicename_change(value, state, registry, via)
+        else:
+            log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
         return
 
     apply_set(tail, value, state, registry, via)
@@ -513,8 +654,11 @@ def udp_serve(host, port, state, registry):
             continue
         value = msg.args[0]
 
-        if tail == DEVICE_NAME_KEY and isinstance(value, str):
-            handle_devicename_change(value, state, registry, via)
+        if is_device_name(tail):
+            if isinstance(value, str):
+                handle_devicename_change(value, state, registry, via)
+            else:
+                log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
             continue
 
         apply_set(tail, value, state, registry, via)
@@ -530,7 +674,8 @@ def main():
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
     p.add_argument("--udp-port", type=int, required=True)
-    p.add_argument("--mixer-name", default="mixer", help="initial mixer name / address root (default: mixer)")
+    p.add_argument("--mixer-name", default="mixer",
+                   help="mixer name / address root if the state file has none (default: mixer)")
     p.add_argument("--state-file", default="mixer_state.json",
                     help="persistence file, restored on startup (default: mixer_state.json; "
                          "pass an empty string to disable persistence)")
