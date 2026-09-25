@@ -12,6 +12,7 @@
 #
 # Usage (from repo root):
 #   make -f scripts/sim.mk matrix     # matrix unit test
+#   make -f scripts/sim.mk matrix_rect  # non-square matrices (3->5, 5->2)
 #   make -f scripts/sim.mk regs       # Phase 5 AXI gain registers + CDC + matrix
 #   make -f scripts/sim.mk phase3     # full phase-3 datapath integration test
 #   make -f scripts/sim.mk all        # both (default)
@@ -30,8 +31,8 @@ SIM      := src/sim
 CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv
 
-.PHONY: all rx tx txphase loopback matrix regs phase3 dynamic clean
-all: rx tx txphase loopback matrix regs phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect regs phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect regs phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -71,6 +72,13 @@ matrix: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix -o $(BUILD)/tb_pcm_matrix.vvp \
 		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix.vvp
+
+# --- Non-square matrix: N_IN != N_OUT indexing, random vs a reference ---
+matrix_rect: | $(BUILD)
+	@echo ">>> Building tb_pcm_matrix_rect"
+	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix_rect -o $(BUILD)/tb_pcm_matrix_rect.vvp \
+		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix_rect.sv
+	@$(VVP) $(BUILD)/tb_pcm_matrix_rect.vvp
 
 # --- Phase 5: AXI4-Lite gain registers across aclk/mclk into the matrix ---
 regs: | $(BUILD)

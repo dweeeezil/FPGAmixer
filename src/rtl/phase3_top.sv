@@ -244,7 +244,7 @@ module phase3_top (
 `endif
 
     pcm_matrix #(
-        .N (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (18), .GAIN_FRAC (16)
+        .N_IN (N), .N_OUT (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (18), .GAIN_FRAC (16)
     ) u_matrix (
         .mclk (mclk), .rst_n (rst_n),
         .sample_valid_i (valid_jb),

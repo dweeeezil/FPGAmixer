@@ -81,7 +81,7 @@ module tb_matrix_regs;
         sv_in <= (mcnt % 8 == 0);
     end
 
-    pcm_matrix #(.N (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_mtx (
+    pcm_matrix #(.N_IN (N), .N_OUT (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_mtx (
         .mclk (mclk), .rst_n (mrst_n), .sample_valid_i (sv_in),
         .gains_flat (gains), .in_flat (in_flat), .out_flat (out_flat),
         .sample_valid_o (sv_out)

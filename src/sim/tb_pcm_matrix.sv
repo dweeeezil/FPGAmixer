@@ -78,7 +78,8 @@ module tb_pcm_matrix;
     };
 
     pcm_matrix #(
-        .N            (N),
+        .N_IN         (N),
+        .N_OUT        (N),
         .SAMPLE_WIDTH (SAMPLE_WIDTH),
         .GAIN_WIDTH   (GAIN_WIDTH),
         .GAIN_FRAC    (GAIN_FRAC)
