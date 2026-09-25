@@ -1,0 +1,25 @@
+/*
+ * Genesys ZU-3EG board fixes on top of the sdtgen-generated Linux device tree.
+ */
+
+/*
+ * SD1 (microSD slot): the generated node says xlnx,has-wp = <0>, i.e. no
+ * write-protect line is wired to the controller, but it lacks the generic
+ * "disable-wp" property, so the MMC core trusts the controller's WP status and
+ * the card comes up read-only ("mmcblk0: ... (ro)"). With a read-only card the
+ * esp/storage vfat mounts fail and systemd drops to emergency mode
+ * (first Linux boot, 2026-09-24).
+ */
+&sdhci1 {
+	disable-wp;
+	/*
+	 * With disable-wp alone the card enumerates as "UHS-I speed SDR104" and
+	 * reads work, but writes fail: "mmc0: error -110 writing Cache Flush bit"
+	 * then I/O errors, so root goes read-only and the vfat mounts fail.
+	 * no-1-8-v keeps the card at 3.3 V high speed (no SDR104 through the
+	 * level shifter) -- a diagnostic to isolate the UHS path. Digilent's own
+	 * PetaLinux dtsi (Genesys-ZU-OS, 3eg/master) keeps UHS and instead sets
+	 * xlnx,itap-delay-* values, noting SDR104 tuning "fails on some cards".
+	 */
+	no-1-8-v;
+};

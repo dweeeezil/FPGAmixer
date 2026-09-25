@@ -1,5 +1,7 @@
 # Handoff: Phase 4 — the board does not boot from SD
 
+> **Superseded (2026-09-24, later the same day): the board now boots to Linux from SD.** See `phase4_status_2026-09-24.md`. The actual causes were FSBL's dynamic DDR/SPD path, the wrong SODIMM geometry (x8 vs x16, causing DDR address bit 14 to alias), and then SD `disable-wp` / `no-1-8-v` in Linux. §5's "`dow` is broken" finding is **wrong**: it was the DDR aliasing. This document is kept as a record of the investigation.
+
 **Date:** 2026-09-24
 **Status:** everything up to and including a flashed SD card is **done and verified**. FSBL runs and fails at a known point: **the PL bitstream will not load** (`XFSBL_ERROR_BITSTREAM_LOAD_FAIL`, partition 4, error `0x37`), so FSBL halts before ATF and U-Boot.
 **Read with:** `phase4_status_2026-09-22.md` (what was built), `setup_edf_hyperv_vm.md` (the toolchain spec).
@@ -139,6 +141,8 @@ WKS_FILE = "xilinx-default-sd.wks"
 ---
 
 ## 5. Separate finding: `xsdb`'s `dow` is broken here
+
+> **Correction:** `dow` was never broken. `0x30000000` and `0x30004000` hit the same DDR cells because the preset's x8 DDR map drives bank-group bit 1 on byte-address bit 14, and the fitted x16 SODIMM has no such pin. With the corrected geometry, `dow` of the 33 MB kernel matches the file at every sampled offset. See `phase4_status_2026-09-24.md` §2.2.
 
 Worth recording because it cost a lot of time and will mislead anyone who tries JTAG boot again.
 

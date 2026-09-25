@@ -205,6 +205,26 @@ if {$include_ps} {
     # DDR up over JTAG every time.
     set_property -dict [list CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN {0}] $ps
 
+    # With dynamic config off, the static DDR geometry must match the SODIMM
+    # actually fitted. The preset describes x8 4 Gb devices (2 bank-group
+    # bits), matching the originally bundled Kingston HX424S14IB/4. This board
+    # ships with a Kingston CBD26D4S9S1KC-4: 4 GB, 1Rx16, four 512M x16 (8 Gb)
+    # devices -- x16 DDR4 has ONE bank-group bit. With the x8 map, BG1 sits on
+    # HIF bit 11 = byte address bit 14 (ADDRMAP8 BG_B1 0x8 + base 3), which
+    # drives nothing: 0x30000000 and 0x30004000 alias (measured over JTAG with
+    # mwr/mrd, 2026-09-24). Everything bulk-loaded into DDR was folded in 16 KB
+    # steps -- the "xsdb dow is broken" symptom and FSBL's bitstream staging.
+    # The SODIMM is user-replaceable: a different module needs these changed.
+    # Vivado does not re-derive the address counts from width/capacity; it
+    # flags them instead (PSU-2: BG must be 1 for x16; PSU-3: row must be 16
+    # for 8 Gb), so all four are set together.
+    set_property -dict [list \
+        CONFIG.PSU__DDRC__DRAM_WIDTH      {16 Bits} \
+        CONFIG.PSU__DDRC__DEVICE_CAPACITY {8192 MBits} \
+        CONFIG.PSU__DDRC__BG_ADDR_COUNT   {1} \
+        CONFIG.PSU__DDRC__ROW_ADDR_COUNT  {16} \
+    ] $ps
+
     # The preset enables M_AXI_HPM0_LPD and S_AXI_HPC0_FPD. Their aclk pins are
     # unconnected out of the box and validate_bd_design fails on that, so clock
     # them from pl_clk0 (100 MHz). Nothing uses these ports until Phase 5 wires
@@ -220,6 +240,13 @@ if {$include_ps} {
 [get_property CONFIG.PSU__CRL_APB__GEM_TSU_REF_CTRL__ACT_FREQMHZ $ps] MHz)"
     puts "INFO: PS DDR          = [get_property CONFIG.PSU__DDRC__MEMORY_TYPE $ps] \
 [get_property CONFIG.PSU__DDRC__SPEED_BIN $ps]"
+    puts "INFO: PS DDR geometry = x[get_property CONFIG.PSU__DDRC__DRAM_WIDTH $ps],\
+[get_property CONFIG.PSU__DDRC__DEVICE_CAPACITY $ps],\
+BG [get_property CONFIG.PSU__DDRC__BG_ADDR_COUNT $ps],\
+BA [get_property CONFIG.PSU__DDRC__BANK_ADDR_COUNT $ps],\
+row [get_property CONFIG.PSU__DDRC__ROW_ADDR_COUNT $ps],\
+col [get_property CONFIG.PSU__DDRC__COL_ADDR_COUNT $ps],\
+dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
 
     validate_bd_design
     save_bd_design

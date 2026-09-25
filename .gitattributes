@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Yocto layer files are consumed on the Linux build VM; keep them LF.
+yocto/** text eol=lf
