@@ -55,15 +55,20 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 # phase5 = phase4 + the AXI4-Lite gain registers (matrix_regs_axil, reached
 # through M_AXI_CTRL on the BD) and their CDC constraints. The PS itself is
 # configured identically.
+#
+# scoped_xdc: module-scoped constraint files, as {file module} pairs. Each is
+# applied to EVERY instance of its module (SCOPED_TO_REF), with cell names
+# relative to the instance, so a constraint travels with its module instead of
+# naming instance paths in the top-level XDC (docs/architecture_modules.md).
 set include_ps 0
-set extra_xdc  {}
+set scoped_xdc {}
 if {$current_phase in {phase4 phase5}} {
     set include_ps 1
     set synth_top "phase3_top"
     set xdc_file  "constraints/phase3_genesys_zu.xdc"
 }
 if {$current_phase eq "phase5"} {
-    lappend extra_xdc "constraints/phase5_cdc.xdc"
+    lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
 }
 
 # ------ Verify we're at the repo root ------
@@ -141,8 +146,11 @@ if {$bp ne ""} {
 add_files -norecurse -fileset sources_1 $rtl_files
 add_files -norecurse -fileset sim_1     $sim_files
 add_files -norecurse -fileset constrs_1 $xdc_file
-foreach f $extra_xdc {
+foreach pair $scoped_xdc {
+    lassign $pair f ref
     add_files -norecurse -fileset constrs_1 $f
+    set_property SCOPED_TO_REF $ref [get_files $f]
+    puts "INFO: $f scoped to every instance of '$ref'"
 }
 
 # ------ Clocking Wizard IP: 25 MHz -> ~12.288 MHz ------

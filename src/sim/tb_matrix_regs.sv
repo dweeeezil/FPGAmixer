@@ -53,7 +53,7 @@ module tb_matrix_regs;
     logic [N*N*GW-1:0] gains;
 
     matrix_regs_axil #(
-        .N (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .ADDR_WIDTH (12),
+        .N_IN (N), .N_OUT (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .ADDR_WIDTH (12),
         .RESET_GAINS (RESET_GAINS)
     ) dut (
         .aclk (aclk), .aresetn (aresetn),

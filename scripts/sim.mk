@@ -84,7 +84,8 @@ matrix_rect: | $(BUILD)
 regs: | $(BUILD)
 	@echo ">>> Building tb_matrix_regs"
 	@$(IVERILOG) $(FLAGS) -s tb_matrix_regs -o $(BUILD)/tb_matrix_regs.vvp \
-		$(RTL)/matrix_regs_axil.sv $(RTL)/pcm_matrix.sv $(SIM)/tb_matrix_regs.sv
+		$(RTL)/matrix_regs_axil.sv $(RTL)/axil_coef_window.sv $(RTL)/coef_bank_handoff.sv \
+		$(RTL)/pcm_matrix.sv $(SIM)/tb_matrix_regs.sv
 	@$(VVP) $(BUILD)/tb_matrix_regs.vvp
 
 # --- Phase-3 integration: real phase3_top, MMCM stubbed, rx/tx as fixtures ---

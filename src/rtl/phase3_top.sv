@@ -222,7 +222,7 @@ module phase3_top (
 
     // Instance name u_regs is referenced by the CDC constraints in the XDC.
     matrix_regs_axil #(
-        .N (N), .GAIN_WIDTH (18), .GAIN_FRAC (16), .ADDR_WIDTH (12),
+        .N_IN (N), .N_OUT (N), .GAIN_WIDTH (18), .GAIN_FRAC (16), .ADDR_WIDTH (12),
         .RESET_GAINS (MATRIX_GAINS)
     ) u_regs (
         .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
