@@ -90,6 +90,12 @@ leaf:
     ignored: not stored, not echoed, logged. Empty segments inside a path
     ('a//b') are ignored the same way.
   - A get on a missing path, or on a branch, replies with the default 0.0.
+  - Every value in the file is finite, so it's strict JSON that any tool can
+    read. Non-finite floats are remapped on the way in, before they are
+    applied, stored or echoed (so the echo confirms the remapped value):
+        NaN, -inf  ->  -99.9   (reads as "off": the matrix mutes <= -90 dB)
+        +inf       ->  +99.9   (the matrix then clamps to its ceiling)
+    A file written by hand with NaN/Infinity is remapped the same way on load.
   - Files in the earlier flat format ({"mixer_name": ..., "values": {...}})
     are converted on load; the original is kept as <file>.flat.bak.
 """
@@ -225,6 +231,24 @@ def split_path(tail):
     return tuple(parts)
 
 
+NONFINITE_LOW = -99.9    # NaN and -inf become this ("off" for any dB level)
+NONFINITE_HIGH = 99.9    # +inf becomes this
+
+
+def finite_value(value):
+    """Remap non-finite floats to finite stand-ins (see STATE FILE FORMAT);
+    everything else passes through unchanged."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return NONFINITE_HIGH if value > 0 else NONFINITE_LOW
+    return value
+
+
+def _finite_tree(node):
+    if isinstance(node, dict):
+        return {k: _finite_tree(v) for k, v in node.items()}
+    return finite_value(node)
+
+
 def is_device_name(tail):
     return split_path(tail) == DEVICE_NAME_PATH
 
@@ -290,7 +314,7 @@ class MixerState:
         if isinstance(data.get("values"), dict) and "mixer_name" in data:
             self._convert_flat(data)
         else:
-            self.tree = data
+            self.tree = _finite_tree(data)
         log(f"Restored {self._count(self.tree)} value(s), mixer name "
             f"{self.mixer_name!r}, from {self.persist_path}")
 
@@ -304,7 +328,7 @@ class MixerState:
             if why:
                 log(f"    converting {backup}: dropped {key!r} = {value!r} ({why})")
                 continue
-            self._put(path, value)
+            self._put(path, finite_value(value))
         name = data.get("mixer_name")
         if isinstance(name, str):
             self._put(DEVICE_NAME_PATH, name)
@@ -316,7 +340,9 @@ class MixerState:
             return
         tmp = f"{self.persist_path}.tmp"
         with open(tmp, "w") as f:
-            json.dump(self.tree, f, indent=2, sort_keys=True)
+            # allow_nan=False: values are remapped on the way in, so a
+            # non-finite float here is a bug -- fail loudly, never write NaN.
+            json.dump(self.tree, f, indent=2, sort_keys=True, allow_nan=False)
         os.replace(tmp, self.persist_path)  # atomic-ish, avoids a half-written file on a crash
 
     @staticmethod
@@ -466,10 +492,7 @@ class Matrix:
         if isinstance(value, (str, bool)):
             log(f"    [{via}] non-numeric level {value!r} for {tail}, ignored")
             return False, value
-        db = float(value)
-        if math.isnan(db):
-            log(f"    [{via}] NaN level for {tail}, ignored")
-            return False, value
+        db = float(value)  # finite: apply_set remaps NaN/inf first
         if self.hw is not None:
             applied = self.hw.set_db(out, inp, db)
         else:
@@ -511,6 +534,10 @@ def apply_set(tail, value, state, registry, via):
     if why is not None:
         log(f"    [{via}] set {tail!r} ignored: {why}")
         return
+    remapped = finite_value(value)
+    if remapped is not value:
+        log(f"    [{via}] {tail}: non-finite {value!r} remapped to {remapped}")
+        value = remapped
     accepted, value = MATRIX.apply(tail, value, via)
     if not accepted:
         return
