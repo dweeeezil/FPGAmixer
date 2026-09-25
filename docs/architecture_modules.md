@@ -156,7 +156,7 @@ Listed honestly, so they're fixed deliberately rather than worked around. None o
 | Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at window 0x8000_1000; a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
 | Phase 6 persistence | control plane only | server-side; already restores and pushes the bank at startup |
 | Phase 7 DSP | PCM contract + coefficient contract + a window per DSP block | one core block per DSP type |
-| Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux |
+| Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux. **Proposal (2026-09-25, awaiting decisions):** `phase8_status_2026-09-25.md`: Audio Formatter → ALSA card on `mclk` time, `pcm_link` PL front door, new generic RO `axil_stat_window` |
 
 ### Why there is no "quick USB" path (asked 2026-09-25)
 

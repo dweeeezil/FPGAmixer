@@ -1,0 +1,200 @@
+# Phase 8 status: 2026-09-25 — PS ↔ PL audio link, first user USB audio (device mode)
+
+Phase 8 was pulled ahead of Phase 7 (DSP): the Pmod bench only has mono cables, so only the two left channels can be driven or heard, and the user wants multichannel audio from the Mac for testing. The work has two parts:
+
+- a **generic PS ↔ PL PCM link**: a front door that moves PCM between Linux and the core, shared later by Phase 9 AVB;
+- its **first user, USB audio**: the board as a USB soundcard for the Mac.
+
+**Status: §1–§8 are a design proposal. Nothing is built yet.** The open questions in §9 need the user's decisions before any code is written. Everything marked *checked* below was read from the actual tools, sources or board files on 2026-09-25, not recalled.
+
+---
+
+## 1. What was checked, and what it says
+
+| Fact | Source | Consequence |
+|---|---|---|
+| The **Type-C port J6 is on PS USB0**: ULPI USB3320 PHY on MIO 52–63, USB 3 on **PS-GTR lane 1** (`PSU__USB3_0__PERIPHERAL__IO = GT Lane1`). Data role DRD, power role DRP; the board stays self-powered as UFP. Role/orientation chip: **TI TUSB322I** (I2C 0x47, mux branch 3). | Genesys ZU reference manual §8.1; our XSA (`.hwh`) | Device mode is physically supported on USB0. (The ZynqMP boot ROM's USB boot mode also uses USB0 as a device.) |
+| **USB1** (MIO 64–75) goes to the USB2513B hub: 2 × Type-A + the Mini PCIe slot. Host only. | manual §8.2; `.hwh` | Unaffected. It must be pinned to `dr_mode = "host"` once the kernel is dual-role (below). |
+| The generated device tree has **no `dr_mode` and no USB 3 `phys`** on `dwc3_0`. Digilent's own BSP sets `dr_mode = "host"` on both controllers, plus the lane-1 USB 3 PHY. | `build/sdt/pcw.dtsi`, `zynqmp.dtsi`; Digilent `Genesys-ZU-OOB-os` `system-user.dtsi` | We add `dr_mode` ourselves. USB 2.0 High Speed is plenty for 8 + 8 channels (§4), so the USB 3 PHY isn't needed. |
+| EDF kernel is **6.18.10** (linux-xlnx v2026.1). **`CONFIG_USB_DWC3_HOST=y`, `CONFIG_USB_GADGET=m`**: DWC3 is built **host-only**; its gadget/dual-role modes need `USB_GADGET=y` (DWC3 is built in). `USB_F_UAC2=m` exists but **`CONFIG_USB_CONFIGFS_F_UAC2` is not set**. `EXTCON_USBC_TUSB320` not set. | kernel `.config` on the build VM | A kernel config fragment is needed (§3.2). Today the board **cannot** be a USB device. |
+| `CONFIG_SND_SOC_XILINX_AUDIO_FORMATTER=y`, `…_I2S=y`, `…_PL_SND_CARD=y`; `SND_SIMPLE_CARD` not set. `UIO_PDRV_GENIRQ=m`. `PREEMPT_NONE`, `HZ=250`. | same | The Audio Formatter's ALSA driver is already in the kernel. |
+| **Audio Formatter v1.0** ships with Vivado 2026.1 (`data/ip/xilinx/audio_formatter_v1_0`), "provided at no additional cost … under the terms of the Xilinx End User License". Max **2/4/6/8 channels per direction**; PCM or AES; interleaved or not; S2MM tolerates channels in any order and zero-fills missing ones; MM2S sample rate = `aud_mclk` / Fs multiplier. | Vivado install; PG330 | Option (a) is available and free, capped at 8 channels per direction per instance. |
+| The formatter's Linux driver registers an ASoC **platform component with no DAI**. It only becomes a sound card through `xlnx_pl_snd_card`, and that machine driver only accepts an AMD I2S / HDMI / SDI / SPDIF / DP IP as the other end (`xlnx,tx` / `xlnx,rx` phandles, matched by compatible string). The MM2S Fs multiplier is written from `set_sysclk()`, which only that machine driver calls. Formats S8/S16_LE/S24_LE (no S32), 2–8 channels, 2–6 periods of 192 B–50 KB. | `sound/soc/xilinx/xlnx_formatter_pcm.c`, `xlnx_pl_snd_card.c` (linux-xlnx master) | Using the formatter with *our own* PL endpoint needs either AMD I2S IP as a stand-in or **a small machine driver of our own** (§3.1). |
+| `f_uac2` (mainline) has **"Capture Pitch 1000000"** (steers the explicit feedback endpoint the host follows for OUT data) and **"Playback Pitch 1000000"** (sets the IN packet sizing) ALSA controls, range set by `fb_max`. | `drivers/usb/gadget/function/u_audio.c` | The Mac can be slaved to the board's clock with no resampling (§5). |
+| The image has **`alsa-utils-alsaloop` 1.2.11**. `alsaloop` gained UAC2-gadget pitch support (`-x/--prateshift`) in 1.2.6. PulseAudio client libraries are also in the image. | rootfs manifest on the VM; alsa-utils 1.2.6 changelog | A stock tool may do the rate servo; check it before writing our own (§5). Make sure no PulseAudio daemon grabs the cards. |
+| Side find: the board has an on-board **ADAU1761 codec** on PL pins (line in/out, headphone, mic, I2C-configured). | manual §9.5 | Not part of this phase. Worth noting as a future stereo I2S front door with real stereo jacks. |
+
+---
+
+## 2. Proposed architecture (one picture)
+
+```
+  Mac ══USB 2.0 HS══ Type-C J6 ─ USB0 (DWC3, dr_mode=peripheral)
+                                     │  f_uac2 gadget: 8 out + 8 in, 48 kHz, async + feedback
+                                     ▼
+  Linux ── "USB front door, Linux half" ──────────────────────────────────────────
+     gadget ALSA card (USB host time)  ◄─ bridge service (alsaloop or ours) ─►  link ALSA card (mclk time)
+                   ▲ pitch control (steers the Mac to mclk)                         │
+  ─────────────────┼────────────────────────────────────────────────────────────────┼──
+                   │                                  "PS↔PL link": generic, not USB-specific
+                   │                                  Audio Formatter (DMA, DDR ring buffers)
+                   │                                    │ AXI4-Stream audio (TDATA+TID), pl_clk0
+  PL               │                                    ▼
+                   │                         pcm_link (front door, PL half)
+                   │                           async FIFO pl_clk0 → mclk, frame assembly,
+                   │                           underrun/overrun handling + counters
+                   │                                    │ PCM contract on mclk (8 ch in, 8 ch out)
+                   │                                    ▼
+                   │            core: pcm_matrix 12 × 12  (ch0–3 Pmods, ch4–11 link)
+                   │
+                   └── status: link counters → axil_stat_window (new generic RO window) → mixer_hw
+```
+
+The key property: **the link's ALSA card runs on `mclk` time.** The formatter's MM2S emits one frame per `mclk`/256 (its `aud_mclk` input is our `mclk`), and the PL side pushes one capture frame per core `valid`. So the link itself never adapts rates; it only needs to survive underruns and overruns. Whatever feeds it from Linux (the USB gadget now, AVB later) has to deliver audio at `mclk` rate, which is where clock bridging belongs (§5).
+
+---
+
+## 3. Question 1 + 2: USB role and the link
+
+### 3.1 The PS ↔ PL link: options compared
+
+| | (a) **Audio Formatter + our ASoC machine driver** (recommended) | (a′) Audio Formatter + AMD I2S TX/RX IP as stand-ins | (b) AXI DMA / AXI-Stream FIFO + UIO or `u-dma-buf`, userspace ring handling | (c) our own RTL DMA master + UIO |
+|---|---|---|---|---|
+| What Linux sees | a real ALSA card `fpgamixerlink`, 8 ch playback + 8 ch capture | a real ALSA card, via the stock `xlnx_pl_snd_card` | no ALSA card: a daemon owns the buffers | no ALSA card |
+| Kernel code of ours | one small out-of-tree module (~150 lines): a card with one DAI link (dummy CPU/codec DAI, the formatter as platform) that calls `set_sysclk(12.288 MHz)` → Fs multiplier 256 | none | none (UIO), but `u-dma-buf` isn't in the image | none, but the most RTL |
+| PL | formatter (AMD, free) + `pcm_link` | formatter + I2S TX + I2S RX (AMD, free) + 4 × our `i2s_receiver` / `i2s_transmitter` + a frame re-aligner. Audio is serialised to I2S **inside the FPGA** only to satisfy a driver | AXI DMA + `pcm_link` | DMA master + ring logic + `pcm_link` |
+| Who can use the link | anything that speaks ALSA: the gadget bridge, `aplay`/`arecord` for tests, a Phase 9 1722 talker/listener | same | only our daemon; every new user has to learn its API | same as (b) |
+| Risk | the machine-driver module (standard ASoC pattern), a kernel recipe in the layer | a pointless I2S hop; channel pairs and frame phase to re-align; the I2S IP's own clocking | we write ring/period/IRQ handling ourselves, plus PIO or cache management | we write a DMA engine |
+
+**Recommendation: (a).** The ALSA card is the right seam: the link knows nothing about USB, and Phase 9 plugs into the same card. The one piece of kernel code is small, standard and isolated. (a′) avoids kernel code only by adding hardware whose sole job is to satisfy a driver's compatible-string check, which is the kind of reach-around `architecture_modules.md` §1 rules out.
+
+**Fallback if the module becomes a sink:** (a′) is the no-custom-kernel route.
+
+Details of (a):
+
+- **BD:** `audio_formatter_0` with 8 + 8 channels, interleaved, PCM mode, 32-bit addresses. AXI-Lite on a second SmartConnect master (from `M_AXI_HPM0_LPD`, like the matrix window); AXI-MM on **`S_AXI_HPC0_FPD`** (already enabled by the preset, clocked from `pl_clk0`, unused today); `irq_mm2s` / `irq_s2mm` → `pl_ps_irq0` (`PSU__USE__IRQ0 = 1` already). `aud_mclk` = our `mclk`, exported into the BD as a clock input. AXIS clocks = `pl_clk0`.
+- **Address:** the formatter is a *driver-owned* device, not one of our control windows (no ID/CONFIG header). Proposal: driver-owned devices at **0x8010_0000+**, keeping 0x8000_x000 for our self-describing windows.
+- **Device tree:** sdtgen emits the formatter node. We add the card node in `system-user.dtsi` (`compatible = "fpgamixer,pcm-link-card"`, a phandle to the formatter, `mclk-frequency = <12288000>`). The nominal 12.288 MHz makes the multiplier exactly 256; the real clock is 12.2919 MHz, so the card's true rate is 48.016 kHz while ALSA calls it 48000. That is correct: the rate servo (§5) deals with the real rate.
+- **Sample format:** S24_LE (24 in 32, LSB-justified) in memory; the formatter has no S32_LE. The gadget uses S24_3LE or S32_LE, so the bridge opens both cards through `plughw`, which only repacks (no resampling).
+
+### 3.2 USB role: device mode (to confirm)
+
+The roadmap's Decision 3 recommended **host mode** first (a class-compliant interface plugged into the board). The user's goal is to play and record multichannel audio **from the Mac**, which is **device mode**: the board enumerates as a UAC2 soundcard. Device mode is also better on clocks: the board can steer the Mac with the feedback endpoint, so audio arrives bit-exact, whereas host mode has to resample in software (a USB interface's clock can't be steered). **Recommendation: device mode now.** Host mode stays possible later over the same link (a `snd-usb-audio` card ↔ link bridge with resampling). This merges the roadmap's Phase 8 and Phase 11 rows; the roadmap will be updated once decided.
+
+What device mode needs (checked against the kernel config and DT above):
+
+1. **Kernel fragment** (new `linux-xlnx_%.bbappend` + `.cfg` in `meta-fpgamixer`): `CONFIG_USB_GADGET=y`, `CONFIG_USB_DWC3_DUAL_ROLE=y`, `CONFIG_USB_CONFIGFS=y`, `CONFIG_USB_CONFIGFS_F_UAC2=y` (pulls in `U_AUDIO`/`F_UAC2`). Built-in rather than modules, so no module-loading order matters at boot.
+2. **DT** (`system-user.dtsi`): `&dwc3_0 { dr_mode = "peripheral"; maximum-speed = "high-speed"; snps,dis_u2_susphy_quirk; snps,dis_u3_susphy_quirk; }` (the quirks as in Digilent's BSP) and `&dwc3_1 { dr_mode = "host"; }`. With `DUAL_ROLE` built in, an unset `dr_mode` would default to OTG, so USB1 must be pinned.
+3. **Gadget setup at boot:** a configfs script + systemd unit in a new recipe `fpgamixer-usb-gadget`: UAC2 function, `c_chmask`/`p_chmask` = 0xff (8 ch), `c_srate`/`p_srate` = 48000, `c_sync` = async, `fb_max` sized for ±1000 ppm, product name "FPGAmixer". A second recipe, not part of `fpgamixer-osc`: USB is a front door, the OSC server is control plane.
+4. **Type-C role:** the TUSB322I powers up in its default mode (DRP). A Mac is always a source/DFP, so the board should attach as UFP with no driver. **Risk:** device mode also needs the controller to see VBUS through the USB3320 (session valid). If enumeration fails, the fallbacks are the mainline `extcon-usbc-tusb320` driver (TUSB322I compatibility unverified) or forcing UFP over I2C. This is exactly what bench step S1 (§8) tests first, before any PL work depends on it.
+
+---
+
+## 4. Question 4: channel counts, channel map, OSC indices and state
+
+**Proposal: 8 link channels each way, core 12 × 12.**
+
+| Core ch | In (source) | Out (sink) |
+|---|---|---|
+| 0–3 | JB_L, JB_R, JC_L, JC_R (unchanged) | JB_L, JB_R, JC_L, JC_R (unchanged) |
+| 4–11 | link capture-from-PS ch 0–7 = **Mac playback** ch 1–8 | link playback-to-PS ch 0–7 = **Mac recording** ch 1–8 |
+
+- **Existing indices keep their meaning.** The Pmods stay at 0–3, so every `inputMatrix/<in>_<out>` in a saved state file still means the same crosspoint. New channels are appended, never interleaved.
+- **Migration is free:** `MatrixBackend.seed_and_push` already fills only *missing* crosspoints and reads `N_IN`/`N_OUT` from the window's CONFIG. An old 16-entry file keeps its 16 values and gets the 128 new ones seeded. The only software change is the constant in `fpgamixer_top` (the window reports 12 × 12 by itself). A test for exactly this migration goes into `test_mixer_hw.py`.
+- **Seeding rule for the new crosspoints:** today "diagonal 0 dB, rest off", i.e. identity, so Mac out *k* → Mac in *k* (a loopback the Mac can record). Question 4 in §9.
+- **Resources:** `pcm_matrix` uses one DSP48E2 per crosspoint → **144 of the 3EG's 360**, with Phase 7 still to come. Acceptable now. If DSP gets tight, the matrix can be time-multiplexed (256 `mclk` cycles per frame) with no interface change; noted as future work, not done now.
+- Gain bank 144 × 18 = 2592 bits through `coef_bank_handoff`: registers only, no timing concern (same MCP formulation, same scoped XDC).
+- `osc_mixer_test.py` is run with `--inputs 12 --buses 12`.
+- USB bandwidth check: 8 ch × 4 B × 48 kHz ≈ 1.5 MB/s per direction, about 200 B per 125 µs microframe: far inside USB 2.0 HS isochronous limits.
+
+The link's channel count is a parameter of `pcm_link` (`N_CH`, 2–8, even, matching the formatter). The platform layer owns the map, as today.
+
+---
+
+## 5. Question 3: clock-domain bridging
+
+Three independent clocks: the **Mac's USB clock** (SOF), **`mclk`** (12.2919 MHz, +324 ppm), and later the **network media clock**.
+
+| Option | Where | Bit-exact | Verdict |
+|---|---|---|---|
+| **UAC2 feedback steered by buffer fill** | Linux half of the USB front door | **yes** | **Recommended.** The Mac follows the feedback endpoint for its OUT stream (`Capture Pitch`) and accepts the device's IN packet sizing (`Playback Pitch`). A servo holds the link-side buffer fill at its setpoint; the starting pitch is +324 ppm, the known offset. |
+| ALSA-side adaptive resampling (`alsaloop -S` samplerate mode) | Linux half | no | Needed only for host mode (a USB interface can't be steered). Not needed here. |
+| ASRC in the PL | PL half of a front door | no | Heavy (filter banks, DSP). The Phase 9 candidate if the media clock can't be steered; not needed for USB. |
+
+**Where the bridging lives:** in the **USB front door's Linux half** (the bridge service), which is inside the front door as `architecture_modules.md` §2 rule 1 requires. The link doesn't bridge anything: its card is already on `mclk` time. The core never sees a foreign clock.
+
+**The link's own safety net (PL):** if the PS-to-PL FIFO runs dry, `pcm_link` outputs **zeros** for that frame (never stale or garbage samples) and counts an underrun; a full PL-to-PS FIFO drops the frame and counts an overrun. Channel alignment uses TID, so a lost beat can't rotate channels.
+
+**Servo implementation:** first try the stock `alsaloop` (1.2.11 has `-x/--prateshift` for the gadget's pitch control). If it can't drive the gadget's controls the way we need (both directions, setpoint on the link side), write a small C bridge (one thread, `snd_pcm_readi`/`writei`, a PI loop on `snd_pcm_delay`, pitch written with `snd_ctl_elem_write`). Either way it runs as the `fpgamixer-usb-bridge` systemd service. This is the only USB-specific software, and the AVB bridge later sits beside it with the same shape.
+
+---
+
+## 6. Question 5: control and status plane
+
+`axil_coef_window` is write-oriented (shadow bank + COMMIT). Status is the opposite: counters produced in `mclk`, read by software. **Proposal: a new generic window type, `axil_stat_window`**, with the same header convention:
+
+| Offset | Register | |
+|---|---|---|
+| 0x000 | ID | block type + version (link: `0x4C4B_5001`, "LK" v1) |
+| 0x004 | CONFIG | block geometry (link: channels in, channels out, FIFO depth) |
+| 0x008 | CTRL | bit0 CLEAR (write 1: zero the counters) |
+| 0x00C | SNAPSHOTS | snapshots taken (so software can tell a stale read from a live one) |
+| 0x100… | counters | block-specific, read-only |
+
+- The counters live in `mclk`. They reach AXI as one **consistent snapshot** by reusing **`coef_bank_handoff` in the reverse direction** (src = `mclk`, dst = `pl_clk0`, a commit every *N* frames). The module is already direction-agnostic and its scoped XDC covers any instance, so no new CDC primitive and no new constraint. CLEAR goes the other way as a toggle synchronizer. (If a reverse instance would need XDC changes, that is flagged at implementation time, not patched around.)
+- Link counters: frames in/out, underruns, overruns, FIFO fill (current, min, max since clear), TID errors.
+- Binding `pcm_link_stat_regs.sv` (ID, CONFIG, counter list), same pattern as `matrix_regs_axil`. Address: **0x8000_1000**, the first free window slot. The bus-matrix/DSP reservations move up one slot, and §4.1's table is updated.
+- Software: `mixer_hw.WINDOWS` entry + a `LinkStatHW` reader and a `mixer_hw.py link` CLI command. OSC exposure (read-only `get`) is optional and can wait; the bridge service can also log the counters.
+
+---
+
+## 7. Question 6: verification plan
+
+**Simulation (XSim, kept in step in `scripts/sim.mk`):**
+
+1. `tb_pcm_link`: an AXIS model of the formatter (TDATA/TID, random back-pressure and gaps, **both clocks unrelated**, `pl_clk0` ≠ `mclk` with a ppm offset) ↔ PCM contract. Checks: bit-exact samples on all 8 channels both ways; an underrun gives zeros and counts one; overruns count; a dropped beat doesn't rotate channels.
+2. `tb_stat_window`: header, snapshot consistency (no torn reads across counter updates), CLEAR.
+3. `tb_pcm_matrix_rect` at 12 × 12, and the existing TBs (all must still pass).
+4. Software: `test_mixer_hw.py` + a 16 → 144 state-migration test; `osc_mixer_test.py --inputs 12 --buses 12`.
+
+**Hardware, in this order (each step stands alone):**
+
+- **S1 USB only, no PL change:** new kernel + DT + gadget. Mac sees "FPGAmixer", 8 in / 8 out, in Audio MIDI Setup. In Linux, `alsaloop` gadget capture → gadget playback: the Mac records what it plays. Proves the USB role, VBUS and the Type-C attach before anything depends on them.
+- **S2 Link only, no USB:** new bitstream. `speaker-test -D plughw:fpgamixerlink -c 8` into the link; routed to JB_L/JC_L by OSC and heard on the Pmods, one channel at a time. `arecord` from the link while the Pmod ADC feeds the matrix. Status counters: no underruns at steady state.
+- **S3 End to end:** the bridge service. Mac plays 8 channels (a different tone per channel); each routed to the Pmod left channels one by one and heard; Mac records the Pmod inputs back. Servo check: link FIFO fill stays flat over **≥ 30 min**, zero underruns/overruns, pitch settles near +324 ppm.
+- **S4 Phase 6 follow-up:** a distinct, non-default level on **every** crosspoint (all 144), with real multichannel audio from the Mac. **Power pull**, boot, nothing typed: every crosspoint back, checked by `mixer_hw.py dump` against the saved file, and by ear/recording through the Mac (the Mac can now *record* all outputs, so the right channels are finally checked too).
+
+---
+
+## 8. Implementation steps (after the decisions in §9)
+
+Each step is committed separately and verified before the next. The status doc and `architecture_modules.md` are updated in the same commit.
+
+| Step | Content | Verified by |
+|---|---|---|
+| P8.1 | kernel fragment + DT (`dr_mode`) + `fpgamixer-usb-gadget` recipe | bench S1 |
+| P8.2 | `pcm_link.sv` (front door, PL half) + `tb_pcm_link` | XSim |
+| P8.3 | `axil_stat_window.sv` + `pcm_link_stat_regs.sv` + TB | XSim |
+| P8.4 | BD: formatter, HPC0, IRQ, `aud_mclk`; `fpgamixer_top`: 12 × 12, channel map; Vivado build, timing and CDC report | Vivado reports; all TBs |
+| P8.5 | ASoC machine driver module + recipe; DT card node; SDT → image | bench S2 |
+| P8.6 | `mixer_hw` window + reader; migration test; OSC suite at 12 × 12 | Linux tests; board suite |
+| P8.7 | `fpgamixer-usb-bridge` (alsaloop or C servo) + unit | bench S3, S4 |
+
+---
+
+## 9. Decisions needed from the user
+
+| # | Question | Recommendation |
+|---|---|---|
+| 1 | **USB role:** device mode (the Mac sees the board as a soundcard) rather than the roadmap's host mode? | **Device mode.** It is what the Mac test needs, and it is bit-exact through the feedback endpoint. Host mode can come later over the same link. |
+| 2 | **Link implementation:** (a) Audio Formatter + our own small ASoC machine driver, or (a′) no custom kernel code but AMD I2S IP as in-fabric stand-ins? | **(a).** |
+| 3 | **Channels:** 8 in + 8 out over USB, core 12 × 12 (Pmods stay 0–3)? | **Yes.** 144 of 360 DSP48E2s. |
+| 4 | **Seeding the new crosspoints:** identity (Mac out *k* → Mac in *k*, a loopback), all off, or Mac 1/2 → JB_L/JC_L? | **Identity:** one rule for the whole matrix, and the reset bank stays "identity". Saved state overrides it anyway. |
+| 5 | **Status window:** new generic `axil_stat_window` (RO counters, same header) at 0x8000_1000? Exposed over OSC now or later? | **New window; OSC later.** |
+| 6 | **Clock bridging:** feedback-endpoint servo in Linux, trying stock `alsaloop` first? | **Yes.** ASRC stays a Phase 9 question. |
+
+---
+
+## 10. Log
+
+- **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. No code yet.
