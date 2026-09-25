@@ -16,12 +16,12 @@ Phase 8 was pulled ahead of Phase 7 (DSP): the Pmod bench only has mono cables, 
 | The **Type-C port J6 is on PS USB0**: ULPI USB3320 PHY on MIO 52–63, USB 3 on **PS-GTR lane 1** (`PSU__USB3_0__PERIPHERAL__IO = GT Lane1`). Data role DRD, power role DRP; the board stays self-powered as UFP. Role/orientation chip: **TI TUSB322I** (I2C 0x47, mux branch 3). | Genesys ZU reference manual §8.1; our XSA (`.hwh`) | Device mode is physically supported on USB0. (The ZynqMP boot ROM's USB boot mode also uses USB0 as a device.) |
 | **USB1** (MIO 64–75) goes to the USB2513B hub: 2 × Type-A + the Mini PCIe slot. Host only. | manual §8.2; `.hwh` | Unaffected. It must be pinned to `dr_mode = "host"` once the kernel is dual-role (below). |
 | The generated device tree has **no `dr_mode` and no USB 3 `phys`** on `dwc3_0`. Digilent's own BSP sets `dr_mode = "host"` on both controllers, plus the lane-1 USB 3 PHY. | `build/sdt/pcw.dtsi`, `zynqmp.dtsi`; Digilent `Genesys-ZU-OOB-os` `system-user.dtsi` | We add `dr_mode` ourselves. USB 2.0 High Speed is plenty for 8 + 8 channels (§4), so the USB 3 PHY isn't needed. |
-| EDF kernel is **6.18.10** (linux-xlnx v2026.1). **`CONFIG_USB_DWC3_HOST=y`, `CONFIG_USB_GADGET=m`**: DWC3 is built **host-only**; its gadget/dual-role modes need `USB_GADGET=y` (DWC3 is built in). `USB_F_UAC2=m` exists but **`CONFIG_USB_CONFIGFS_F_UAC2` is not set**. `EXTCON_USBC_TUSB320` not set. | kernel `.config` on the build VM | A kernel config fragment is needed (§3.2). Today the board **cannot** be a USB device. |
+| EDF kernel is **6.18.10** (linux-xlnx v2026.1). *Read from the generic `amd_cortexa53_mali_common` kernel build on the VM; the board kernel builds in `tmp/work/genesys_zu3eg-amd-linux/`, from the same defconfig and layers. Its pre-P8.1 `.config` wasn't captured separately; the post-P8.1 one is in §10.* **`CONFIG_USB_DWC3_HOST=y`, `CONFIG_USB_GADGET=m`**: DWC3 is built **host-only**; its gadget/dual-role modes need `USB_GADGET=y` (DWC3 is built in). `USB_F_UAC2=m` exists but **`CONFIG_USB_CONFIGFS_F_UAC2` is not set**. `EXTCON_USBC_TUSB320` not set. | kernel `.config` on the build VM | A kernel config fragment is needed (§3.2). Today the board **cannot** be a USB device. |
 | `CONFIG_SND_SOC_XILINX_AUDIO_FORMATTER=y`, `…_I2S=y`, `…_PL_SND_CARD=y`; `SND_SIMPLE_CARD` not set. `UIO_PDRV_GENIRQ=m`. `PREEMPT_NONE`, `HZ=250`. | same | The Audio Formatter's ALSA driver is already in the kernel. |
 | **Audio Formatter v1.0** ships with Vivado 2026.1 (`data/ip/xilinx/audio_formatter_v1_0`), "provided at no additional cost … under the terms of the Xilinx End User License". Max **2/4/6/8 channels per direction**; PCM or AES; interleaved or not; S2MM tolerates channels in any order and zero-fills missing ones; MM2S sample rate = `aud_mclk` / Fs multiplier. | Vivado install; PG330 | Option (a) is available and free, capped at 8 channels per direction per instance. |
 | The formatter's Linux driver registers an ASoC **platform component with no DAI**. It only becomes a sound card through `xlnx_pl_snd_card`, and that machine driver only accepts an AMD I2S / HDMI / SDI / SPDIF / DP IP as the other end (`xlnx,tx` / `xlnx,rx` phandles, matched by compatible string). The MM2S Fs multiplier is written from `set_sysclk()`, which only that machine driver calls. Formats S8/S16_LE/S24_LE (no S32), 2–8 channels, 2–6 periods of 192 B–50 KB. | `sound/soc/xilinx/xlnx_formatter_pcm.c`, `xlnx_pl_snd_card.c` (linux-xlnx master) | Using the formatter with *our own* PL endpoint needs either AMD I2S IP as a stand-in or **a small machine driver of our own** (§3.1). |
 | `f_uac2` (mainline) has **"Capture Pitch 1000000"** (steers the explicit feedback endpoint the host follows for OUT data) and **"Playback Pitch 1000000"** (sets the IN packet sizing) ALSA controls, range set by `fb_max`. | `drivers/usb/gadget/function/u_audio.c` | The Mac can be slaved to the board's clock with no resampling (§5). |
-| The image has **`alsa-utils-alsaloop` 1.2.11**. `alsaloop` gained UAC2-gadget pitch support (`-x/--prateshift`) in 1.2.6. PulseAudio client libraries are also in the image. | rootfs manifest on the VM; alsa-utils 1.2.6 changelog | A stock tool may do the rate servo; check it before writing our own (§5). Make sure no PulseAudio daemon grabs the cards. |
+| **Corrected during P8.1:** the **genesys-zu3eg image ships no ALSA userspace at all** (no `libasound`, no `alsa-utils`; 1162 packages). The `alsa-utils` 1.2.11 / PulseAudio seen first came from the *generic* `amd-cortexa53-mali-common` smoke-build manifest. `alsaloop` gained UAC2-gadget pitch support (`-x/--prateshift`) in 1.2.6. | both rootfs manifests on the VM; alsa-utils 1.2.6 changelog | P8.1 adds `alsa-utils-{alsaloop,aplay,amixer,speakertest}` to the image. There is no PulseAudio on the board to grab the cards. |
 | Side find: the board has an on-board **ADAU1761 codec** on PL pins (line in/out, headphone, mic, I2C-configured). | manual §9.5 | Not part of this phase. Worth noting as a future stereo I2S front door with real stereo jacks. |
 
 ---
@@ -214,6 +214,31 @@ Each step is committed separately and verified before the next. The status doc a
 
 ---
 
-## 10. Log
+## 10. P8.1: USB device mode (no PL change)
+
+| File (`yocto/meta-fpgamixer/`) | What |
+|---|---|
+| `recipes-kernel/linux-xlnx/linux-xlnx_%.bbappend` + `files/fpgamixer-usb.cfg` (new) | `USB_GADGET=y`, `USB_DWC3_DUAL_ROLE=y`, `USB_CONFIGFS=y`, `USB_CONFIGFS_F_UAC2=y` (+ `LIBCOMPOSITE`, `U_AUDIO`, `F_UAC2`), all built in. Same SRC_URI + KERNEL_FEATURES pattern as `meta-embedded-plus`. The first kernel change in this layer. |
+| `recipes-bsp/device-tree/files/system-user.dtsi` | `&dwc3_0`: `dr_mode = "peripheral"`, `maximum-speed = "high-speed"`, Digilent's susphy quirks. `&dwc3_1`: `dr_mode = "host"` (an unset dr_mode means OTG once DUAL_ROLE is built in). |
+| `recipes-apps/fpgamixer-usb-gadget/` (new) | `fpgamixer-usb-gadget.sh start\|stop` (configfs: UAC2, 8 + 8 ch, 48 kHz, S24_3LE, async OUT with feedback, self-powered, VID:PID 1d6b:0104, product "FPGAmixer") + a oneshot unit, enabled. Installed to `/usr/lib/fpgamixer/`. |
+| `recipes-extended/images/edf-linux-disk-image.bbappend` | + `fpgamixer-usb-gadget`, + `alsa-utils-{alsaloop,aplay,amixer,speakertest}` |
+
+Design notes:
+
+- **S24_3LE** on the wire (24-bit resolution, honest about the data path); the bridge opens the link card through `plughw`, which repacks to S24_LE.
+- **`bcdDevice`** has to be bumped whenever the descriptors change, because macOS caches them per VID/PID/bcdDevice (script header).
+- **No PL change**, so this image can run on the current bitstream. The bench test (S1) is independent of all later steps.
+
+**Build check (VM, 2026-09-25):** `bitbake linux-xlnx fpgamixer-usb-gadget virtual/dtb`, all tasks succeeded. `bitbake-layers show-appends` lists our `linux-xlnx_%.bbappend`. The **board** kernel's `.config` (`tmp/work/genesys_zu3eg-amd-linux/…/.config`) now has `USB_DWC3_DUAL_ROLE=y` (HOST and GADGET "not set"), `USB_GADGET=y`, `USB_CONFIGFS=y`, `USB_CONFIGFS_F_UAC2=y`, `USB_U_AUDIO=y`, `USB_F_UAC2=y`. `SND_USB_AUDIO=y` and `SND_SOC_XILINX_AUDIO_FORMATTER=y` are unchanged. The deployed `system.dtb` has `dr_mode = "peripheral"` + `maximum-speed = "high-speed"` on `usb@fe200000` and `dr_mode = "host"` on `usb@fe300000`, plus the quirks.
+
+**Pitfall recorded:** the VM has two kernel work directories. `amd_cortexa53_mali_common-amd-linux` is the stale generic smoke build and `genesys_zu3eg-amd-linux` is the board's. Always check the board one.
+
+### Bench test S1 (pending)
+
+Needs the full image (`edf-linux-disk-image xilinx-bootbin`, building) flashed, then a full power-off. The existing bitstream is fine: no PL change. Expected on the board: `/sys/class/udc/fe200000.usb`, `systemctl status fpgamixer-usb-gadget` active, `aplay -l` / `arecord -l` list `UAC2Gadget`. On the Mac: "FPGAmixer" in Audio MIDI Setup, 8 in / 8 out at 48 kHz. Loopback: `alsaloop -C hw:UAC2Gadget -P hw:UAC2Gadget` on the board; the Mac records what it plays.
+
+---
+
+## 11. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).

@@ -25,6 +25,35 @@
 };
 
 /*
+ * USB roles (Phase 8, docs/phase8_status_2026-09-25.md sec. 3.2 / 9.2).
+ *
+ * USB0 = the Type-C port J6 (ULPI USB3320 on MIO 52-63; the TUSB322I does the
+ * Type-C attach on its own, in its power-up DRP mode). It is the UAC2 gadget,
+ * so it is pinned to peripheral: the Mac is always the host. High speed only:
+ * 8+8 channels at 48 kHz need ~1.5 MB/s per direction, and the generated tree
+ * gives dwc3_0 no USB 3 PHY (the PS does route USB 3 to GT lane 1; Digilent's
+ * BSP adds phys = <&lane1 ...> when it wants SuperSpeed host).
+ *
+ * USB1 = the USB2513B hub (2 x Type-A + Mini PCIe): host, for class-compliant
+ * interfaces through snd-usb-audio. With USB_DWC3_DUAL_ROLE built in, a
+ * controller with no dr_mode comes up as OTG, so both are set explicitly.
+ *
+ * The susphy quirks are the ones Digilent's BSP uses on both controllers.
+ */
+&dwc3_0 {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	snps,dis_u2_susphy_quirk;
+	snps,dis_u3_susphy_quirk;
+};
+
+&dwc3_1 {
+	dr_mode = "host";
+	snps,dis_u2_susphy_quirk;
+	snps,dis_u3_susphy_quirk;
+};
+
+/*
  * GEM0 + TI DP83867 PHY. The generated node has no PHY child, so macb scans the
  * MDIO bus and the PHY device has no of_node; dp83867_of_init() then returns
  * -ENODEV, the probe fails silently and phylib falls back to "Generic PHY".
