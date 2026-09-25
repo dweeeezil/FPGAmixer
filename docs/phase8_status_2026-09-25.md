@@ -235,7 +235,9 @@ Design notes:
 
 ### Bench test S1 (pending)
 
-Needs the full image (`edf-linux-disk-image xilinx-bootbin`, building) flashed, then a full power-off. The existing bitstream is fine: no PL change. Expected on the board: `/sys/class/udc/fe200000.usb`, `systemctl status fpgamixer-usb-gadget` active, `aplay -l` / `arecord -l` list `UAC2Gadget`. On the Mac: "FPGAmixer" in Audio MIDI Setup, 8 in / 8 out at 48 kHz. Loopback: `alsaloop -C hw:UAC2Gadget -P hw:UAC2Gadget` on the board; the Mac records what it plays.
+**Image built 2026-09-25:** `bitbake edf-linux-disk-image xilinx-bootbin`, 14,739 tasks, all succeeded, the usual 22 warnings. The manifest has `fpgamixer-usb-gadget`, `libasound2` and `alsa-utils-{alsaloop,aplay,amixer,speakertest}`. The package holds the script, the unit and a `98-fpgamixer-usb-gadget.preset` (enabled). Copied to **`build/sd/p8-usb-20260925.wic.xz`** (MD5 `b3604ac9…`, same on both ends). Reflashing resets `/var/lib/fpgamixer/mixer_state.json`, as noted in Phase 6.
+
+Needs that image flashed, then a full power-off. The existing bitstream is fine: no PL change. Expected on the board: `/sys/class/udc/fe200000.usb`, `systemctl status fpgamixer-usb-gadget` active, `aplay -l` / `arecord -l` list `UAC2Gadget`. On the Mac: "FPGAmixer" in Audio MIDI Setup, 8 in / 8 out at 48 kHz. Loopback: `alsaloop -C hw:UAC2Gadget -P hw:UAC2Gadget` on the board; the Mac records what it plays.
 
 ---
 
