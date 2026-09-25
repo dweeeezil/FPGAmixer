@@ -99,8 +99,8 @@ The four seams listed in `architecture_modules.md` §5 were fixed one at a time,
 |---|---|---|---|
 | D3 | `165b0b3` | `pcm_matrix` takes `N_IN`/`N_OUT` | new `tb_pcm_matrix_rect` (3→5, 5→2); a planted stride bug fails it (984 mismatches) and passes the 4×4 TB |
 | D2 | `1974c1d` | `axil_coef_window` + `coef_bank_handoff` (generic); `matrix_regs_axil` is only the binding; CDC XDC scoped to the module | `tb_matrix_regs` unchanged apart from parameter names; Vivado (below) |
-| D4 | `ee9b952` | server zone → `Backend` table; `mixer_hw` `RegWindow` / `MatrixHW` / explicit `WINDOWS` map | OSC suite 19/20 in simulation; the hw path on Linux against a fake register file |
-| D1 | *(this commit)* | `fpgamixer_top` (wiring only) + `audio_clocking` + 2 × `i2s_port`; board XDC renamed, 9 paths updated | all 10 TBs; Vivado (below) |
+| D4 | `24a2a06` | server zone → `Backend` table; `mixer_hw` `RegWindow` / `MatrixHW` / explicit `WINDOWS` map | OSC suite 19/20 in simulation; the hw path on Linux against a fake register file |
+| D1 | `8efb286` | `fpgamixer_top` (wiring only) + `audio_clocking` + 2 × `i2s_port`; board XDC renamed, 9 paths updated | all 10 TBs; Vivado (below) |
 
 **Vivado, D1 + D2 together** (`build/d1d2_*.rpt`, `build/fpgamixer_d1d2.xsa`):
 
