@@ -1,7 +1,9 @@
 # Handoff: Phase 4 — the board does not boot from SD
 
+> **Superseded (2026-09-24, later the same day): the board now boots to Linux from SD.** See `phase4_status_2026-09-24.md`. The actual causes were FSBL's dynamic DDR/SPD path, the wrong SODIMM geometry (x8 vs x16, causing DDR address bit 14 to alias), and then SD `disable-wp` / `no-1-8-v` in Linux. §5's "`dow` is broken" finding is **wrong**: it was the DDR aliasing. This document is kept as a record of the investigation.
+
 **Date:** 2026-09-24
-**Status:** everything up to and including a flashed SD card is **done and verified**. The board stays silent and the APU never leaves reset. Prime suspect is **our FSBL**, not the card.
+**Status:** everything up to and including a flashed SD card is **done and verified**. FSBL runs and fails at a known point: **the PL bitstream will not load** (`XFSBL_ERROR_BITSTREAM_LOAD_FAIL`, partition 4, error `0x37`), so FSBL halts before ATF and U-Boot.
 **Read with:** `phase4_status_2026-09-22.md` (what was built), `setup_edf_hyperv_vm.md` (the toolchain spec).
 
 ---
@@ -24,11 +26,47 @@ Phase 3.5 (static matrix in silicon) is hardware-verified. Phase 4 is built end 
 
 ## 2. The blocker
 
-Power on with the mode jumper on SD and the flashed card inserted:
+FSBL loads from SD, runs, and **fails on the PL bitstream partition**. Captured console output:
 
-- **Nothing on the UART console.** Not one byte, on either FTDI channel.
-- **The APU never leaves reset.** Over JTAG all four A53s read `APU Reset`, steady across repeated samples (not a reset loop). The ROM is not starting FSBL.
-- `BOOT_MODE_USER (0xFF5E0200) = 0xE` — SD1 level-shifted, which is the same mode in which Digilent's **pre-installed demo image booted fine on this board, in this slot, from this card**. So the hardware path works.
+```
+Zynq MP First Stage Boot Loader
+Release 2026.1   Aug 24 2026  -  16:57:15
+Platform: Silicon (4.0), Cluster ID 0x80000000
+Running on A53-0 (64-bit) Processor, Device Name: XCZU3EG
+================= In Stage 2 ============
+SD1 with level shifter Boot Mode
+SD: rc= 0
+File name is BOOT.BIN
+Image Header Table Offset 0x8C0 ... No of Partitions: 0x9
+======= In Stage 3, Partition No:1 =======   (PMU firmware -> 0xFFDC0050)
+Partition 1 Load Success
+======= In Stage 3, Partition No:2/3 =======
+PMU Firmware 2026.1     PMU_ROM Version: xpbr-v8.1.0-0
+Partition 3 Load Success
+======= In Stage 3, Partition No:4 =======   (0x153E27 words, attrs 0x26)
+Destination Device is PL, changing LoadAddress
+Non authenticated Bitstream download to start now
+DMA transfer done
+XFSBL_ERROR_BITSTREAM_LOAD_FAIL
+Partition 4 Load Failed, 0x37
+================= In Stage Err ============
+```
+
+So: SD works, `BOOT.BIN` parses, the PMU firmware loads and runs, and then the bitstream
+download reaches "DMA transfer done" but the PL never reports success. FSBL enters its
+error stage and stops, which is why **ATF and U-Boot never run and the console goes quiet**.
+
+**The same bitstream programs fine over JTAG** — Phase 3.5 was hardware-verified that way,
+and the audio datapath ran. So the design is good; the fault is in the FSBL/bootgen PL path,
+not in the bitstream content.
+
+### A caveat about the earlier silence
+
+For most of the session the board produced **no output at all**, and the APU read `APU Reset`
+over JTAG. The output above appeared only later, shortly after an `xsdb connect` +
+`stop`/`con` probe. It is not established what makes the difference between a power-on that
+boots and one that stays silent. Treat "silent after power-cycle" as an open, secondary
+question; do not assume a power-cycle alone always starts FSBL.
 
 ### Verified good — do not re-derive these
 
@@ -46,31 +84,28 @@ Power on with the mode jumper on SD and the flashed card inserted:
 
 ### Ruled out by test
 
+- **FSBL being silent or broken.** It runs and narrates in detail; see §2.
 - **Card layout.** First build used the EFI/`gpt-hybrid` layout (systemd-boot). Rebuilt with the classic `msdos` layout; **same silence**. Both were flashed and verified.
 - **`PMUFW len = 0` in the boot header.** Red herring — `BIF_PARTITION_ATTR` includes `pmufw`, which is a separate partition rather than appended to FSBL.
 - **Missing `BOOT.BIN`.** The `.wic` already contains it; the spec's "copy BOOT.BIN by hand" step is **wrong for EDF 26.06.1**.
 - **Reset loop.** APU state is steady.
 - **UART capture.** `scripts/uart_log.ps1` demonstrably captured Digilent's demo boot earlier on COM4.
 
-### The strongest lead
-
-**Our FSBL does not run.** Two independent paths agree:
-
-1. **SD boot:** ROM never brings the APU out of reset.
-2. **JTAG:** loading `fsbl-genesys-zu3eg.elf` onto A53-0 and running it left DDR uninitialised (`"Blocked address 0x18000000. DDR controller is not initialized"`), with the PC stuck at `0xFFFC0C70` — just past the C-runtime stubs (`frame_dummy`), i.e. very early startup. By contrast `psu_init.tcl` from the SDT brings DDR up every time.
-
-FSBL is built silently (no debug prints), so there is no direct evidence of how far it gets.
-
----
-
 ## 3. Next steps, in priority order
 
-1. **Rebuild FSBL with debug prints.** Highest information per minute — currently we are blind. Look for the EDF/meta-xilinx knob for FSBL debug (`XFSBL_DEBUG_INFO` / `FSBL_DEBUG` style config) and get FSBL to narrate over `ttyPS0`.
-2. **Build `BOOT.BIN` without the PL bitstream.** Drop `bitstream` from `BIF_PARTITION_ATTR`. Bitstream loading is a plausible early hang; if it boots without, that localises the fault.
-3. **Boot a known-good reference.** Digilent publish a Genesys ZU demo image. Booting theirs proves board + card + reader, and their FSBL/U-Boot could then load *our* kernel to unblock Phase 4 while ours is fixed.
-4. If FSBL is confirmed broken, check how `gen-machine-conf` configured the FSBL multiconfig (`tmp-genesys-zu3eg-cortexa53-fsbl`) — particularly whether the FSBL's processor/DDR settings match the XSA.
-
----
+1. **Build `BOOT.BIN` without the PL bitstream.** Drop `bitstream` from `BIF_PARTITION_ATTR`
+   (it currently reads `fsbl pmufw bitstream arm-trusted-firmware device-tree u-boot-xlnx
+   bootbin-version-header`). FSBL then skips the failing partition and should continue to ATF
+   and U-Boot. This is the fast path to the Phase 4 exit criteria; the PL can be programmed
+   from Linux later via fpga_manager, which is where Phase 5 wants it anyway.
+2. **Then diagnose the bitstream path itself.** `0x37` is `XFSBL_ERROR_BITSTREAM_LOAD_FAIL`,
+   raised *after* "DMA transfer done", i.e. the data moved but the PL did not come up.
+   Worth checking, from sources rather than guesswork: what bitstream file bootgen was handed
+   (`download-genesys-zu3eg.bit` vs the XSA's `-include_bit` copy), the partition attributes
+   (`0x26`) against what FSBL expects for a PL partition, and whether PS-PL isolation or the
+   PL power rails need anything the preset did not configure.
+3. **Once it boots:** confirm the login prompt and `eth0`, then `ethtool -T eth0` for hardware
+   timestamping, then `ptp4l` against the Pi 5 + I350.
 
 ## 4. Environment and assets
 
@@ -106,6 +141,8 @@ WKS_FILE = "xilinx-default-sd.wks"
 ---
 
 ## 5. Separate finding: `xsdb`'s `dow` is broken here
+
+> **Correction:** `dow` was never broken. `0x30000000` and `0x30004000` hit the same DDR cells because the preset's x8 DDR map drives bank-group bit 1 on byte-address bit 14, and the fitted x16 SODIMM has no such pin. With the corrected geometry, `dow` of the 33 MB kernel matches the file at every sampled offset. See `phase4_status_2026-09-24.md` §2.2.
 
 Worth recording because it cost a lot of time and will mislead anyone who tries JTAG boot again.
 

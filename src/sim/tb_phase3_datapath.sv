@@ -1,22 +1,22 @@
 // -----------------------------------------------------------------------------
 // tb_phase3_datapath.sv
 //
-// End-to-end integration test of phase3_top (with the MMCM IP stubbed).
+// End-to-end integration test of fpgamixer_top (with the MMCM IP stubbed).
 //
 // The trick that makes this trustworthy: instead of hand-rolling I2S bit
 // timing (the thing the Phase 2 harnesses got wrong), it uses the project's
 // OWN known-good modules as the test fixture --
 //   * two i2s_transmitters act as the ADCs, generating the serial streams fed
-//     into phase3_top's ad_sdout inputs from TB-chosen PCM values;
-//   * two i2s_receivers act as DAC monitors, recovering PCM from phase3_top's
+//     into fpgamixer_top's ad_sdout inputs from TB-chosen PCM values;
+//   * two i2s_receivers act as DAC monitors, recovering PCM from fpgamixer_top's
 //     da_sdin outputs.
-// Both fixtures are clocked from phase3_top's OWN generated sclk/lrck (tapped
+// Both fixtures are clocked from fpgamixer_top's OWN generated sclk/lrck (tapped
 // off its output pins), exactly as the real converters are. So the only DUT-
-// specific thing under test is phase3_top's channel wiring + the matrix.
+// specific thing under test is fpgamixer_top's channel wiring + the matrix.
 //
 // For each input vector we hold the four source channels steady, let the
 // pipeline settle for several frames, then check the four recovered outputs
-// against an independent reference model of phase3_top's routing.
+// against an independent reference model of fpgamixer_top's routing.
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -24,7 +24,7 @@ module tb_phase3_datapath;
 
     localparam int SW = 24;
 
-    // Routing gains, mirrored from phase3_top.MATRIX_GAINS, in raw Q2.16.
+    // Routing gains, mirrored from fpgamixer_top.MATRIX_GAINS, in raw Q2.16.
     localparam longint GU = 32'sh10000;   //  1.0 * 2^16
     localparam longint GH = 32'sh08000;   //  0.5 * 2^16
     localparam longint GF = 16;           //  GAIN_FRAC
@@ -38,7 +38,7 @@ module tb_phase3_datapath;
     logic jb_da_mclk, jb_da_lrck, jb_da_sclk, jb_ad_mclk, jb_ad_lrck, jb_ad_sclk;
     logic jc_da_mclk, jc_da_lrck, jc_da_sclk, jc_ad_mclk, jc_ad_lrck, jc_ad_sclk;
 
-    phase3_top u_dut (
+    fpgamixer_top u_dut (
         .sysclk (sysclk),
         .jb_da_mclk(jb_da_mclk), .jb_da_lrck(jb_da_lrck), .jb_da_sclk(jb_da_sclk), .jb_da_sdin(jb_da_sdin),
         .jb_ad_mclk(jb_ad_mclk), .jb_ad_lrck(jb_ad_lrck), .jb_ad_sclk(jb_ad_sclk), .jb_ad_sdout(jb_ad_sdout),
@@ -81,7 +81,7 @@ module tb_phase3_datapath;
         .left_data (mon_jc_l), .right_data (mon_jc_r), .sample_valid (mon_valid_jc)
     );
 
-    // ----- Reference model of phase3_top's routing -----
+    // ----- Reference model of fpgamixer_top's routing -----
     function automatic logic signed [SW-1:0] sat24(input longint acc);
         longint scaled;
         scaled = acc >>> GF;
@@ -90,7 +90,7 @@ module tb_phase3_datapath;
         else                            return scaled[SW-1:0];
     endfunction
 
-    // out = routing(in). MUST mirror phase3_top's active MATRIX_GAINS.
+    // out = routing(in). MUST mirror fpgamixer_top's active MATRIX_GAINS.
     // Currently IDENTITY: each output = its own input at unity.
     function automatic logic signed [SW-1:0] ref_jb_l(input longint al,ar,bl,br); return sat24(GU*al); endfunction
     function automatic logic signed [SW-1:0] ref_jb_r(input longint al,ar,bl,br); return sat24(GU*ar); endfunction

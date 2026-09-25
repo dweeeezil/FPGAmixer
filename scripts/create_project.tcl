@@ -38,24 +38,38 @@ if {[file isdirectory $xhub_boards]} {
 # ------ Phase selection -------------------------------------------------------
 # current_phase drives the synthesis top module, which XDC is used, and (phase4
 # onwards) whether the PS block design is built.
-set current_phase "phase4"
+set current_phase "phase5"
 set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 
-# phase4 = the hardware-verified phase3 datapath + the PS, so it keeps BOTH
-# phase3_top and the Phase 3 XDC. The PS is instantiated inside phase3_top
-# under `ifdef INCLUDE_PS.
+# phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top).
+# phase3          : fpgamixer_top WITHOUT the PS -- the static matrix, gains
+#                   tied to MATRIX_GAINS.
+# phase4, phase5  : fpgamixer_top WITH the PS (INCLUDE_PS): the BD, the
+#                   M_AXI_CTRL port and the matrix gain registers. Since the
+#                   Phase 5 control plane landed these are the same build; the
+#                   PS-only Phase 4 design is in git history (82d4386).
 #
-# Do NOT wrap phase3_top in a higher-level top to add the PS: the XDC names
-# instances by absolute path (u_fwd_*/u_oddr/C), so an extra hierarchy level
-# drops 25 constraints and implementation fails in IO clock placement. Tried
-# 2026-09-22; that is what the `ifdef exists to avoid.
+# The top-level XDC names a few instances by path (u_clk/u_mmcm and
+# u_jb|u_jc/u_fwd_*/u_oddr). Adding hierarchy ABOVE fpgamixer_top, or renaming
+# those instances, needs that file updated in the same change: a missed path is
+# only a critical warning at parse time, and implementation then fails in IO
+# clock placement (seen 2026-09-22).
+#
+# scoped_xdc: module-scoped constraint files, as {file module} pairs. Each is
+# applied to EVERY instance of its module (SCOPED_TO_REF), with cell names
+# relative to the instance, so a constraint travels with its module instead of
+# naming instance paths in the top-level XDC (docs/architecture_modules.md).
 set include_ps 0
-if {$current_phase eq "phase4"} {
+set scoped_xdc {}
+if {$current_phase in {phase3 phase4 phase5}} {
+    set synth_top "fpgamixer_top"
+    set xdc_file  "constraints/fpgamixer_genesys_zu.xdc"
+}
+if {$current_phase in {phase4 phase5}} {
     set include_ps 1
-    set synth_top "phase3_top"
-    set xdc_file  "constraints/phase3_genesys_zu.xdc"
+    lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
 }
 
 # ------ Verify we're at the repo root ------
@@ -133,6 +147,12 @@ if {$bp ne ""} {
 add_files -norecurse -fileset sources_1 $rtl_files
 add_files -norecurse -fileset sim_1     $sim_files
 add_files -norecurse -fileset constrs_1 $xdc_file
+foreach pair $scoped_xdc {
+    lassign $pair f ref
+    add_files -norecurse -fileset constrs_1 $f
+    set_property SCOPED_TO_REF $ref [get_files $f]
+    puts "INFO: $f scoped to every instance of '$ref'"
+}
 
 # ------ Clocking Wizard IP: 25 MHz -> ~12.288 MHz ------
 # The ZU-3EG PL reference (sysclk on E12) is 25 MHz, not the Arty's 125 MHz, so
@@ -164,7 +184,8 @@ set_property -dict [list \
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
 
 # ------ PS block design (phase4+) --------------------------------------------
-# The BD holds ONE cell: the Zynq UltraScale+ PS. Everything board-specific in
+# The BD holds the Zynq UltraScale+ PS plus one constant (the GEM0 TSU
+# increment-control tie-off, below). Everything board-specific in
 # it comes from Apply Board Preset (Digilent's preset.xml), never from values
 # typed in here. The preset provides DDR4 (DDR4_1866L, 64-bit), UART0 on
 # MIO18-19, SD1 on MIO39-51 with card detect, USB0/USB1, and Ethernet on
@@ -193,14 +214,111 @@ if {$include_ps} {
 
     set_property -dict [list CONFIG.PSU__ENET0__TSU__ENABLE {1}] $ps
 
+    # Enabling the TSU exposes emio_enet0_tsu_inc_ctrl[1:0], and the BD ties an
+    # unconnected input to 2'b00. UG1085 (v2.5) ch.34 "Precision Time Protocol
+    # via EMIO": "Whenever exposed, gem_tsu_inc_ctrl[1:0] SHOULD BE tied to 0b11
+    # in order for GEM TSU to increment normally". With 00, GEM0 (gem_tsu_ms = 1)
+    # clears the ns register and bumps seconds on every tsu_clk cycle. Measured
+    # over JTAG before this tie-off (2026-09-24): tsu_timer_nsec stuck at 0,
+    # tsu_timer_sec rising ~250 M/s; ptp4l saw constant RX timestamps ("bad
+    # timestamps in nrate calculation").
+    set tsu_inc [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == xlconstant}] tsu_inc_ctrl_normal]
+    set_property -dict [list CONFIG.CONST_WIDTH {2} CONFIG.CONST_VAL {3}] $tsu_inc
+    connect_bd_net [get_bd_pins $tsu_inc/dout] \
+                   [get_bd_pins zynq_ultra_ps_e_0/emio_enet0_tsu_inc_ctrl]
+
+    # The preset also turns on PSU_DYNAMIC_DDR_CONFIG_EN. That defines
+    # XPAR_DYNAMIC_DDR_ENABLED, which makes psu_init() skip the static DDR init
+    # and has FSBL call XFsbl_DdrInit() instead (embeddedsw zynqmp_fsbl,
+    # xfsbl_initialization.c). XFsbl_IicReadSpdEeprom() is hard-wired to the
+    # ZCU102/106 topology: I2C1, a TCA9548 mux at 0x75, channel 0x08, then the
+    # SODIMM SPD. On this board it fails, FSBL returns XFSBL_FAILURE (0x3FFFFFFF)
+    # from stage 1, falls back (multiboot++ and a soft reset), and the ROM ends
+    # with CSU_BR_ERROR 0x4B -- a silent board that looks like a ROM failure.
+    # The static values the preset generates are proven: psu_init.tcl brings
+    # DDR up over JTAG every time.
+    set_property -dict [list CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN {0}] $ps
+
+    # With dynamic config off, the static DDR geometry must match the SODIMM
+    # actually fitted. The preset describes x8 4 Gb devices (2 bank-group
+    # bits), matching the originally bundled Kingston HX424S14IB/4. This board
+    # ships with a Kingston CBD26D4S9S1KC-4: 4 GB, 1Rx16, four 512M x16 (8 Gb)
+    # devices -- x16 DDR4 has ONE bank-group bit. With the x8 map, BG1 sits on
+    # HIF bit 11 = byte address bit 14 (ADDRMAP8 BG_B1 0x8 + base 3), which
+    # drives nothing: 0x30000000 and 0x30004000 alias (measured over JTAG with
+    # mwr/mrd, 2026-09-24). Everything bulk-loaded into DDR was folded in 16 KB
+    # steps -- the "xsdb dow is broken" symptom and FSBL's bitstream staging.
+    # The SODIMM is user-replaceable: a different module needs these changed.
+    # Vivado does not re-derive the address counts from width/capacity; it
+    # flags them instead (PSU-2: BG must be 1 for x16; PSU-3: row must be 16
+    # for 8 Gb), so all four are set together.
+    set_property -dict [list \
+        CONFIG.PSU__DDRC__DRAM_WIDTH      {16 Bits} \
+        CONFIG.PSU__DDRC__DEVICE_CAPACITY {8192 MBits} \
+        CONFIG.PSU__DDRC__BG_ADDR_COUNT   {1} \
+        CONFIG.PSU__DDRC__ROW_ADDR_COUNT  {16} \
+    ] $ps
+
     # The preset enables M_AXI_HPM0_LPD and S_AXI_HPC0_FPD. Their aclk pins are
     # unconnected out of the box and validate_bd_design fails on that, so clock
-    # them from pl_clk0 (100 MHz). Nothing uses these ports until Phase 5 wires
-    # up OSC control; they are left enabled so that step needs no PS re-config
-    # (which would mean regenerating the XSA, the SDT and the machine config).
+    # them from pl_clk0 (100 MHz). S_AXI_HPC0_FPD is still unused.
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] \
                    [get_bd_pins zynq_ultra_ps_e_0/maxihpm0_lpd_aclk] \
                    [get_bd_pins zynq_ultra_ps_e_0/saxihpc0_fpd_aclk]
+
+    # ----- Phase 5: AXI4-Lite control port for the matrix gains -----
+    # M_AXI_HPM0_LPD -> SmartConnect (AXI4 -> AXI4-Lite, ID/burst handling)
+    # -> external port M_AXI_CTRL, which fpgamixer_top connects to
+    # matrix_regs_axil. The register block is plain RTL outside the BD so the
+    # Icarus/XSim testbenches exercise the same source that is synthesized.
+    # Mapped at 0x8000_0000 (start of the LPD PL window), 4 KB.
+    #
+    # No PS configuration changes: the PS8 settings (and so psu_init, the
+    # FSBL, and the machine config) are identical to Phase 4. The XSA still
+    # changes (new bitstream, new hwh), so the sdtgen -> bitbake chain is rerun.
+    set rst [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == proc_sys_reset}] rst_ctrl]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] \
+                   [get_bd_pins $rst/slowest_sync_clk]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0] \
+                   [get_bd_pins $rst/ext_reset_in]
+
+    set smc [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc]
+    set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $smc
+    connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
+                        [get_bd_intf_pins $smc/S00_AXI]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
+    connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $smc/aresetn]
+
+    set pl_clk0_hz [get_property CONFIG.FREQ_HZ [get_bd_pins zynq_ultra_ps_e_0/pl_clk0]]
+    set m_ctrl [create_bd_intf_port -mode Master \
+        -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_CTRL]
+    set_property -dict [list \
+        CONFIG.PROTOCOL   {AXI4LITE} \
+        CONFIG.DATA_WIDTH {32} \
+        CONFIG.ADDR_WIDTH {32} \
+        CONFIG.FREQ_HZ    $pl_clk0_hz \
+    ] $m_ctrl
+    connect_bd_intf_net [get_bd_intf_pins $smc/M00_AXI] $m_ctrl
+
+    set ctrl_clk [create_bd_port -dir O -type clk ctrl_aclk]
+    set_property -dict [list \
+        CONFIG.FREQ_HZ          $pl_clk0_hz \
+        CONFIG.ASSOCIATED_BUSIF {M_AXI_CTRL} \
+        CONFIG.ASSOCIATED_RESET {ctrl_aresetn} \
+    ] $ctrl_clk
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] $ctrl_clk
+    set ctrl_rst [create_bd_port -dir O -type rst ctrl_aresetn]
+    set_property CONFIG.POLARITY {ACTIVE_LOW} $ctrl_rst
+    connect_bd_net [get_bd_pins $rst/peripheral_aresetn] $ctrl_rst
+
+    assign_bd_address -offset 0x80000000 -range 4K \
+        -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+        [get_bd_addr_segs M_AXI_CTRL/Reg]
+    puts "INFO: M_AXI_CTRL      = [get_property OFFSET [get_bd_addr_segs \
+zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
     puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \
@@ -208,14 +326,21 @@ if {$include_ps} {
 [get_property CONFIG.PSU__CRL_APB__GEM_TSU_REF_CTRL__ACT_FREQMHZ $ps] MHz)"
     puts "INFO: PS DDR          = [get_property CONFIG.PSU__DDRC__MEMORY_TYPE $ps] \
 [get_property CONFIG.PSU__DDRC__SPEED_BIN $ps]"
+    puts "INFO: PS DDR geometry = x[get_property CONFIG.PSU__DDRC__DRAM_WIDTH $ps],\
+[get_property CONFIG.PSU__DDRC__DEVICE_CAPACITY $ps],\
+BG [get_property CONFIG.PSU__DDRC__BG_ADDR_COUNT $ps],\
+BA [get_property CONFIG.PSU__DDRC__BANK_ADDR_COUNT $ps],\
+row [get_property CONFIG.PSU__DDRC__ROW_ADDR_COUNT $ps],\
+col [get_property CONFIG.PSU__DDRC__COL_ADDR_COUNT $ps],\
+dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
 
     validate_bd_design
     save_bd_design
     add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
 
-    # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in phase3_top.
+    # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in fpgamixer_top.
     set_property verilog_define {INCLUDE_PS} [get_filesets sources_1]
-    puts "INFO: verilog_define INCLUDE_PS set -- phase3_top instantiates the PS"
+    puts "INFO: verilog_define INCLUDE_PS set -- fpgamixer_top instantiates the PS"
 }
 
 # ------ Methodology gate ------

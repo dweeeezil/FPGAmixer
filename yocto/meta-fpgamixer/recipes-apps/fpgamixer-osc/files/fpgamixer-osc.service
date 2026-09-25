@@ -1,0 +1,26 @@
+[Unit]
+Description=FPGAmixer OSC control server (restores and drives the PL mixer)
+Documentation=file:///usr/lib/fpgamixer/mixer_state.py
+# The PL is configured by FSBL before Linux starts, so the register windows
+# exist by the time this runs. No network ordering is needed: the server binds
+# 0.0.0.0 and serves whichever interfaces come up.
+
+[Service]
+Type=simple
+# Root: the server maps the PL register windows through /dev/mem.
+ExecStart=/usr/bin/python3 /usr/lib/fpgamixer/osc_mixer_server.py \
+    --tcp-port 8000 --udp-port 8001 --hw \
+    --state-file /var/lib/fpgamixer/mixer_state.json
+WorkingDirectory=/usr/lib/fpgamixer
+# Creates /var/lib/fpgamixer (root filesystem, ext4) if it doesn't exist.
+StateDirectory=fpgamixer
+Environment=PYTHONUNBUFFERED=1
+# SIGTERM makes the server write any batched, not-yet-saved state and exit 0;
+# 10 s is far more than one save needs.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

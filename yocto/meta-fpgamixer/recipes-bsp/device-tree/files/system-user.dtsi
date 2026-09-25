@@ -1,0 +1,115 @@
+/*
+ * Genesys ZU-3EG board fixes on top of the sdtgen-generated Linux device tree.
+ */
+
+/*
+ * SD1 (microSD slot): the generated node says xlnx,has-wp = <0>, i.e. no
+ * write-protect line is wired to the controller, but it lacks the generic
+ * "disable-wp" property, so the MMC core trusts the controller's WP status and
+ * the card comes up read-only ("mmcblk0: ... (ro)"). With a read-only card the
+ * esp/storage vfat mounts fail and systemd drops to emergency mode
+ * (first Linux boot, 2026-09-24).
+ */
+&sdhci1 {
+	disable-wp;
+	/*
+	 * With disable-wp alone the card enumerates as "UHS-I speed SDR104" and
+	 * reads work, but writes fail: "mmc0: error -110 writing Cache Flush bit"
+	 * then I/O errors, so root goes read-only and the vfat mounts fail.
+	 * no-1-8-v keeps the card at 3.3 V high speed (no SDR104 through the
+	 * level shifter) -- a diagnostic to isolate the UHS path. Digilent's own
+	 * PetaLinux dtsi (Genesys-ZU-OS, 3eg/master) keeps UHS and instead sets
+	 * xlnx,itap-delay-* values, noting SDR104 tuning "fails on some cards".
+	 */
+	no-1-8-v;
+};
+
+/*
+ * GEM0 + TI DP83867 PHY. The generated node has no PHY child, so macb scans the
+ * MDIO bus and the PHY device has no of_node; dp83867_of_init() then returns
+ * -ENODEV, the probe fails silently and phylib falls back to "Generic PHY".
+ * Describing the PHY binds the real driver, which programs the RGMII delays.
+ *
+ * Values from Digilent's out-of-box BSP (Digilent/Genesys-ZU-OOB-os, branch
+ * 3eg-master, system-user.dtsi), which gives the dt-bindings/net/ti-dp83867.h
+ * names: RX 2.00 ns (0x7), TX 1.50 ns (0x5), FIFO 4 nibbles (0x1), CLK_OUT =
+ * REF_CLK (0xc); PHY reset on MIO44 (active low), interrupt on MIO38 (level
+ * low). MIO38/44 are GPIO in our psu_init. Digilent spelled the deassert delay
+ * "reset_deassert-us", which the kernel ignores; the intended 200 us is used here.
+ *
+ * MAC: Digilent programs the board's EUI-48 at QSPI offset 0x1FFF000 (their
+ * zynq-MAC-in-flash.patch for U-Boot). Read back on this board as
+ * 00:18:3e:05:06:48 (OUI 00:18:3E = Digilent), both from U-Boot
+ * ("sf probe 0 25000000 0") and from Linux via the nvmem cell below
+ * (/sys/bus/nvmem/devices/mtd1/nvmem).
+ *
+ * THIS IS BOARD-SPECIFIC: another Genesys ZU needs its own address here.
+ * Pointing gem0 at the cell with nvmem-cells = <&gem0_mac> would make it
+ * generic, but with that, macb never probed (2026-09-24): fw_devlink kept a
+ * link to the mac-address@f000 node, which never becomes a device, and did
+ * not hand it over to spi0.0 when spi-nor bound ("deferred probe pending:
+ * ... wait for supplier ...mac-address@f000"). Cause not yet established.
+ */
+&gem0 {
+	phy-handle = <&phy0>;
+	local-mac-address = [00 18 3e 05 06 48];
+
+	mdio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		phy0: ethernet-phy@f {
+			reg = <0xf>;
+			reset-gpios = <&gpio 44 1>;	/* GPIO_ACTIVE_LOW */
+			reset-assert-us = <1>;
+			reset-deassert-us = <200>;
+			interrupt-parent = <&gpio>;
+			interrupts = <38 8>;		/* IRQ_TYPE_LEVEL_LOW */
+			ti,rx-internal-delay = <0x7>;	/* 2.00 ns */
+			ti,tx-internal-delay = <0x5>;	/* 1.50 ns */
+			ti,fifo-depth = <0x1>;		/* 4 nibbles */
+			ti,clk-output-sel = <0xc>;	/* REF_CLK */
+		};
+	};
+};
+
+/*
+ * QSPI flash: IS25LP256 (32 MiB, 64 KiB erase blocks per U-Boot). Only the last
+ * erase block is described, read-only, so the rest of the flash is not exposed.
+ * Single-bit at 25 MHz: the settings the MAC was read back with in U-Boot; this
+ * node only ever reads 6 bytes. gem0_mac is currently unreferenced (see the
+ * gem0 comment); it stays so the MAC can be read from Linux, and for the
+ * fw_devlink follow-up.
+ */
+&qspi {
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <25000000>;
+		spi-rx-bus-width = <1>;
+		spi-tx-bus-width = <1>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@1ff0000 {
+				compatible = "nvmem-cells";
+				label = "mac";
+				reg = <0x1ff0000 0x10000>;
+				read-only;
+
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					gem0_mac: mac-address@f000 {
+						reg = <0xf000 0x6>;
+					};
+				};
+			};
+		};
+	};
+};

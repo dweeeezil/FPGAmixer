@@ -1,0 +1,25 @@
+# FPGAmixer bench: the board's only Ethernet port (end0, GEM0) on the Pi 5's
+# private gPTP link. Sorts before systemd's stock 80-wired.network (DHCP on
+# every Ethernet port), and systemd-networkd uses the first file that matches,
+# so this replaces it for end0 only.
+#
+# Both a fixed address AND DHCP: 10.0.0.2 always works on the Pi link, and
+# plugging the board into a DHCP network (a router, or a Mac with internet
+# sharing, as in Phase 4) still gets an address as before.
+
+[Match]
+Name=end0
+
+[Link]
+# The bench link has no DHCP server, so DHCP never completes there; don't let
+# that hold up anything waiting for network-online.target.
+RequiredForOnline=no
+
+[Network]
+Address=10.0.0.2/24
+DHCP=ipv4
+
+[DHCP]
+UseMTU=yes
+RouteMetric=10
+ClientIdentifier=mac

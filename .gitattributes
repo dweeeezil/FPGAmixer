@@ -1,2 +1,12 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Yocto layer files are consumed on the Linux build VM; keep them LF.
+yocto/** text eol=lf
+
+# tools/ runs on the board (Python, packaged by meta-fpgamixer); keep it LF so
+# shebangs and anything else parsed on Linux never see a CR.
+tools/** text eol=lf
+
+# Shell scripts run under bash (Git Bash or Linux), which rejects CR.
+*.sh text eol=lf

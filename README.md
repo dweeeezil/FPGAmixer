@@ -54,11 +54,14 @@ matrix, 2026-09-21).** Audio loops back correctly on JB and JC. Post-route
 results: WNS +2.421 ns, which is the codec RX-sampling path (it was +1.908 ns on
 the Arty); WHS +0.034 ns; 0 failing endpoints; routing clean. The only
 methodology findings are the known TIMING-18 advisories and one CLKC-56 advisory.
-**Phase 4 is built and awaiting its first boot:** the PS block design, XSA,
-system device tree, machine config, and a full EDF/Yocto image for the board all
-build clean (`docs/phase4_status_2026-09-22.md`). What's left is writing the SD
-card and confirming a login prompt on the UART with `eth0` up.
-Next after that: Phase 5, OSC control per
+**Phase 4 is done: the board boots Linux from SD** (EDF/Yocto) to a login
+prompt on the UART. `end0` (PS GEM0) runs at 1 Gbps with the TI DP83867 driver
+bound and a stable MAC (`docs/phase4_status_2026-09-24.md`). **The gPTP bench
+spike passed on 2026-09-24:** `ptp4l` against a Raspberry Pi 5 + Intel I350
+syncs to 3–4 ns RMS (≤22 ns worst) over one hop, as slave and as grandmaster,
+well inside the 1 µs Phase 9 budget. It needed an FPGA design fix to the GEM
+time-stamp unit (`docs/gptp_spike_2026-09-24.md`).
+Next: Phase 5, OSC control per
 `docs/archive/FPGA Mixer OSC Standard.md`.
 
 Command-line simulation: `make -f scripts/sim.mk all` — seven testbenches, all

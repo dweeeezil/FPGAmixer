@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // tb_phase3_dynamic.sv
 //
-// Dynamic end-to-end test of phase3_top (identity routing, MMCM stubbed).
+// Dynamic end-to-end test of fpgamixer_top (identity routing, MMCM stubbed).
 //
 // Unlike tb_phase3_datapath, which holds each input value steady for many
 // frames, this drives a DIFFERENT value into every frame and checks the output
@@ -31,7 +31,7 @@ module tb_phase3_dynamic;
     logic jb_da_mclk, jb_da_lrck, jb_da_sclk, jb_ad_mclk, jb_ad_lrck, jb_ad_sclk;
     logic jc_da_mclk, jc_da_lrck, jc_da_sclk, jc_ad_mclk, jc_ad_lrck, jc_ad_sclk;
 
-    phase3_top u_dut (
+    fpgamixer_top u_dut (
         .sysclk (sysclk),
         .jb_da_mclk(jb_da_mclk), .jb_da_lrck(jb_da_lrck), .jb_da_sclk(jb_da_sclk), .jb_da_sdin(jb_da_sdin),
         .jb_ad_mclk(jb_ad_mclk), .jb_ad_lrck(jb_ad_lrck), .jb_ad_sclk(jb_ad_sclk), .jb_ad_sdout(jb_ad_sdout_r),

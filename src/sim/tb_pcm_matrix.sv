@@ -78,15 +78,16 @@ module tb_pcm_matrix;
     };
 
     pcm_matrix #(
-        .N            (N),
+        .N_IN         (N),
+        .N_OUT        (N),
         .SAMPLE_WIDTH (SAMPLE_WIDTH),
         .GAIN_WIDTH   (GAIN_WIDTH),
-        .GAIN_FRAC    (GAIN_FRAC),
-        .GAINS_FLAT   (TEST_GAINS)
+        .GAIN_FRAC    (GAIN_FRAC)
     ) dut (
         .mclk           (mclk),
         .rst_n          (rst_n),
         .sample_valid_i (sample_valid_i),
+        .gains_flat     (TEST_GAINS),
         .in_flat        (in_flat),
         .out_flat       (out_flat),
         .sample_valid_o (sample_valid_o)
