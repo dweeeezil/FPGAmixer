@@ -33,3 +33,6 @@ do_install() {
 }
 
 FILES:${PN} += "${APPDIR}"
+
+# i2cget/i2cset: forcing the Type-C chip to UFP (see the script)
+RDEPENDS:${PN} = "i2c-tools"

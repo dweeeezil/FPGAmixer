@@ -86,7 +86,7 @@ What device mode needs (checked against the kernel config and DT above):
 1. **Kernel fragment** (new `linux-xlnx_%.bbappend` + `.cfg` in `meta-fpgamixer`): `CONFIG_USB_GADGET=y`, `CONFIG_USB_DWC3_DUAL_ROLE=y`, `CONFIG_USB_CONFIGFS=y`, `CONFIG_USB_CONFIGFS_F_UAC2=y` (pulls in `U_AUDIO`/`F_UAC2`). Built-in rather than modules, so no module-loading order matters at boot.
 2. **DT** (`system-user.dtsi`): `&dwc3_0 { dr_mode = "peripheral"; maximum-speed = "high-speed"; snps,dis_u2_susphy_quirk; snps,dis_u3_susphy_quirk; }` (the quirks as in Digilent's BSP) and `&dwc3_1 { dr_mode = "host"; }`. With `DUAL_ROLE` built in, an unset `dr_mode` would default to OTG, so USB1 must be pinned.
 3. **Gadget setup at boot:** a configfs script + systemd unit in a new recipe `fpgamixer-usb-gadget`: UAC2 function, `c_chmask`/`p_chmask` = 0xff (8 ch), `c_srate`/`p_srate` = 48000, `c_sync` = async, `fb_max` sized for ±1000 ppm, product name "FPGAmixer". A second recipe, not part of `fpgamixer-osc`: USB is a front door, the OSC server is control plane.
-4. **Type-C role:** the TUSB322I powers up in its default mode (DRP). A Mac is always a source/DFP, so the board should attach as UFP with no driver. **Risk:** device mode also needs the controller to see VBUS through the USB3320 (session valid). If enumeration fails, the fallbacks are the mainline `extcon-usbc-tusb320` driver (TUSB322I compatibility unverified) or forcing UFP over I2C. This is exactly what bench step S1 (§8) tests first, before any PL work depends on it.
+4. **Type-C role:** ~~the TUSB322I powers up in its default mode (DRP). A Mac is always a source/DFP, so the board should attach as UFP with no driver.~~ **Wrong, found on the bench (§10, S1):** the chip comes up DRP with Try.SRC and wins against a Mac as the source, so the gadget script forces it to UFP over I2C at every start. **Risk:** device mode also needs the controller to see VBUS through the USB3320 (session valid). If enumeration fails, the fallbacks are the mainline `extcon-usbc-tusb320` driver (TUSB322I compatibility unverified) or forcing UFP over I2C. This is exactly what bench step S1 (§8) tests first, before any PL work depends on it.
 
 ---
 
@@ -233,7 +233,39 @@ Design notes:
 
 **Pitfall recorded:** the VM has two kernel work directories. `amd_cortexa53_mali_common-amd-linux` is the stale generic smoke build and `genesys_zu3eg-amd-linux` is the board's. Always check the board one.
 
-### Bench test S1 (pending)
+### Bench test S1: first result, 2026-09-25: the Type-C role, found and fixed
+
+The first boot of the P8.1 image showed the gadget half working (service active, `UAC2Gadget` card present) but **the Mac saw nothing**: `ioreg -p IOUSB` listed only its own controllers, and `/sys/class/udc/fe200000.usb/state` stayed `not attached`. (Ethernet also had no link until a full power-off, the known DP83867 behaviour.)
+
+**Cause: the Type-C chip made the board the *source*.** The TUSB322I, read over I2C (bus `i2c-1` = PS I2C at 0xff020000, TCA9548A mux at 0x70, branch 3 → chip at 0x47):
+
+| Reg | Read | Meaning |
+|---|---|---|
+| 0x00–0x07 | `223BSUT` | device ID "TUSB322", reversed |
+| 0x09 | `0x50` | ATTACHED_STATE = `01`, **Attached.SRC**: the board is DFP/host and drives VBUS |
+| 0x0A | `0x06` | MODE_SELECT = `00` (follow the PORT strap: DRP here), SOURCE_PREF = `11` (**Try.SRC**) |
+
+A Mac's port is dual-role too, so with Try.SRC the board won the negotiation as the host side. Both ends then wait for the other to be the device. The §3.2 assumption "a Mac is always the source, so the board attaches as UFP" was wrong for this board's strap. Other USB audio devices worked with the same cable because they are device-only.
+
+**Fix, by hand first:** terminations off, MODE_SELECT = `01` (UFP), terminations on: REG 0x0A `0x07` → `0x17` → `0x16` (the TUSB32x sequence). Afterwards: 0x09 = `0x90` (**Attached.SNK**), 0x08 = `0x30` (the Mac advertises 3 A), UDC state **`addressed`**, and **"FPGAmixer" appears in Audio MIDI Setup.**
+
+**Made permanent:** `fpgamixer-usb-gadget.sh` now calls `typec_ufp()` before binding the UDC. It finds the I2C bus by controller name (not number), selects the mux branch, applies the same sequence (keeping the other bits), and releases the mux. A failure is a warning, not fatal. The setting lasts until power-off, so it's written at every start. Recipe: `RDEPENDS = i2c-tools` (already in the image, now declared). Linux has no driver on the mux, so selecting a branch disturbs nothing.
+
+Noted, harmless at high speed: at boot the gadget logs `FS Playback/Capture: Req. wMaxPacketSize 1176 … > max ISOC 1023`. Eight channels of 3-byte samples don't fit a full-speed isochronous packet; on the Mac's high-speed link each microframe carries ~6 frames (~150 B).
+
+### Two devices on the Mac (open, user decision 2026-09-25)
+
+macOS lists the gadget as **two** devices: "Playback Inactive" (0 in / 8 out) and "Capture Inactive" (8 in / 0 out). Cause, from the `f_uac2` source: the function always describes **two clock sources** ("Output Clock" for the Mac's playback, "Input Clock" for its capture) and points each direction at its own, with no option to share. macOS makes one device per clock domain. The names are `f_uac2`'s hard-coded strings for the streaming interfaces' idle settings.
+
+**Decision:** an Aggregate Device on the Mac for now; **later, one 8 × 8 device**: a carried `f_uac2` patch in `meta-fpgamixer` that lets both directions share one clock source when the rates match (true here, since both run on `mclk` through the link) and makes the interface names configurable. Scheduled before the S3 end-to-end test.
+
+### Bench login (user request, 2026-09-25)
+
+EDF's distro config creates `amd-edf` with an **empty, immediately expired** password (`useradd -p '' amd-edf; passwd-expire amd-edf`, `?=` in `amd-edf.conf`), so every freshly flashed card needed a serial-console login before SSH worked. The image bbappend now replaces `EXTRA_USERS_PARAMS` when `FPGAMIXER_BENCH = 1`: `amd-edf` gets the password the user chose (as a SHA-512 crypt hash with a fixed salt, for reproducible builds) and no forced change. EDF's groups and sudoers rule are kept. A non-bench build keeps EDF's behaviour. It is a bench convenience, not security: the hash is in the repo and the password is short.
+
+**Image rebuilt 2026-09-26** (Type-C UFP in the gadget script + bench login): 14,739 tasks, all succeeded, 22 warnings (the usual set). Checked in the rootfs tarball: `amd-edf`'s `/etc/shadow` entry has the fixed-salt hash and a normal last-change date (so no forced change); groups `aie,audio,video,wayland` and `/etc/sudoers.d/99-amd-edf` are unchanged; the packaged gadget script has `typec_ufp`; `i2cget`/`i2cset` are present. Copied to **`build/sd/p8-usb-20260926.wic.xz`** (MD5 `fef80c61…`).
+
+### Bench test S1: original plan
 
 **Image built 2026-09-25:** `bitbake edf-linux-disk-image xilinx-bootbin`, 14,739 tasks, all succeeded, the usual 22 warnings. The manifest has `fpgamixer-usb-gadget`, `libasound2` and `alsa-utils-{alsaloop,aplay,amixer,speakertest}`. The package holds the script, the unit and a `98-fpgamixer-usb-gadget.preset` (enabled). Copied to **`build/sd/p8-usb-20260925.wic.xz`** (MD5 `b3604ac9…`, same on both ends). Reflashing resets `/var/lib/fpgamixer/mixer_state.json`, as noted in Phase 6.
 

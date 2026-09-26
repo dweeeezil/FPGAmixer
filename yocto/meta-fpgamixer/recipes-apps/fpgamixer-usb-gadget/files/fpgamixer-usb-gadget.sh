@@ -31,6 +31,47 @@ CHANNELS_MASK=0xff # 8 channels each way
 RATE=48000
 SSIZE=3            # 24-bit samples in 3 bytes (S24_3LE)
 
+# ----- Type-C role (Genesys ZU board specific) -----
+# The Type-C port's TI TUSB322I comes up dual-role with Try.SRC preferred
+# (REG 0x0A = 0x06, read 2026-09-25). Against a Mac, which is dual-role too,
+# the board won the negotiation as SOURCE (REG 0x09 = 0x50, Attached.SRC):
+# both ends then wait for the other to be the device and nothing enumerates.
+# Forcing the chip to UFP (device only) fixed it (REG 0x09 = 0x90,
+# Attached.SNK, UDC "addressed", "FPGAmixer" in Audio MIDI Setup). The setting
+# lasts until power-off, so it is written at every start.
+#
+# The chip is at 0x47 behind a TCA9548A mux (0x70, branch 3) on the PS I2C
+# controller at 0xff020000 (i2c-1 today; looked up by name so a bus
+# renumbering can't send these writes to the wrong bus). Linux has no driver
+# on the mux, so selecting a branch and releasing it again disturbs nothing.
+I2C_CTRL=ff020000
+MUX_ADDR=0x70
+MUX_BRANCH3=0x08
+TUSB_ADDR=0x47
+TUSB_REG_MODE=0x0a  # [5:4] MODE_SELECT, [2:1] SOURCE_PREF, [0] DISABLE_TERM
+
+typec_ufp() {
+    bus=""
+    for d in /sys/bus/i2c/devices/i2c-*; do
+        if grep -q "$I2C_CTRL" "$d/name" 2>/dev/null; then bus=${d##*i2c-}; break; fi
+    done
+    if [ -z "$bus" ]; then
+        echo "WARNING: I2C controller $I2C_CTRL not found; Type-C role left as is" >&2
+        return 1
+    fi
+
+    i2cset -y "$bus" $MUX_ADDR $MUX_BRANCH3 || return 1
+    # TUSB32x datasheet sequence: terminations off, change mode, terminations
+    # on. Keep SOURCE_PREF and debounce as they were, set MODE_SELECT = 01.
+    mode=$(i2cget -y "$bus" $TUSB_ADDR $TUSB_REG_MODE) || { i2cset -y "$bus" $MUX_ADDR 0x00; return 1; }
+    ufp=$(( (mode & ~0x31) | 0x10 ))
+    i2cset -y "$bus" $TUSB_ADDR $TUSB_REG_MODE $(( mode | 0x01 ))
+    i2cset -y "$bus" $TUSB_ADDR $TUSB_REG_MODE $(( ufp | 0x01 ))
+    i2cset -y "$bus" $TUSB_ADDR $TUSB_REG_MODE $ufp
+    i2cset -y "$bus" $MUX_ADDR 0x00
+    printf "Type-C: TUSB322 mode register %s -> 0x%02x (UFP)\n" "$mode" "$ufp"
+}
+
 start() {
     if [ -e "$G/UDC" ] && [ -n "$(cat "$G/UDC")" ]; then
         echo "gadget already bound to $(cat "$G/UDC")"
@@ -42,6 +83,10 @@ start() {
         echo "no USB device controller: is dwc3_0 dr_mode = peripheral, and is the kernel built with USB_GADGET=y?" >&2
         return 1
     fi
+
+    # Before binding, so the port is already a device when the pull-up appears.
+    # A failure is logged, not fatal: a host that is not dual-role still works.
+    typec_ufp || echo "WARNING: could not force the Type-C port to UFP; a Mac may not see the gadget" >&2
 
     mkdir -p "$G"
     cd "$G"
