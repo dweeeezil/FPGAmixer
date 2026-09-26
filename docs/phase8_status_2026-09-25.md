@@ -469,7 +469,35 @@ Follow-ups: reset the servo's integrator and filter on every xrun (start-up over
 
 **Procedure:** set (Pi) → check-hw (board) → record "before" (Mac) → wait a few seconds → **pull the power**, no shutdown → boot, nothing typed on the board → check-hw → record "after" → analyze both + compare. Plus by ear: 211 Hz + the analog source on JB-L, 307 Hz + the analog source on JC-L.
 
-Results: below.
+### Result, 2026-09-26 (image `p8-bridge-20260926`, bridge running from boot): PASS
+
+| Step | Result |
+|---|---|
+| `set` (Pi → board over OSC) | **144 sent, 144 echoed as sent, 0 differ** |
+| power pulled (no shutdown), rebooted, nothing typed on the board | `ssh board` got "No route to host" twice while the board booted, then connected |
+| `check-hw` after the power pull | **144/144 gain registers match the pattern** (exact Q2.16 codes) |
+| audio, by the user on a spectrogram | only the played frequencies, plus a ~60 Hz component at **−126 dB** (mains pickup in the analog chain; negligible) |
+| audio, measured (below) | **all 8 tone sums match the pattern to 0.000 dB, before and after** |
+
+**The recordings.** `before.wav` / `after.wav` (committed on `main` as `166523b`, "added test audio"): 10 s, 48 kHz, 24-bit, **stereo**. They're Ableton's master mixdown of the 8 recorded FPGAmixer inputs, not the 8 separate inputs: the two channels are identical, and no single matrix output's gain row fits them (each row spans ~30 dB; the recorded tones span 3.5 dB). The analysis (Goertzel, `crosspoint_restore_test.py`'s functions) therefore compares each tone with the **coherent sum of that tone through its 8 USB → USB crosspoints**, i.e. 20·log10(Σₒ 10^(gₒᵢ/20)) + source level:
+
+| | measured − predicted, per tone (211 … 907 Hz) | spread |
+|---|---|---|
+| before | −18.00 for all 8 | **0.000 dB** |
+| after | −18.00 for all 8 | **0.000 dB** |
+
+(−18.00 dB is the common source level.) The files have different MD5s (`a5cf5624…`, `9ad0d70a…`): two recordings, not a copy. The off-tone floor is ≈ −170 dBFS: the loop Mac → USB → PL → matrix → PL → USB → Mac is fully digital and adds nothing.
+
+**Side result: the 8 link channels are sample-aligned end to end.** The sums are coherent to 0.000 dB at up to 907 Hz; even a one-sample skew between channels would have lowered them.
+
+**What this proves, precisely.**
+- The restore of **all 144 crosspoints** is proven exactly at the register level.
+- The audio proves the **8 column sums** (one per USB input) exactly, before = after. It does not resolve the 64 USB → USB crosspoints individually: a swap inside a column would be invisible, and an error on a very quiet crosspoint (−37 dB) barely moves its sum. The register check covers those.
+- For a per-crosspoint audio check, export the 8 recorded tracks separately (or as one 8-channel file) and run `analyze` / `compare` as designed.
+
+Only the post-pull `check-hw` appears in the terminal logs; the pattern had been sent and echoed 144/144 beforehand.
+
+**This closes the Phase 6 follow-up:** a power cycle keeps the routing, verified with real multichannel audio through the USB crosspoints.
 
 ---
 
@@ -484,4 +512,4 @@ Results: below.
 - The bridge's servo fix on hardware; the start-up xruns in direction B (confirm the cause).
 - Link status over OSC (read-only zone), deferred by decision.
 - `f_uac2` full-speed descriptor warning (harmless at high speed).
-- Optional: the quantitative S4 audio analysis (`analyze`/`compare`) from the two recordings.
+- ~~Optional: the quantitative S4 audio analysis from the two recordings.~~ Done 2026-09-26 on the stereo mixdowns: all 8 column sums exact (0.000 dB) before and after. Per-crosspoint audio levels still need 8 separate tracks, if wanted.
