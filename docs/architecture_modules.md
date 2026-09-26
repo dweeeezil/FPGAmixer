@@ -43,7 +43,7 @@ There are four kinds of block:
 | Platform | `src/rtl/audio_clocking.sv` | MMCM → `mclk`, `rst_n`, shared `sclk`/`lrck` |
 | Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
-| Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding |
+| Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding. Samples its output pair once per DAC frame, at the L load (Phase 9 fix of a one-sample L/R skew) |
 | Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8, in progress: `phase8_status_2026-09-25.md`) |
 | Generic | `src/rtl/async_fifo.sv` + `constraints/async_fifo.xdc` | dual-clock FIFO; XDC scoped to the module like `coef_bank_handoff.xdc` |
 | Platform (image) | `yocto/meta-fpgamixer/recipes-kernel/`, `recipes-apps/fpgamixer-usb-gadget` | kernel fragment for USB device mode; the UAC2 gadget (USB front door, Linux half) |
@@ -97,7 +97,7 @@ Rules:
 - **All beats of frame *k* lie between strobe *k* and strobe *k*+1.** A block that can't finish inside the frame retimes to the next one and states the extra frame of latency.
 - **No back-pressure.** Schedules are static; each producer's timing is known at elaboration.
 - **Every block states its timing** in its header: first and last beat in cycles after the strobe. Cycle numbering: the edge that samples `frame` high is edge 0, and cycle *c* is the interval after edge *c*. A frame is exactly 256 cycles (LRCK = `mclk`/256), whatever `mclk`'s steering does to the cycle's length.
-- **The core's packed output updates on one edge at a stated cycle D of the same frame** (C2): today's latency to the link and the Pmods is kept.
+- **The core's packed output updates on one edge at a stated cycle D of the same frame** (C2): today's latency to the link and the Pmods is kept. **D ≤ 250.** The earliest consumer is `i2s_port`, which samples the pair on edge 254 (needs the frame from cycle 253); `pcm_link` samples at the next strobe.
 - Consumers may check `s_ch` (as the link checks TID). `src/sim/pcm_stream_monitor.sv` checks all of the above and is used by every core TB.
 
 Boundary converters (generic, P9.A2): **`pcm_pack2stream`** captures the packed vector on the strobe and emits channels 0 … N−1 on cycles 1 … N. **`pcm_stream2pack`** collects beats by `s_ch` and moves all channels to its packed output together, one cycle after the beat for N−1; `err_o` pulses on an out-of-order beat or an incomplete frame.

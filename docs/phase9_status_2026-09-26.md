@@ -267,6 +267,26 @@ Not run: the Icarus path (`make -f scripts/sim.mk stream`); Icarus isn't install
 
 **Found along the way:** a Python heredoc run through the Bash tool dropped the backslash line continuations in the new `sim.mk` rule, the known failure mode. Caught by the check afterwards and fixed with the editor.
 
+### 5.3 C7: the Pmod L/R skew, confirmed and fixed in the front door (simulation): PASS
+
+**Confirmed first, on the unchanged RTL.** `tb_phase3_dynamic` tags every input sample with its frame number and already printed the pairing, but it only compared each channel with itself: `locked: JB_L=100005 JB_R=200006 JC_L=300005 JC_R=400006`. **In one DAC frame, L carries input frame 5 and R carries frame 6: R leaves one sample ahead of L on both Pmods.** Cause, as read in P9.A1: the transmitter loads L at the LRCK fall (2 cycles before the matrix has frame *k*) and R at the rise (after it).
+
+**Fix (`src/rtl/i2s_port.sv`, front door only):** the port samples the pair **once per DAC frame, when L is loaded** (its own 1 FF LRCK-fall detect, the same cycle as the transmitter's), sends L directly and holds R for the rising edge. So both halves always come from one core frame, whatever the core's timing. One 24-bit register and one flip-flop per port. The core, the link and every other front door are untouched.
+
+- **Latency:** L's load time is unchanged; R is loaded one frame later than before (+1.5 frames after the strobe instead of +0.5). The DAC treats one LRCK period's pair as one instant, so what matters is that the pair now carries one input frame: **both channels have L's latency, which is what L always had.** Before, R was one sample early relative to L.
+- **The deadline this states for the core:** the transmitter and the hold sample `tx_flat` on edge 254 of a frame, so the core's packed output must hold the new frame from **cycle 253**. C2's D ≤ 250 leaves 3 cycles; P9.A4's TBs check D. The link samples later (at the next strobe).
+
+**Verification (XSim):** `tb_phase3_dynamic` gains a pairing check (L and R counters equal in every output frame).
+
+| RTL | `tb_phase3_dynamic` | `tb_phase3_datapath` |
+|---|---|---|
+| `i2s_port` before the fix (from `HEAD`) | **FAIL**: every frame "JB/JC L/R pair from different frames: L 005, R 006" | PASS (static values can't show it) |
+| fixed | **PASS**, `locked: JB_L=100005 JB_R=200005 JC_L=300005 JC_R=400005`, 24 frames, tags + counters + pairs | PASS |
+
+The unmodified TB on the old RTL is the mutation check: the new check fails on exactly the bug it targets. `tb_i2s_tx_pin_phase` wasn't rerun: `i2s_transmitter` is unchanged, and the hold feeds only its `right_data`.
+
+**On the bench:** not audible with the mono cables (L only). With stereo cables it would show as a one-sample L/R offset before the fix. It goes into the next bitstream with the core (P9.A5); no separate build.
+
 ## 6. Proposed steps
 
 Each step is verified and committed separately; the status doc and `architecture_modules.md` are updated with it.
@@ -313,3 +333,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26:** revised by the user's decision: the time-shared core (§5, P9.A) goes first; P9.2 folded into it. The other §8 decisions are left for the Phase 9 session.
 - **2026-09-26 (Phase 9 session):** Phase 8 merged (`ea88a29`); branch `phase9/time-shared-core`. **P9.A1:** core design proposal written (§5.1): output-major DSP lanes sharing one sample stream, a tagged stream contract, coefficients in a dual-clock RAM with a swap at the frame, `mixer_core`. Corrected the §5 table's 64 × 64 figure. Side finding from the RTL: a probable one-sample L/R skew on the Pmod DAC outputs today (C7). Awaiting decisions C1–C7.
 - **2026-09-26:** decisions C1–C7: all as recommended. **P9.A2 PASS** (§5.2): stream contract in `architecture_modules.md` §2.1, `pcm_pack2stream` / `pcm_stream2pack`, `pcm_stream_monitor`, `tb_pcm_stream` bit-exact at N = 1, 12, 20, 4 mutants all caught. Next: C7 (Pmod L/R skew), then P9.A3.
+- **2026-09-26: C7 PASS** (§5.3): the L/R skew confirmed in `tb_phase3_dynamic` (L frame 5, R frame 6), fixed in `i2s_port` (the pair sampled once, at the L load); the TB now checks pairing and fails on the old RTL. Core deadline stated: packed output valid from cycle 253. Next: P9.A3 (`coef_bank_ram`).
