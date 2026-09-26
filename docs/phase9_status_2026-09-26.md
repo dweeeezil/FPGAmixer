@@ -6,6 +6,8 @@ Order decided by the user (2026-09-26): after the single 8 × 8 USB device (Phas
 
 Roadmap Decision 1 still stands for v1: **gPTP + AAF streaming with static, hard-coded streams**; AVDECC / Milan is Phase 10.
 
+**Revised 2026-09-26 (user decision): the time-shared core comes first** (§5, steps P9.A1–A6), before any AVB-specific step. Reasons: AVB doesn't fit the DSP budget without it; the matrix is the only core block today, so the core's internal interface is cheapest to redefine now; and Phase 7's DSP module library will be built on whatever that interface is.
+
 ---
 
 ## 1. What exists already
@@ -66,11 +68,43 @@ AVB listeners play samples at **presentation times in gPTP time**, and a talker'
 
 Consequence to note: while `mclk` is steered, the codec interface timing is unchanged (same clock tree); STA is re-run for the new clocking.
 
-## 5. The DSP budget: the matrix must stop costing one DSP per crosspoint
+## 5. First: a time-shared core (P9.A, done before any AVB step)
 
-4 Pmod + 8 USB + 8 AVB = **20 channels → 400 crosspoints > 360 DSP48E2**, before any Phase 7 DSP. Proposal: **time-multiplex `pcm_matrix`**. A frame is 256 `mclk` cycles, so one DSP can do up to ~250 MACs per frame (more with a faster core clock). 20 × 20 fits in 2 DSPs; 32 × 32 in 4–5. Same ports, same coefficient contract, same register window, so nothing around it changes, and **~140 DSPs are freed for Phase 7**. It's a core-block change verified by the existing matrix TBs (bit-exact against the reference model) plus a latency check.
+### Why
 
-Alternative (not recommended): fewer USB or AVB channels.
+4 Pmod + 8 USB + 8 AVB = **20 channels → 400 crosspoints > 360 DSP48E2**, before any Phase 7 DSP. The deeper problem: `pcm_matrix` spends one DSP48E2 per crosspoint, and each does **one** multiply per frame. A frame is **256 `mclk` cycles** (12.2919 MHz / 48.016 kHz), so every DSP is idle 255/256 of the time: about 0.4 % utilisation.
+
+Time-shared at `mclk` alone (no faster clock), one DSP does ~250 MACs per frame, and the device does **~90,000 per frame**:
+
+| Workload | Parallel (today) | Time-shared at `mclk` |
+|---|---|---|
+| 20 × 20 matrix (Pmod + USB + AVB) | 400 DSPs: doesn't fit | 2 |
+| 32 × 32 matrix | 1024 | 4 |
+| 64 × 64 matrix | 4096 | 16 |
+| 64 channels × 8 biquad bands (5 MACs each) | — | ~10 |
+
+So the roadmap's full chain (input DSP → bus matrix → bus DSP → output matrix → output DSP) fits many times over. **Staying at `mclk` matters:** a faster core clock would have to follow `mclk` through the Phase 9 media-clock steering (§4). It remains an option for later, not a need.
+
+### What "implemented correctly" means (proposed; the decisions are in §8)
+
+- **A time-shared stream contract inside the core**, next to today's packed PCM contract: samples flow sequentially through each frame with a channel index, on `mclk`, frame-synchronous. Packed vectors don't scale: 64 channels is a 1536-bit bus between every pair of blocks, and serial blocks chain naturally. Front doors keep the packed contract at first, with **packed ↔ stream converters at the core boundary**, and can move to the stream form later. Both contracts go into `architecture_modules.md` §2.
+- **Coefficients in RAM with a bank swap.** Two banks: software writes the inactive one, COMMIT swaps them at a frame boundary, and the new inactive bank is brought up to date afterwards (copy, or write-both). The **coefficient contract is unchanged** ("the whole bank changes on one frame"), and so is the register window, so `mixer_hw`, the OSC server and saved state don't notice. The clock crossing shrinks from a 2592-bit bank (most of Phase 8's 4193 CDC paths) to a single toggle.
+- **Samples and coefficients in block RAM** (0 of 216 used today). The limits become memory ports and the schedule, not multipliers.
+- **Latency:** one frame (~21 µs, a frame is computed while the next arrives). Stated in the contract and tested.
+- **Saturation and arithmetic unchanged:** Q2.16 gains, 24-bit samples, a wide accumulator, saturate once at the output, so it stays bit-exact against the existing reference model.
+
+### Steps
+
+| Step | What | Verified by |
+|---|---|---|
+| P9.A1 | **Design proposal for the core contract** (stream format, framing, channel ordering, back-pressure or none, latency, RAM bank swap), written into this doc; decisions from the user | review |
+| P9.A2 | Stream contract + the packed ↔ stream converters (generic, parameterised) | new TB, round trip bit-exact, mutation-tested |
+| P9.A3 | Coefficient RAM with bank swap behind the existing `axil_coef_window` register layout | TB: the atomicity monitor from `tb_matrix_regs` (every frame sees one whole bank), across unrelated clocks |
+| P9.A4 | **Time-shared `pcm_matrix`** (same parameters, same register window), N_IN × N_OUT MACs per frame on ⌈N_IN·N_OUT/~250⌉ DSPs | `tb_pcm_matrix`, `tb_pcm_matrix_rect`, `tb_matrix_regs`, the integration TBs: bit-exact against the reference model; a latency check |
+| P9.A5 | Integration in `fpgamixer_top`; Vivado | timing, CDC report (expect far fewer crossings), **DSP count (144 → ~1–2)**, methodology gate |
+| P9.A6 | Bench, no new hardware | USB ↔ matrix ↔ Pmods as in Phase 8 S3; `crosspoint_restore_test.py` set / check-hw / power pull as in S4 |
+
+Alternative (not recommended): fewer USB or AVB channels and a parallel matrix.
 
 ## 6. Proposed steps
 
@@ -79,8 +113,8 @@ Each step is verified and committed separately; the status doc and `architecture
 | Step | What | Verified by |
 |---|---|---|
 | P9.0 | Branch from `main` after the Phase 8 PR merges; flash the pending Phase 8 image fixes (bridge coarse correction) along the way | bench |
-| P9.1 | **gPTP as a service**: linuxptp recipe + config (`gPTP.cfg`), `ptp4l` + `phc2sys` units, role per §8 | bench: offset vs the Pi, as in the spike, now from boot |
-| P9.2 | **TDM `pcm_matrix`** (same interface) | all matrix TBs bit-exact; new latency check; Vivado DSP count |
+| **P9.A1–A6** | **The time-shared core, §5. Done first.** | see §5 |
+| P9.1 | **gPTP as a service**: linuxptp recipe + config (`gPTP.cfg`), `ptp4l` + `phc2sys` units, role per §8. Linux-only, so it may run alongside P9.A if convenient | bench: offset vs the Pi, as in the spike, now from boot |
 | P9.3 | **Media clock, measurement first**: PL timestamps of `mclk` frames against the TSU counter, in a status window; read the real ppm vs gPTP from Linux | bench: a stable, plausible offset (≈ +324 ppm vs a gPTP GM) |
 | P9.4 | **Media clock, steering**: MMCM fine phase shift + the discipline loop; `mclk` locked to gPTP | bench: timestamp error bounded; audio unaffected (Pmods, USB) |
 | P9.5 | **Link #2** (second formatter + `pcm_link`, card "FPGAmixerLink2"), core 20 × 20 | TBs; Vivado; `aplay`/`arecord` + link counters as in S2 |
@@ -101,7 +135,7 @@ Each step is verified and committed separately; the status doc and `architecture
 | 1 | **Media clock:** M2 (discipline `mclk` to gPTP) with M2a (MMCM fine phase shift), M3 (ASRC) as the fallback? | **Yes, M2a.** One clock for the whole box; USB already follows `mclk`. |
 | 2 | **gPTP role on the bench:** the board as grandmaster, or the Pi as grandmaster (board follows)? Long term (with Milan gear) the board is usually a follower. | **Board follows the Pi** on the bench, so the discipline loop is exercised the way it will be used; GM mode stays tested. |
 | 3 | **Streams and channels:** one 8-channel AAF stream each way (48 kHz, class A)? Sample format for AAF: 24-bit in 32 (what Milan uses is to be confirmed in Phase 10)? | **8 + 8, class A, 48 kHz.** |
-| 4 | **Matrix:** time-multiplex it now (P9.2), freeing DSPs for Phase 7? | **Yes.** |
+| 4 | ~~**Matrix:** time-multiplex it now, freeing DSPs for Phase 7?~~ | **Decided 2026-09-26: yes, first** (§5). Its own design decisions come in P9.A1: the core stream contract (format, framing, back-pressure), the RAM bank swap, latency. |
 | 5 | **Peers:** Pi only for v1? Is an AVB switch available for the soak, and which? Any AVB/Milan device available to test against? | Pi first; the rest when available. |
 | 6 | **Channel map:** AVB at core channels 12–19 (appended after USB, as the Phase 8 rule says)? | **Yes.** |
 
@@ -115,3 +149,4 @@ Each step is verified and committed separately; the status doc and `architecture
 ## 10. Log
 
 - **2026-09-26:** proposal written (this doc) after Phase 8 P8.9. Nothing built.
+- **2026-09-26:** revised by the user's decision: the time-shared core (§5, P9.A) goes first; P9.2 folded into it. The other §8 decisions are left for the Phase 9 session.

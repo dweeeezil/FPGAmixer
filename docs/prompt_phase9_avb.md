@@ -4,12 +4,12 @@
 
 ---
 
-You're continuing the FPGAmixer project: a network/USB/analog digital matrix mixer on a Digilent Genesys ZU-3EG (Zynq UltraScale+ XCZU3EG). Phases 0–6 and **Phase 8 (PS↔PL audio link + USB device mode)** are done and verified on hardware. The Mac sees the board as one 8 × 8 USB soundcard, audio runs through a 12 × 12 matrix, and the routing survives a power cut. **Next is Phase 9: AVB network audio.** DSP (Phase 7) comes after AVB by the user's choice (their DSP module library plan makes it large).
+You're continuing the FPGAmixer project: a network/USB/analog digital matrix mixer on a Digilent Genesys ZU-3EG (Zynq UltraScale+ XCZU3EG). Phases 0–6 and **Phase 8 (PS↔PL audio link + USB device mode)** are done and verified on hardware. The Mac sees the board as one 8 × 8 USB soundcard, audio runs through a 12 × 12 matrix, and the routing survives a power cut. **Next is Phase 9: AVB network audio, starting with a refactor of the core to time-shared multipliers.** DSP (Phase 7) comes after AVB by the user's choice (their DSP module library plan makes it large).
 
 ## Read first, in this order
 
 1. `docs/architecture_modules.md`: **the rules.** Module kinds (front door / PCM core / control plane / platform), the PCM contract (§2), the coefficient contract (§3), register windows and the address map (§4), the file map (§1.1), §6 "How upcoming work plugs in".
-2. **`docs/phase9_status_2026-09-26.md`: the Phase 9 design proposal.** Checked facts, the media-clock options, the DSP budget problem, proposed steps P9.0–P9.8, and **the decisions in §8, which you get from the user before building anything.**
+2. **`docs/phase9_status_2026-09-26.md`: the Phase 9 design proposal.** Checked facts, the media-clock options, **§5: the time-shared core, which is done first**, proposed steps P9.A1–A6 then P9.0–P9.8, and **the decisions in §8, which you get from the user before building the AVB part.**
 3. `docs/phase8_status_2026-09-25.md`: how the link, the ALSA card, the USB bridge and the bench tests were built and verified. Phase 9 reuses all of it. Note the open items at its end.
 4. `docs/gptp_spike_2026-09-24.md`: gPTP on this board (the three fixes it needed, the Pi 5 + I350 peer, configs).
 5. `docs/FPGAmixer_Architecture_Roadmap.md`: Decisions 1–2 and the +324 ppm audio-clock risk item.
@@ -40,5 +40,14 @@ You're continuing the FPGAmixer project: a network/USB/analog digital matrix mix
 
 ## The task
 
-1. **Get the user's decisions on `phase9_status_2026-09-26.md` §8** (media clock, gPTP role, streams/channels, the TDM matrix, peers, channel map). Re-check anything in the proposal that you'll depend on; it was written from the build tree, but verify, don't trust.
-2. Then implement P9.0 onward in small, separately verified, committed steps, updating the status doc and `architecture_modules.md` as you go. The verification items in §9 are resolved inside the step that needs them, and the result is written down.
+**First, the time-shared core (proposal §5, steps P9.A1–A6), decided by the user on 2026-09-26: "it's better to get it done now".** Today's `pcm_matrix` spends one DSP48E2 per crosspoint for one multiply per 256-cycle frame; AVB's 20 × 20 won't fit, and Phase 7's DSP module library will be built on whatever core interface exists. Stay at `mclk` (no faster core clock: it would have to follow the Phase 9 media-clock steering).
+
+1. **P9.A1: write the core design proposal into the status doc and get the user's decisions**: the time-shared stream contract inside the core (sample format, channel order, framing/valid, back-pressure or not, latency), packed ↔ stream converters at the core boundary, and coefficients in RAM with a bank swap that keeps the coefficient contract ("the whole bank changes on one frame") and the register window unchanged. Research before proposing (DSP48E2 cascade/pipelining, BRAM ports, how the scheduler handles N_IN × N_OUT not divisible by the frame).
+2. Implement P9.A2–A6 in small, separately verified, committed steps: bit-exact against the existing matrix TBs and reference model, mutation-tested, Vivado (DSP count, CDC report, methodology gate), then the Phase 8 bench tests (USB ↔ matrix ↔ Pmods; `crosspoint_restore_test.py` with a power pull).
+
+**Then AVB:**
+
+3. **Get the user's decisions on `phase9_status_2026-09-26.md` §8** (media clock, gPTP role, streams/channels, peers, channel map; #4 is already decided). Re-check anything in the proposal you'll depend on; it was written from the build tree, but verify, don't trust.
+4. Implement P9.0/P9.1 and P9.3 onward in the same way, updating the status doc and `architecture_modules.md` as you go. The verification items in §9 are resolved inside the step that needs them, and the result is written down.
+
+**Not in this phase, but recorded:** the user wants an OSC alias / parameter-linking feature (`docs/proposal_osc_aliases.md`). Don't build it unless asked; keep it in mind when touching the OSC server or the state format.
