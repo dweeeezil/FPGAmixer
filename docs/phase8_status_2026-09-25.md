@@ -521,14 +521,29 @@ Why it's honest for this device: both directions really run on one clock, `mclk`
 
 Checks so far: the patch applies to the board kernel source (`bitbake -c patch linux-xlnx`); the script passes `sh -n`.
 
-**Image built 2026-09-26:** 14,821 tasks, all succeeded, 23 warnings (the usual 22 + one for the forced `do_patch`). The kernel compile log has **0 compiler warnings**, and `f_uac2.o` was rebuilt from the patched source. The rootfs has the new gadget script. It also has the bridge's xrun-hold fix, first time on hardware. Copied to **`build/sd/p8-1dev-20260926.wic.xz`** (MD5 `fd8f5ed3…`). Bench test: below.
+**Image built 2026-09-26:** 14,821 tasks, all succeeded, 23 warnings (the usual 22 + one for the forced `do_patch`). The kernel compile log has **0 compiler warnings**, and `f_uac2.o` was rebuilt from the patched source. The rootfs has the new gadget script. (It does **not** have the bridge's xrun-hold change: see the correction below.) Copied to **`build/sd/p8-1dev-20260926.wic.xz`** (MD5 `fd8f5ed3…`).
+
+### Bench result, 2026-09-26: PASS
+
+- `journalctl -u fpgamixer-usb-gadget`: `Type-C: TUSB322 mode register 0x06 -> 0x16 (UFP)`, **`UAC2: one clock source (single_clock)`**, `gadget bound to fe200000.usb`.
+- **macOS shows one device, "FPGAmixer", 8 in / 8 out** (Audio MIDI Setup); the old playback-only / capture-only pair is gone. The `bcdDevice` bump was enough; no cable replug was needed.
+- Routing still works: USB 1/2 → JB-L / JC-L by ear (OSC `4_0`, `5_2` on, `0_0`, `2_2` off), and USB → Mac by the default routing.
+
+**Bridge start-up on this image.** Direction A (Mac → PL) was smooth: pitch 1000328 → 1000348, 1 xrun. Direction B (PL → Mac) had 1,015 xruns at start, while the Mac's input stream wasn't running. When it started, B's playback queue was **+353 frames** over target, and the servo pushed the pitch to **1000652** to drain it. It settled at ≈1000350 after ~50 s. Steady state was clean in both directions.
+
+**Correction (2026-09-26): the "xrun-hold" change reported in commit `bb37b4c` and in the log below never reached the repo or any image.** It had been applied to the working tree by an inline Python helper that evidently didn't write; `bb37b4c` doesn't touch the bridge source, and the only commit to it before this correction was `6c729d5`. The images tested since ran the original servo. Lesson recorded: edits are made with the editor tool and grep-verified before building or committing.
+
+**Fix, now actually in the source** (compiled on the VM, 0 warnings; not yet on hardware):
+- **coarse correction first:** a playback queue more than one period (192 frames) over target is drained by dropping whole captured periods; more than a period under, it's topped up with silence. That's one short glitch where the old servo took ~50 s and swung the Mac's rate by hundreds of ppm;
+- **then the servo pauses 1 s** after an xrun or a coarse fix, and its filter restarts; the **integral is kept** (the learned clock offset), where before an xrun reset it to 0;
+- the status line also counts coarse fixes.
 
 ---
 
 ## 21. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
-- **2026-09-26:** P8.1 bench S1 (Type-C role found and fixed; bench login); P8.4 bitstream (a Gray-MSB CDC hole caught by the methodology gate and fixed); P8.5 card; P8.6 software; S2 PASS; alsaloop rejected, own bridge written (P8.7); S3 PASS (Mac ↔ matrix, clock-locked); S4 PASS (power-cycle restore of all 144 crosspoints with audio). Bridge servo: pause 1 s after an xrun, integral kept (built with 0 warnings; **not yet on hardware**, goes into the next image).
+- **2026-09-26:** P8.1 bench S1 (Type-C role found and fixed; bench login); P8.4 bitstream (a Gray-MSB CDC hole caught by the methodology gate and fixed); P8.5 card; P8.6 software; S2 PASS; alsaloop rejected, own bridge written (P8.7); S3 PASS (Mac ↔ matrix, clock-locked); S4 PASS (power-cycle restore of all 144 crosspoints with audio). ~~Bridge servo: pause 1 s after an xrun, integral kept~~ (this change never reached the source; see the correction in §20). P8.9 PASS: one 8 × 8 device on the Mac. Bridge: coarse queue correction + hold, now in the source (0 warnings), for the next image.
 
 **Open items**
 - One 8 × 8 device on the Mac: carried `f_uac2` patch (single clock source, configurable interface names).

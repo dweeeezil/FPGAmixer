@@ -58,6 +58,8 @@
 #define PITCH_SPAN    1000       /* clamp: +/- 1000 ppm around nominal */
 #define KP            0.5        /* ppm per frame of queue error */
 #define KI            0.05       /* ppm per frame-second */
+#define COARSE        PERIOD     /* queue this far off target: fix it in whole periods */
+#define HOLD_S        1.0        /* servo paused this long after an xrun or coarse fix */
 
 static volatile sig_atomic_t stop;
 static volatile sig_atomic_t failed;   /* a direction could not start */
@@ -215,6 +217,15 @@ static int prefill(snd_pcm_t *play, snd_pcm_format_t fmt, snd_pcm_uframes_t fram
 	return err;
 }
 
+/* queue `frames` of silence into a running playback stream */
+static void prefill_more(snd_pcm_t *play, snd_pcm_format_t fmt, snd_pcm_sframes_t frames)
+{
+	size_t bytes = frames * CHANNELS * snd_pcm_format_physical_width(fmt) / 8;
+	void *z = calloc(1, bytes);
+	snd_pcm_writei(play, z, frames);
+	free(z);
+}
+
 static void *run_dir(void *arg)
 {
 	struct dir *d = arg;
@@ -222,8 +233,8 @@ static void *run_dir(void *arg)
 	struct pitch p = { 0 };
 	snd_pcm_uframes_t cp = PERIOD, cb = PERIOD * PERIODS;
 	snd_pcm_uframes_t pp = PERIOD, pb = PERIOD * PERIODS;
-	double integ = 0, err_avg = 0, t_last, t_log;
-	long frames_moved = 0, xruns = 0;
+	double integ = 0, err_avg = 0, t_last, t_log, t_hold = 0;
+	long frames_moved = 0, xruns = 0, coarse = 0;
 	uint8_t *buf3 = NULL;
 	int32_t *buf4 = NULL;
 
@@ -263,7 +274,26 @@ static void *run_dir(void *arg)
 				logmsg("%s: capture %s", d->name, snd_strerror(n));
 			snd_pcm_recover(cap, n, 1);
 			snd_pcm_start(cap);
+			t_hold = now_s() + HOLD_S;
+			err_avg = 0;
 			continue;
+		}
+
+		/*
+		 * Coarse correction, before the fine servo. A queue more than a
+		 * period over target (e.g. B at start-up: the gadget's IN stream
+		 * only runs once the Mac opens its inputs, so the queue sits full
+		 * until then; +353 frames on the bench, 2026-09-26) is drained by
+		 * dropping whole captured periods; one more than a period under is
+		 * topped up with silence below. Pitch alone would take ~50 s and
+		 * swing the Mac's rate by hundreds of ppm doing it. The integral
+		 * is kept: it holds the learned clock offset.
+		 */
+		if (snd_pcm_delay(play, &delay) == 0 && delay > TARGET + COARSE) {
+			coarse++;
+			t_hold = now_s() + HOLD_S;
+			err_avg = 0;
+			continue;                   /* this period is dropped */
 		}
 
 		if (d->cap_fmt == SND_PCM_FORMAT_S24_3LE) {
@@ -281,16 +311,33 @@ static void *run_dir(void *arg)
 			snd_pcm_drop(play);
 			snd_pcm_prepare(play);
 			prefill(play, d->play_fmt, TARGET);
-			integ = 0;
+			/* keep the integral: it holds the learned clock offset */
+			t_hold = now_s() + HOLD_S;
+			err_avg = 0;
 			continue;
 		}
 		frames_moved += w;
 
-		/* servo */
+		/* coarse correction, the other way: top up with silence */
+		if (snd_pcm_delay(play, &delay) == 0 && delay < TARGET - COARSE) {
+			prefill_more(play, d->play_fmt, TARGET - delay);
+			coarse++;
+			t_hold = now_s() + HOLD_S;
+			err_avg = 0;
+		}
+
+		/* fine servo: ppm-level drift only */
 		if (snd_pcm_delay(play, &delay) == 0)
 			err_avg += 0.2 * ((double)(delay - TARGET) - err_avg);
 		double t = now_s();
-		if (t - t_last >= UPDATE_MS / 1000.0) {
+		/*
+		 * After an xrun or a coarse fix the queue restarts near the
+		 * setpoint and the filter restarts; the servo sits out HOLD_S so
+		 * the transient isn't integrated.
+		 */
+		if (t < t_hold) {
+			t_last = t;
+		} else if (t - t_last >= UPDATE_MS / 1000.0) {
 			integ += err_avg * (t - t_last);
 			/* anti-windup: the integral alone may not exceed the pitch span */
 			if (KI * integ >  PITCH_SPAN) integ =  PITCH_SPAN / KI;
@@ -300,8 +347,9 @@ static void *run_dir(void *arg)
 			t_last = t;
 		}
 		if (t - t_log >= 10.0) {
-			logmsg("%s: %.0f frames/s, queue %+.1f frames from target, pitch %ld, xruns %ld",
-			       d->name, frames_moved / (t - t_log), err_avg, p.value, xruns);
+			logmsg("%s: %.0f frames/s, queue %+.1f frames from target, pitch %ld, "
+			       "xruns %ld, coarse fixes %ld",
+			       d->name, frames_moved / (t - t_log), err_avg, p.value, xruns, coarse);
 			frames_moved = 0;
 			t_log = t;
 		}
