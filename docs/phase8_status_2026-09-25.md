@@ -379,7 +379,13 @@ Reports: `build/p8_{timing,util,cdc,clocks,exceptions}.rpt`.
 
 **A trap found by reading the formatter driver** (`xlnx_formatter_pcm.c`): on capture in AES→PCM mode (ours) its `hw_params` does `strstr(adata->nodes[XLNX_CAPTURE]->name, "hdmi")` with **no NULL check**. That node comes from the formatter's `xlnx,rx` phandle. Without that phandle, the first `arecord` would oops the kernel. So the formatter node gets `xlnx,tx` / `xlnx,rx` pointing at our card node, whose name must not contain "hdmi", "sdi" or "dp". The formatter then also spawns AMD's `xlnx_snd_card` device; its probe looks for `xlnx,snd-pcm` in our node, logs "platform node not found" and gives up (`-ENODEV`): one harmless error line, no card.
 
-**Build check:** `bitbake fpgamixer-link-card` against the EDF 6.18.10 kernel compiles clean, no warnings; package `kernel-module-fpgamixer-link-card` → `/usr/lib/modules/6.18.10-xilinx-…/updates/fpgamixer-link-card.ko`. The DT node and the image entry follow once sdtgen names the formatter node.
+**Build check:** `bitbake fpgamixer-link-card` against the EDF 6.18.10 kernel compiles clean, no warnings; package `kernel-module-fpgamixer-link-card` → `/usr/lib/modules/6.18.10-xilinx-…/updates/fpgamixer-link-card.ko`.
+
+**SDT (sdtgen on `fpgamixer_p8.xsa`):** the formatter node is `link_formatter: audio_formatter@80100000` with exactly what the driver asks for: clock names `aud_mclk` / `m_axis_mm2s_aclk` / `s_axi_lite_aclk` / `s_axis_s2mm_aclk`, and IRQ names `irq_mm2s` / `irq_s2mm` (GIC SPI 89/90 via `imux`). `aud_mclk` is described as `misc_clk_0`, a fixed-factor clock off `pl_clk0` (×1000/8138 = 12.288 MHz). That's only a description for the driver, since the real `mclk` comes from the PL MMCM. `M_AXI_LINKSTAT@80001000` is present (the `mixer_hw` boot guard needs it). **`psu_init.tcl` and `zynqmp.dtsi` are identical to the pre-Phase-8 SDT: the PS configuration didn't change.** The previous SDT is kept as `build/sdt.pre-phase8` (and `~/edf/sdt.pre-phase8` on the VM).
+
+**DT + image:** `system-user.dtsi` adds the `fpgamixer-link` card node and `xlnx,tx`/`xlnx,rx` on `&link_formatter`, so this layer revision needs a Phase 8+ XSA. The image installs `kernel-module-fpgamixer-link-card`.
+
+**Image built 2026-09-26:** `gen-machine-conf` + `bitbake edf-linux-disk-image xilinx-bootbin`, 14,802 tasks, all succeeded, the usual 22 warnings. Checked: the deployed `download-genesys-zu3eg.bit` MD5 = Vivado's `fpgamixer_p8.bit` (`8bd839eb…`); `system.dtb` has the card node (`mclk-frequency = <0xbb8000>`) and both phandles on the formatter; the rootfs has `fpgamixer-link-card.ko`. Copied to **`build/sd/p8-link-20260926.wic.xz`** (MD5 `7ef7a026…`).
 
 ## 15. P8.6: software
 

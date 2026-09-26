@@ -54,6 +54,39 @@
 };
 
 /*
+ * PS <-> PL audio link (Phase 8, docs/phase8_status_2026-09-25.md sec. 14).
+ *
+ * link_formatter is the AMD Audio Formatter in the PL (sdtgen names it after
+ * the BD cell, so this block needs a Phase 8+ bitstream/XSA). Its driver is
+ * only a platform component; fpgamixer-link-card (a module in this layer)
+ * makes it the ALSA card "FPGAmixerLink".
+ *
+ * mclk-frequency is the NOMINAL audio master clock: it sets the formatter's
+ * MM2S Fs multiplier to 12288000 / 48000 = 256, one frame per core frame. The
+ * real mclk is 12.2919 MHz.
+ *
+ * xlnx,tx / xlnx,rx are REQUIRED on the formatter node although they point
+ * back at our own card node: on AES->PCM capture the driver reads
+ * nodes[capture]->name with no NULL check, so without them the first capture
+ * would oops. The card node's name must not contain "hdmi", "sdi" or "dp"
+ * (the driver strstr()s for those). The formatter also spawns AMD's
+ * xlnx_snd_card device from these phandles; its probe finds no
+ * "xlnx,snd-pcm" here and gives up with one "platform node not found".
+ */
+/ {
+	fpgamixer_link: fpgamixer-link {
+		compatible = "fpgamixer,pcm-link-card";
+		audio-formatter = <&link_formatter>;
+		mclk-frequency = <12288000>;
+	};
+};
+
+&link_formatter {
+	xlnx,tx = <&fpgamixer_link>;
+	xlnx,rx = <&fpgamixer_link>;
+};
+
+/*
  * GEM0 + TI DP83867 PHY. The generated node has no PHY child, so macb scans the
  * MDIO bus and the PHY device has no of_node; dp83867_of_init() then returns
  * -ENODEV, the probe fails silently and phylib falls back to "Generic PHY".
