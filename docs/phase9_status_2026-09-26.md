@@ -370,6 +370,35 @@ X1 and X4 are exactly why the sweep includes multi-lane sizes that today's 12 ×
 
 **A tooling snag, recorded:** `xvlog` hung (10 min of CPU, empty log) when recompiling in the old `build/xsim_top` directory; the same files compile in seconds in a fresh directory, both in groups and all together. Not diagnosed further; the new regression script always uses fresh directories.
 
+### 5.6 P9.A5: the Vivado build: clean
+
+`create_project.tcl` (`current_phase = phase8`: the block design didn't change) + `build.tcl p9a5`, Vivado 2026.1, ~10 min. XSA: `build/fpgamixer_p9a5.xsa`. Reports: `build/p9a5_{timing,util,cdc,clocks,exceptions}.rpt` (not tracked, like all of `build/`).
+
+| | Phase 8 (`p8`) | **P9.A5 (`p9a5`)** |
+|---|---|---|
+| WNS / WHS | +1.628 / +0.010 ns | **+2.300 / +0.005 ns**, 0 failing endpoints |
+| worst setup path | `pl_clk0`: AXI write → the 144-way shadow decode | the codec RX-sampling check (`jc_ad_sdout` → `u_jc/u_rx/sdata_r_reg`), the deliberate razor since Phase 3.5. `pl_clk0` alone: **+5.256 ns**, now inside AMD's formatter |
+| methodology gate | clean | **PASS**, 0 critical warnings |
+| **DSP48E2** | 144 (40 %) | **1 (0.28 %)** |
+| BRAM | 0 | **1 RAMB18** (the coefficient banks) |
+| LUTs / FFs | 8453 / 19505 | **6865 / 12629** |
+| **CDC crossings** | 4193 | **1473, every one with an exception** (1471 max-delay, 2 false paths) |
+
+**What mapped where (synthesis report):**
+- `u_regs/u_bank` lane RAM: **one RAMB18, 512 × 18, port A written on `pl_clk0`, port B read on `mclk`**, so the coefficients cross inside the BRAM as designed. The shadow (256 × 18) and the sample buffer (16 × 24) are LUTRAM, each on one clock.
+- The matrix: **one DSP48E2, dynamic OPMODE, MREG + PREG, 48-bit P**: the accumulate is inside the DSP. **Noted:** the A/B input registers stayed in fabric (AREG/BREG not packed). That's functionally the same, costs a few dozen FFs and doesn't matter at 12 MHz. With more lanes the sample cascade runs through fabric registers rather than ACOUT/ACIN. To look at if a larger core ever needs the timing.
+
+**CDC report, by structure:**
+
+| Structure | Crossings | Type |
+|---|---|---|
+| **matrix gains (`u_regs/u_bank`)** | **2** (was 2592) | CDC-3: `req_tgl → req_s1`, `ack_tgl → ack_s1`, ASYNC_REG, 10 ns max-delay from the scoped `coef_bank_ram.xdc`. No bank register crosses; the data crosses inside the BRAM |
+| link FIFOs (`u_link/u_{rx,tx}_fifo`), unchanged | 1216 + 4 Gray buses | as Phase 8 (LUTRAM read paths CDC-1/15, Gray pointers CDC-6) |
+| link status snapshot (`u_link_stat/u_handoff`), unchanged | 247 + 2 toggles | as Phase 8 |
+| formatter internals, unchanged | 2 | AMD's own |
+
+Not checked here: the bench (P9.A6).
+
 ## 6. Proposed steps
 
 Each step is verified and committed separately; the status doc and `architecture_modules.md` are updated with it.
@@ -419,3 +448,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26: C7 PASS** (§5.3): the L/R skew confirmed in `tb_phase3_dynamic` (L frame 5, R frame 6), fixed in `i2s_port` (the pair sampled once, at the L load); the TB now checks pairing and fails on the old RTL. Core deadline stated: packed output valid from cycle 253. Next: P9.A3 (`coef_bank_ram`).
 - **2026-09-26: P9.A3 PASS** (§5.4): `coef_bank_ram` + `coef_flat_reader` + scoped XDC; `tb_coef_bank_ram` at 5 × 7 / 3 lanes and 12 × 12 / 1 lane, 5 mutants caught. Corrected: a queued commit no longer picks up writes made after it (writes stall while queued). Next: P9.A4, the switch-over (window on the store interface, time-shared matrix, `mixer_core`, top).
 - **2026-09-26: P9.A4 PASS** (§5.5): time-shared `pcm_matrix` (1 lane at 12 × 12, D = 162), `mixer_core`, `axil_coef_window` on the store, `matrix_regs_axil` on `coef_bank_ram`, top switched; bit-exact at 7 sizes / lane counts, 4 matrix mutants caught; `xsim_regress.ps1` 13/13. Next: P9.A5, the Vivado build (DSP count, CDC, timing, methodology gate).
+- **2026-09-26: P9.A5 clean** (§5.6): WNS +2.300 / WHS +0.005 ns, methodology gate PASS, **1 DSP48E2** (was 144), 1 RAMB18, CDC 1473 crossings (was 4193) all with exceptions, the matrix's share 2 toggles (was 2592). Next: P9.A6, the image and the bench.
