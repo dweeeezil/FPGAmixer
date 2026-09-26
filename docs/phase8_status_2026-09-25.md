@@ -476,3 +476,12 @@ Results: below.
 ## 20. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
+- **2026-09-26:** P8.1 bench S1 (Type-C role found and fixed; bench login); P8.4 bitstream (a Gray-MSB CDC hole caught by the methodology gate and fixed); P8.5 card; P8.6 software; S2 PASS; alsaloop rejected, own bridge written (P8.7); S3 PASS (Mac ↔ matrix, clock-locked); S4 PASS (power-cycle restore of all 144 crosspoints with audio). Bridge servo: pause 1 s after an xrun, integral kept (built with 0 warnings; **not yet on hardware**, goes into the next image).
+
+**Open items**
+- One 8 × 8 device on the Mac: carried `f_uac2` patch (single clock source, configurable interface names).
+- Host mode (P8.8): second link instance + resampling bridge; the matrix size decision (20 × 20 exceeds the DSP48E2 budget).
+- The bridge's servo fix on hardware; the start-up xruns in direction B (confirm the cause).
+- Link status over OSC (read-only zone), deferred by decision.
+- `f_uac2` full-speed descriptor warning (harmless at high speed).
+- Optional: the quantitative S4 audio analysis (`analyze`/`compare`) from the two recordings.
