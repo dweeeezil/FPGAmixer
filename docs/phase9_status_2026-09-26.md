@@ -320,6 +320,56 @@ Not changed yet: `axil_coef_window` and `matrix_regs_axil` still use the flat sh
 
 **Found by this TB: a design choice corrected.** The first run tore 7 frames at 12 × 12. A commit issued while BUSY is queued, and the first version launched it with the shadow *as it was at launch*, i.e. including writes made after the COMMIT (the TB writes the next version straight away). That is `coef_bank_handoff`'s documented "latest wins" rule, which the proposal carried over. From software's side it can apply a half-written bank for a frame. **Now:** while a commit is queued, the store isn't ready for writes, so **a commit holds exactly the writes completed before it**. Cost: a write straight after a COMMIT that had to queue waits for the previous swap, at most about one frame + a copy (≈ 22 µs at 12 × 12); an AXI write is simply held that long. `mixer_hw` writes and commits without polling, so its bulk restore (one COMMIT) is unaffected, and OSC-rate single changes see at most that stall. (The Phase 8 matrix still has the old rule until P9.A4 replaces it; `axil_stat_window`'s reverse handoff has no writes, so the rule doesn't matter there.)
 
+### 5.5 P9.A4: the switch-over to the time-shared core (simulation): PASS
+
+One commit, so that every commit on the branch builds: the matrix, its register binding and the top change together.
+
+| File | What |
+|---|---|
+| `src/rtl/pcm_matrix_pkg.sv` (new) | the schedule's arithmetic in one place: `matrix_lanes` (smallest lane count with D ≤ 250), `matrix_passes`, `matrix_lat_first/last`, `core_latency`. The top level sizes the coefficient store with it, so the store and the matrix can't disagree |
+| `src/rtl/pcm_matrix.sv` (rewritten) | **time-shared**: stream in (the beat for N_IN−1 starts the schedule, so it depends on order, not on its producer's timing), stream out, coefficient read port. Output-major lanes; the sample goes down the lanes register to register (A cascade), each lane's gain delayed to match; P restarts on input 0; one shared descale/saturate. Data registers have no reset (they must pack into the DSP48E2); control flags do. Refuses at elaboration: no lane count fits the frame, LANES > N_IN or N_OUT, N_IN > 127, operands wider than one DSP multiply |
+| `src/rtl/mixer_core.sv` (new, C4) | `pcm_pack2stream` → `pcm_matrix` → `pcm_stream2pack`; packed on both sides |
+| `src/rtl/axil_coef_window.sv` (rewritten) | same register map; coefficients through the store's request interface; WSTRB by read-modify-write; one FSM serves both AXI channels (the store takes one request at a time) |
+| `src/rtl/matrix_regs_axil.sv` | `axil_coef_window` + `coef_bank_ram` (rows = outputs, so register index = store index; no address arithmetic); ports: the read port instead of `gains_flat`; `mrst_n` dropped (the store's mclk side has no reset) |
+| `src/rtl/fpgamixer_top.sv` | `mixer_core u_core` replaces `pcm_matrix u_matrix`; PS builds: `matrix_regs_axil` → read port; non-PS: `coef_flat_reader u_gains` over `MATRIX_GAINS` |
+| `scripts/create_project.tcl` | `coef_bank_ram.xdc` scoped to `coef_bank_ram` in the PS phases (the handoff XDC stays, for the status window) |
+| `scripts/sim.mk` | `MIXCORE` list (package first); `matrix`, `matrix_rect`, `regs` and the integration targets updated |
+| `scripts/xsim_regress.ps1` (new) | every TB with XSim, each in a fresh directory with a time limit (below) |
+| TBs | `tb_pcm_matrix`: the same vectors and reference through `mixer_core` + `coef_flat_reader`, plus D. `tb_pcm_matrix_rect`: rewritten as a sweep (below). `tb_matrix_regs`: its atomicity monitor now **rebuilds the bank the matrix actually read in each frame** from the read port; `wait_idle` + one core output before the bank checks (BUSY clears when the swap is acknowledged, possibly before that frame's reads are done) |
+
+**`tb_pcm_matrix_rect` (XSim): bit-exact at every size**, 60 frames each, new random samples and gains every frame (extremes over-represented: ±full scale, −2.0, just under +2.0), against the same 64-bit reference as the parallel matrix; D checked to the cycle; the matrix's output stream checked by `pcm_stream_monitor` against the stated first/last-beat cycles; `err_o` never.
+
+| Size | Lanes (DSP48E2) | D (cycles after the strobe) | Errors |
+|---|---|---|---|
+| 3 → 5 | 1 | 24 | 0 |
+| 5 → 2 | 1 | 21 | 0 |
+| **12 × 12** (today) | **1** | **162** | 0 |
+| **20 × 20** (Pmod + USB + AVB) | **2** | **227** | 0 |
+| 7 → 5, LANES forced to 3 (idle lane in the last pass) | 3 | 28 | 0 |
+| 32 × 32 | 6 | 231 | 0 |
+| 1 → 1 | 1 | 8 | 0 |
+
+The D values are the §5.1 estimates exactly (162, 227). `tb_pcm_matrix` (the 4 × 4 arithmetic corner cases: routing, truncation, both saturation limits, phase invert): all 28 checks, D = 26.
+
+**Mutation check** (scratch copies of `pcm_matrix.sv`):
+
+| Mutant | `tb_pcm_matrix_rect` | `tb_pcm_matrix` |
+|---|---|---|
+| X1 a lane's gain not delayed | FAIL on every multi-lane size (415 / 154 / 999 errors); 1-lane sizes can't see it | pass (1 lane) |
+| X2 accumulator restarts on input 1, not 0 | FAIL, every size except 1 → 1 | FAIL, 10 checks |
+| X3 logical instead of arithmetic descale | FAIL, every size | FAIL, 7 checks |
+| X4 no sample cascade (every lane gets lane 0's sample) | FAIL on every multi-lane size | pass (1 lane) |
+
+X1 and X4 are exactly why the sweep includes multi-lane sizes that today's 12 × 12 doesn't use.
+
+**Integration (`tb_phase3_datapath`, `tb_phase3_dynamic`, the whole non-PS top): PASS.** `tb_phase3_dynamic` prints the same `locked: JB_L=100005 JB_R=200005 JC_L=300005 JC_R=400005` as after the C7 fix: the Pmod path's latency is unchanged, and the pairs stay together.
+
+**`tb_matrix_regs` (AXI + `coef_bank_ram` + core, unrelated clocks): PASS**, every register check as before (ID, CONFIG `0x0404_1210`, reset identity and read-back, writes invisible before COMMIT, COMMIT atomic with COMMITS 1, a COMMIT while BUSY queued (`CTRL = 0x3`) and then the bank with COMMITS 3, WSTRB lanes), plus the matrix outputs under each bank.
+
+**Full regression, `scripts/xsim_regress.ps1` (XSim 2026.1): ALL PASS, 13 of 13**: `rx`, `tx`, `txphase` (210 transitions, all while SCLK low), `loopback`, `matrix`, `matrix_rect`, `stream`, `coefram`, `regs`, `link`, `linkstat`, `phase3`, `dynamic`. The Icarus path (`sim.mk`) was updated in step but not run (Icarus isn't installed on this PC).
+
+**A tooling snag, recorded:** `xvlog` hung (10 min of CPU, empty log) when recompiling in the old `build/xsim_top` directory; the same files compile in seconds in a fresh directory, both in groups and all together. Not diagnosed further; the new regression script always uses fresh directories.
+
 ## 6. Proposed steps
 
 Each step is verified and committed separately; the status doc and `architecture_modules.md` are updated with it.
@@ -368,3 +418,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26:** decisions C1–C7: all as recommended. **P9.A2 PASS** (§5.2): stream contract in `architecture_modules.md` §2.1, `pcm_pack2stream` / `pcm_stream2pack`, `pcm_stream_monitor`, `tb_pcm_stream` bit-exact at N = 1, 12, 20, 4 mutants all caught. Next: C7 (Pmod L/R skew), then P9.A3.
 - **2026-09-26: C7 PASS** (§5.3): the L/R skew confirmed in `tb_phase3_dynamic` (L frame 5, R frame 6), fixed in `i2s_port` (the pair sampled once, at the L load); the TB now checks pairing and fails on the old RTL. Core deadline stated: packed output valid from cycle 253. Next: P9.A3 (`coef_bank_ram`).
 - **2026-09-26: P9.A3 PASS** (§5.4): `coef_bank_ram` + `coef_flat_reader` + scoped XDC; `tb_coef_bank_ram` at 5 × 7 / 3 lanes and 12 × 12 / 1 lane, 5 mutants caught. Corrected: a queued commit no longer picks up writes made after it (writes stall while queued). Next: P9.A4, the switch-over (window on the store interface, time-shared matrix, `mixer_core`, top).
+- **2026-09-26: P9.A4 PASS** (§5.5): time-shared `pcm_matrix` (1 lane at 12 × 12, D = 162), `mixer_core`, `axil_coef_window` on the store, `matrix_regs_axil` on `coef_bank_ram`, top switched; bit-exact at 7 sizes / lane counts, 4 matrix mutants caught; `xsim_regress.ps1` 13/13. Next: P9.A5, the Vivado build (DSP count, CDC, timing, methodology gate).

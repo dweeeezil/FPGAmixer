@@ -7,11 +7,12 @@
 //   sysclk -> audio_clocking -> mclk, rst_n, sclk, lrck  (shared by everything)
 //
 //   Pmod JB pins <-> i2s_port u_jb <-> PCM ch0 (L), ch1 (R) -.
-//   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) --+-> pcm_matrix
-//   PS (Audio Formatter) <-> pcm_link u_link <-> PCM ch4..11 -'   u_matrix
-//                                                                 (12 x 12)
+//   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) --+-> mixer_core
+//   PS (Audio Formatter) <-> pcm_link u_link <-> PCM ch4..11 -'   u_core
+//                                                   (time-shared 12 x 12 matrix)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
-//                                                    -> u_matrix.gains_flat
+//                                   -> coefficient read port -> u_core
+//                  (without the PS: coef_flat_reader u_gains, MATRIX_GAINS)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //
 // Everything this file decides:
@@ -127,7 +128,14 @@ module fpgamixer_top (
     localparam logic [N*N*GW-1:0] MATRIX_GAINS = identity_gains();
 
     // ----- Control plane: where the gains come from -----
-    logic [N*N*GW-1:0] gains;
+    // Since Phase 9 the core reads its gains through a coefficient read port
+    // (docs/architecture_modules.md 3): from the PS's register window
+    // (coef_bank_ram inside matrix_regs_axil), or from MATRIX_GAINS through a
+    // coef_flat_reader. Both are sized by the same lane count as the core.
+    localparam int LANES   = pcm_matrix_pkg::matrix_lanes(N, N);
+    localparam int COEF_AW = $clog2(pcm_matrix_pkg::matrix_passes(N, LANES) * N);
+    logic [COEF_AW-1:0]  coef_addr;
+    logic [LANES*GW-1:0] coef_data;
 
 `ifdef INCLUDE_PS
     // ps_sys_wrapper (the BD) exports M_AXI_CTRL (AXI4-Lite, through a
@@ -219,8 +227,8 @@ module fpgamixer_top (
     );
 
     matrix_regs_axil #(
-        .N_IN (N), .N_OUT (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .ADDR_WIDTH (12),
-        .RESET_GAINS (MATRIX_GAINS)
+        .N_IN (N), .N_OUT (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .LANES (LANES),
+        .ADDR_WIDTH (12), .RESET_GAINS (MATRIX_GAINS)
     ) u_regs (
         .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
         .s_axi_awaddr  (ctrl_awaddr[11:0]), .s_axi_awvalid (ctrl_awvalid),
@@ -233,8 +241,8 @@ module fpgamixer_top (
         .s_axi_arready (ctrl_arready),
         .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
-        .mclk (mclk), .mrst_n (rst_n),
-        .gains_flat (gains)
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .coef_addr (coef_addr), .coef_data (coef_data)
     );
 
 `ifdef INCLUDE_LINK
@@ -289,20 +297,29 @@ module fpgamixer_top (
     assign link_rx = '0;
 `endif
 `else
-    assign gains   = MATRIX_GAINS;
+    coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N), .LANES (LANES)) u_gains (
+        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (MATRIX_GAINS),
+        .rd_addr (coef_addr), .rd_data (coef_data)
+    );
     assign link_rx = '0;
 `endif
 
     // ----- PCM core -----
-    pcm_matrix #(
-        .N_IN (N), .N_OUT (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)
-    ) u_matrix (
+    // mixer_core: pack -> stream -> time-shared pcm_matrix -> stream -> pack.
+    // core_out updates D cycles after the strobe (162 at 12 x 12), before
+    // i2s_port samples its pair (edge 254) and the link its frame (the next
+    // strobe): the same latency as the parallel matrix had.
+    mixer_core #(
+        .N_IN (N), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)
+    ) u_core (
         .mclk (mclk), .rst_n (rst_n),
-        .sample_valid_i (jb_rx_valid),
-        .gains_flat (gains),
+        .frame_i (jb_rx_valid),
         .in_flat  (core_in),
         .out_flat (core_out),
-        .sample_valid_o ()
+        .valid_o  (),
+        .err_o    (),
+        .coef_addr (coef_addr),
+        .coef_data (coef_data)
     );
 
 endmodule

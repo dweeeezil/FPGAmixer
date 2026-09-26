@@ -34,7 +34,13 @@ SIM      := src/sim
 # RTL for the full non-PS top (fpgamixer_top without INCLUDE_PS): the platform
 # clocking, the I2S front doors and the PCM core. Excludes the legacy
 # phase1/phase2 tops and the control plane (not instantiated without the PS).
-CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
+# Phase 9: the PCM core (mixer_core = converters + time-shared pcm_matrix).
+# The package must come first.
+MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
+            $(RTL)/pcm_matrix.sv $(RTL)/mixer_core.sv
+
+CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
+            $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
@@ -77,14 +83,15 @@ loopback: | $(BUILD)
 matrix: | $(BUILD)
 	@echo ">>> Building tb_pcm_matrix"
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix -o $(BUILD)/tb_pcm_matrix.vvp \
-		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix.sv
+		$(MIXCORE) $(RTL)/coef_flat_reader.sv $(SIM)/tb_pcm_matrix.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix.vvp
 
-# --- Non-square matrix: N_IN != N_OUT indexing, random vs a reference ---
+# --- Sizes and lane counts (3->5 ... 32x32, forced lanes), random vs a reference ---
 matrix_rect: | $(BUILD)
 	@echo ">>> Building tb_pcm_matrix_rect"
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix_rect -o $(BUILD)/tb_pcm_matrix_rect.vvp \
-		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix_rect.sv
+		$(MIXCORE) $(RTL)/coef_flat_reader.sv \
+		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_matrix_rect.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix_rect.vvp
 
 # --- Phase 9: PCM stream contract, packed <-> stream converters (N = 1, 12, 20) ---
@@ -121,8 +128,8 @@ linkstat: | $(BUILD)
 regs: | $(BUILD)
 	@echo ">>> Building tb_matrix_regs"
 	@$(IVERILOG) $(FLAGS) -s tb_matrix_regs -o $(BUILD)/tb_matrix_regs.vvp \
-		$(RTL)/matrix_regs_axil.sv $(RTL)/axil_coef_window.sv $(RTL)/coef_bank_handoff.sv \
-		$(RTL)/pcm_matrix.sv $(SIM)/tb_matrix_regs.sv
+		$(MIXCORE) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
+		$(RTL)/matrix_regs_axil.sv $(SIM)/tb_matrix_regs.sv
 	@$(VVP) $(BUILD)/tb_matrix_regs.vvp
 
 # --- Phase-3 integration: real fpgamixer_top (no PS), MMCM stubbed, rx/tx as fixtures ---

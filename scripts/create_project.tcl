@@ -76,6 +76,9 @@ if {$current_phase in {phase3 phase4 phase5 phase8}} {
 if {$current_phase in {phase4 phase5 phase8}} {
     set include_ps 1
     lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
+    # Phase 9: the matrix's gains live in coef_bank_ram (the handoff above
+    # stays for the reverse-direction status windows).
+    lappend scoped_xdc {constraints/coef_bank_ram.xdc coef_bank_ram}
 }
 if {$current_phase in {phase8}} {
     set include_link 1
