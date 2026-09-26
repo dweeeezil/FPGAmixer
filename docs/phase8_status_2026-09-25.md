@@ -399,7 +399,7 @@ Results: `test_mixer_hw` + `test_mixer_state` on the Linux VM **28/28**; `osc_mi
 
 ---
 
-## 17. Bench test S2 (link only): PASS, 2026-09-26 (image `p8-link-20260926`)
+## 16. Bench test S2 (link only): PASS, 2026-09-26 (image `p8-link-20260926`)
 
 | Check | Result |
 |---|---|
@@ -411,7 +411,7 @@ Results: `test_mixer_hw` + `test_mixer_state` on the Linux VM **28/28**; `osc_mi
 
 `rx_fill` reads 0 at every strobe. That's expected here and not a problem: the formatter delivers one frame per frame period on the same clock, and the assembler moves it to the stage register at once, so the FIFO is empty when the strobe samples it. **The health signals are `starved` / `underruns`**; the fill watermarks only mean something with a faster-than-real-time source (tb phase B).
 
-## 18. P8.7: the bridge. alsaloop rejected, our own written
+## 17. P8.7: the bridge. alsaloop rejected, our own written
 
 `alsaloop` (alsa-utils 1.2.11), tried on the bench, failed in three independent ways:
 
@@ -436,7 +436,7 @@ Build: `bitbake fpgamixer-usb-bridge`, and a forced recompile shows **0 warnings
 
 ---
 
-## 19. Bench test S3 (Mac ↔ matrix, clock-steered): PASS, 2026-09-26
+## 18. Bench test S3 (Mac ↔ matrix, clock-steered): PASS, 2026-09-26
 
 Setup: the `p8-link` image with the bridge binary run by hand (`./fpgamixer-usb-bridge -v`); the Mac plays stereo into FPGAmixer outputs 1/2 (Aggregate Device); OSC routes USB L (in 4) → JB_L (out 0), USB R (in 5) → **JC_L** (out 2; the bench's mono cables only carry left channels), the Pmods' own inputs muted there; USB 1/2 → Mac inputs 1/2 by the identity seeding.
 
@@ -453,6 +453,6 @@ Follow-ups: reset the servo's integrator and filter on every xrun (start-up over
 
 ---
 
-## 20. Log
+## 19. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
