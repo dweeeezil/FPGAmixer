@@ -80,7 +80,7 @@ Time-shared at `mclk` alone (no faster clock), one DSP does ~250 MACs per frame,
 |---|---|---|
 | 20 × 20 matrix (Pmod + USB + AVB) | 400 DSPs: doesn't fit | 2 |
 | 32 × 32 matrix | 1024 | 4 |
-| 64 × 64 matrix | 4096 | 16 |
+| 64 × 64 matrix | 4096 | 16 by MAC count; **~22–32 with the schedule proposed in §5.1** (corrected in P9.A1) |
 | 64 channels × 8 biquad bands (5 MACs each) | — | ~10 |
 
 So the roadmap's full chain (input DSP → bus matrix → bus DSP → output matrix → output DSP) fits many times over. **Staying at `mclk` matters:** a faster core clock would have to follow `mclk` through the Phase 9 media-clock steering (§4). It remains an option for later, not a need.
@@ -105,6 +105,135 @@ So the roadmap's full chain (input DSP → bus matrix → bus DSP → output mat
 | P9.A6 | Bench, no new hardware | USB ↔ matrix ↔ Pmods as in Phase 8 S3; `crosspoint_restore_test.py` set / check-hw / power pull as in S4 |
 
 Alternative (not recommended): fewer USB or AVB channels and a parallel matrix.
+
+### 5.1 P9.A1: core design proposal (2026-09-26, awaiting decisions C1–C7)
+
+Branch `phase9/time-shared-core`, from `main` after the Phase 8 merge (`ea88a29`).
+
+#### Facts this rests on (checked 2026-09-26 unless marked)
+
+| Fact | Source | Consequence |
+|---|---|---|
+| A frame is **exactly 256 `mclk` cycles**: LRCK is bit 7 of a free-running 8-bit counter. Steering `mclk` (§4, M2a) changes the cycle's length, never the count. | `i2s_clock_divider.sv` | The schedule has a fixed budget of 256 cycles, known at elaboration. |
+| The frame strobe (`jb_rx_valid`) fires **3 `mclk` after the LRCK falling edge** (receiver: 2 FF edge detect + registered pulse). The I2S transmitter loads **L 1 cycle after the LRCK fall** (strobe − 2, i.e. +254 of the previous frame) and **R 1 cycle after the LRCK rise** (strobe + 126). `pcm_link` captures `tx_flat` **on the strobe**. | `i2s_receiver.sv`, `i2s_transmitter.sv`, `pcm_link.sv` | These are the deadlines the core's output must meet (latency, C2). |
+| Today `pcm_matrix` updates its outputs **1 cycle after the strobe**. | `pcm_matrix.sv` | So today: link and I2S-L carry frame *k* one frame later; **I2S-R carries it half a frame later.** See "A side finding" below. |
+| Device: **360 DSP48E2, 216 RAMB36 (= 432 RAMB18), no URAM row**; Phase 8 uses 144 DSP, 0 BRAM. `pl_clk0` (AXI) = 100 MHz. | `build/p8_util.rpt`, `create_project.tcl` | Memory is free; the new core should use BRAM for coefficients. |
+| DSP48E2 (UG579, *from the documentation, not re-read today*): 27 × 18 signed multiplier, 48-bit P accumulator with a dynamic OPMODE (so "P = M" on the first term of an output, "P = P + M" after it, with no bubble), optional A/B/M/P pipeline registers, and an **A cascade (ACOUT → ACIN)** that passes an operand to the neighbouring DSP one register later. | UG579 | A 24-bit sample on A and an 18-bit gain on B is exactly one multiplier. The A cascade is the textbook way for several DSPs to share one sample stream. |
+| Accumulator range: \|sample\| ≤ 2²³, \|gain\| ≤ 2¹⁷, so \|product\| ≤ 2⁴⁰ and a sum of N products fits 48 signed bits for **N_IN ≤ 127**. | arithmetic | The DSP's own 48-bit P holds the exact sum; the result is **bit-identical** to today's reference model (whose accumulator is merely wider). N_IN > 127 is refused at elaboration. |
+| RAMB36E2/RAMB18E2 (UG573, *from the documentation*): two ports with **independent clocks**, per-byte write enables (9-bit bytes in the 18/36/72-bit widths), 72-bit simple dual port. | UG573 | A coefficient bank can live in one RAM whose AXI port and `mclk` port run on their own clocks; the only clock crossing left is the bank-swap handshake. |
+
+#### The schedule: output-major lanes, one systolic sample stream
+
+```
+                     frame strobe (cycle 0)
+                     │
+ inputs  ──packed──► pack→stream ─► sample buffer (N_IN × 24, LUTRAM/regs)
+                                         │ one read per cycle: input i
+                                         ▼
+                     lane 0 (DSP) ─A cascade─► lane 1 (DSP) ─► … ─► lane L−1
+                        ▲ gain(o,i)            ▲ gain, 1 cycle later      ▲
+                     coefficient RAM: one word = L gains (one per lane)
+                        │                      │                          │
+                     y(o = l + L·j): descale + saturate (fabric) at the end of each output's sweep
+                                         ▼
+ outputs ◄─packed── stream→pack ◄── one beat per cycle, ascending channel order
+```
+
+- **Lane *l* computes outputs *l*, *l*+L, *l*+2L, …** For each of its outputs it sweeps all inputs *i* = 0 … N_IN−1, one MAC per cycle, P reset by OPMODE on *i* = 0. Every lane sweeps the **same input at the same time, one cycle apart** (lane *l* is *l* cycles behind lane 0), so the sample buffer needs **one read port for any number of lanes**, and the sample is handed down the DSP A cascade. Gains come from the coefficient RAM as one word per step holding the L lanes' gains, each delayed *l* cycles.
+- **N_OUT not divisible by L:** the last pass has idle lanes. They run with their gain forced to 0 and their result discarded; the budget counts the idle slots, so nothing special happens in the datapath.
+- **Output order falls out ascending:** lane *l* finishes output *l* + L·*j* one cycle after lane *l*−1 finishes *l*−1 + L·*j*, so results leave one per cycle as 0, 1, 2, …, provided N_IN ≥ L (checked at elaboration).
+- **Budget.** Computation starts when the last input has arrived, so the output stream ends at about
+  `D ≈ 1 + N_IN + ⌈N_OUT/L⌉ · N_IN + (L − 1) + PIPE` cycles after the strobe (PIPE ≈ 5: A/B, M, P registers + saturate).
+  **L is the smallest lane count with D ≤ 250**, computed at elaboration (overridable; an impossible size is an `$error`):
+
+| Size | Lanes L (= DSP48E2) | D (cycles after the strobe) |
+|---|---|---|
+| 12 × 12 (today) | 1 | ≈ 162 |
+| 20 × 20 (Pmod + USB + AVB) | 2 | ≈ 227 |
+| 32 × 32 | 6 | ≈ 236 |
+| 64 × 64 | 32 (22 if the input load overlaps the previous frame's computation, +1 frame latency) | ≈ 229 |
+
+  The §5 table's "16 DSPs for 64 × 64" assumed perfect packing. Output-major lanes cost N_IN cycles per output, and a lane must finish whole outputs. A split-input scheme (each lane sums part of the inputs, results added through the DSP P cascade) packs better. It isn't needed below ~40 × 40, so it is **not proposed now**, just noted as the scaling path.
+- **Arithmetic unchanged:** Q2.16 gains, 24-bit samples, the exact sum in P, then `>>> 16` (truncate) and saturate once, in fabric. Bit-exact against the existing reference model by construction; the TBs prove it.
+- **DSP inference, not instantiation:** a coding template Vivado maps onto DSP48E2 (with its pipeline registers and dynamic OPMODE), so XSim and Icarus keep running the same source. The build checks the result: DSP count = L, and no fabric adder on the accumulate path. Fallback if inference won't pack it: the DSP48E2 primitive behind a simulation model.
+
+#### C1: the time-shared PCM stream contract (inside the core)
+
+| Signal | Definition |
+|---|---|
+| `clk`, `rst_n` | `mclk`, as the packed contract |
+| `frame` | the frame strobe, one pulse per frame (the same pulse the packed contract calls `valid`) |
+| `s_valid` | one beat |
+| `s_ch` | channel index, `$clog2(N)` bits |
+| `s_data` | sample, signed, `SW` bits (24 today; a parameter, so Phase 7 can widen the internal format without a new contract) |
+
+Rules (proposed):
+- Each channel **exactly once per frame, in ascending order 0 … N−1**. Gaps (idle cycles) are allowed; every block emits contiguously today. Carrying `s_ch` costs a few wires and lets any consumer (and every TB monitor) check the order, the same reason the link checks TID.
+- **All beats of frame *k* lie between strobe *k* and strobe *k*+1.** A block that can't finish inside the frame must say so and retime to the next frame (+1 frame of latency, stated). None does today.
+- **No back-pressure (no `ready`).** Audio is isochronous and every schedule is static, so each producer's timing is known at elaboration and checked there; a `ready` would only add logic and a failure mode nobody can use.
+- Each block **states its timing** as localparams: first beat and last beat, in cycles after the strobe. The converters' and the matrix's are in their headers and checked by the TBs.
+- Front doors keep the packed contract. The core boundary gets two generic converters, **`pcm_pack2stream`** (packed + strobe → beats 0…N−1 on cycles 1…N) and **`pcm_stream2pack`** (beats → a staging register → all channels to the packed output on **one** edge, so downstream still sees a whole-frame update, as today).
+
+Alternative considered: fixed TDM slots (channel = cycle offset, no `s_ch`, no `s_valid`). Fewer wires, but any block with a different timing breaks every block after it, silently. **Recommendation: the tagged form above.**
+
+#### C2: latency
+
+| Option | What | Link / I2S-L | I2S-R |
+|---|---|---|---|
+| **(a) in-frame** (recommended) | the core's packed output for frame *k* updates on one edge at cycle D of frame *k* (D stated, ≤ 250) | +1 frame, **the same as today** | +1.5 frames while D > 126 (today +0.5, which is the skew in the finding below: R and L of one DAC frame then come from the same core frame) |
+| (b) frame-aligned | the output updates at strobe *k*+1 | **+2 frames** (the link captures on that same edge, so it sees the value from before it) | +1.5 |
+
+(a) keeps today's latency on every path that matters and leaves 6+ cycles of margin before the link's capture and the I2S-L load. TBs check D exactly.
+
+#### A side finding: the Pmod outputs probably have a one-sample L/R skew today
+
+From the timing above (read from the RTL, **not measured**): the DAC's I2S frame starting at LRCK fall *n* is loaded with **L from core frame *k*−1** (loaded at strobe − 2, just before frame *k*'s result exists) and **R from core frame *k*** (loaded at strobe + 126, after it). If the CS4344 treats the L and R of one LRCK period as one instant, as I2S intends, **R leaves one sample ahead of L** on every Pmod. The bench's mono cables only carry L, so nobody could have heard it; nothing else is affected (all L outputs share one timing, and the link is frame-consistent).
+
+With C2 (a) at 12 × 12 or 20 × 20, D > 126, so both halves of a DAC frame come from the same core frame and the skew disappears as a side effect. That's too fragile to rely on: it depends on D. **Proposal (C7): fix it where it belongs, in the `i2s_port` front door** (capture `tx_flat` once per frame, at one point, for both channels), as its own small step with a TB that checks L/R pairing, independent of the core. First confirm it in simulation (`tb_phase3_datapath` can show it with different L and R test signals).
+
+#### C3: coefficients in RAM (the coefficient contract, new form)
+
+The **meaning** of §3 stays ("the whole bank changes on one frame; the block doesn't know where the values came from"). The **form** changes, because a flat 400 × 18-bit vector (and its copy across the clock crossing) is exactly what doesn't scale:
+
+- **Block side (mclk):** a **read port**: the block drives an address and gets a word of L coefficients one cycle later. The bank behind it changes only at a frame strobe, and all of one frame's reads see one bank (the schedule's reads all fall inside one frame).
+- **Control-plane side:** a new generic **`coef_bank_ram`**:
+  - **shadow** RAM (AXI clock): what software writes and reads back, as the flat shadow register bank does today;
+  - **two active banks** in one dual-clock RAM: port A (AXI clock) writes, port B (`mclk`) reads;
+  - **COMMIT:** copy shadow → the inactive bank (≈ N_COEF cycles at 100 MHz: 1.4 µs at 12 × 12, 4 µs at 20 × 20), then a **toggle request** to `mclk`, which flips the bank select **at the next frame strobe** and toggles an acknowledge back. The next COMMIT's copy overwrites the old bank completely, so no "bring the inactive bank up to date" step is needed. **AXI writes stall during the copy** (a few µs of AWREADY low), so a commit contains exactly the writes completed before it, as today;
+  - **BUSY / QUEUED / COMMITS** behave as today (a COMMIT during BUSY is queued, latest shadow wins);
+  - **the only clock crossings are the two toggles** (plus the dual-clock RAM, which is safe by construction since the bank being written is never the bank being read). The scoped-XDC pattern of `coef_bank_handoff` carries over. Phase 8's 2592 bank-crossing paths go away;
+  - **reset:** after `aresetn` an init engine writes the reset bank (identity) into the shadow and runs a normal COMMIT, so a reset still means "identity is in effect", via the ordinary path. A reset of either domain alone never falls back to an older bank (the bank select doesn't reset with `mclk`; the details are settled and tested in P9.A3).
+- **The block binding maps the address:** `matrix_regs_axil` turns register index *k* = o·N_IN + i into (lane, word) for the RAM layout the matrix reads. `coef_bank_ram` knows nothing about matrices. The **register map is unchanged**, so `mixer_hw`, the OSC server and saved state don't notice.
+- **`coef_flat_reader`** (generic, small): the same read port over a flat vector, for **non-PS builds** (tied to `MATRIX_GAINS`) and **unit TBs**. The block still can't tell where its coefficients come from.
+
+#### C4: a `mixer_core` wrapper, now
+
+D1 postponed `mixer_core` until the core held more than one block. It now holds three (pack→stream, matrix, stream→pack). **Proposal:** add it now. It has the packed contract on both sides and the matrix's coefficient read port, so `fpgamixer_top` changes by one instance and the front doors see nothing new. The bus layer and Phase 7 blocks go inside it later, chained by the stream contract.
+
+#### C5–C6
+
+- **C5: DSP inference** (above), primitive as the fallback.
+- **C6: `SW` stays 24 inside the core for now**, as a parameter of the stream contract. Whether Phase 7 widens it (headroom between chained blocks, as consoles do) is a Phase 7 decision.
+
+#### Verification plan (P9.A2–A6)
+
+- **P9.A2 converters:** round trip packed → stream → packed, bit-exact, N = 1, 12, 20; a stream monitor checks order, one beat per channel, all beats inside the frame and the stated first/last-beat cycles; mutation-tested (a swapped channel, a beat pushed past the frame).
+- **P9.A3 `coef_bank_ram` + binding:** `tb_matrix_regs`'s atomicity monitor (every frame sees one whole bank) on the new read port, unrelated clocks; COMMIT during BUSY; writes stalled during the copy; reset of either side alone; read-back equals the shadow; the register map byte for byte.
+- **P9.A4 time-shared matrix:** `tb_pcm_matrix` and `tb_pcm_matrix_rect` through `mixer_core` + `coef_flat_reader`, **bit-exact against the unchanged reference model** at 4 × 4, 3 → 5, 5 → 2, 12 × 12, 20 × 20 (L = 2, the uneven-pass case) and 7 × 5 with L forced to 3; the latency D checked to the cycle; the stream monitor on the output. Mutation: a lane's gain delay off by one, OPMODE reset on the wrong input.
+- **P9.A5 build:** DSP48E2 = 1 at 12 × 12; BRAM a few; the CDC report down from 4193 crossings to the link FIFOs + the toggles; timing and the methodology gate.
+- **P9.A6 bench:** as Phase 8 S3 (USB ↔ matrix ↔ Pmods by ear, link counters clean) and S4 (`crosspoint_restore_test.py` set / check-hw / power pull).
+
+#### Decisions needed (C1–C7)
+
+| # | Question | Recommendation |
+|---|---|---|
+| C1 | Stream contract: tagged beats (`frame`, `s_valid`, `s_ch`, `s_data`), ascending, once per frame, inside the frame, no back-pressure, timing stated per block? | **Yes** |
+| C2 | Latency: (a) in-frame, output updates at a stated cycle D ≤ 250, or (b) one whole frame? | **(a)**, same latency as today |
+| C3 | Coefficients: RAM read port on the block, generic `coef_bank_ram` (shadow + two banks, copy then swap at a frame, writes stall during the copy, reset through a normal commit), `coef_flat_reader` for non-PS builds and TBs; register map unchanged? | **Yes** |
+| C4 | Add `mixer_core` now (converters + matrix)? | **Yes** |
+| C5 | DSP inference (template), primitive only as a fallback? | **Yes** |
+| C6 | Core sample width 24, as a parameter; widening decided in Phase 7? | **Yes** |
+| C7 | The probable Pmod L/R skew: confirm in simulation, then fix in `i2s_port` as its own small step (before or after the core)? | **Confirm now, fix right after P9.A2** (small, independent, and the bench can hear it only with stereo cables) |
 
 ## 6. Proposed steps
 
@@ -150,3 +279,4 @@ Each step is verified and committed separately; the status doc and `architecture
 
 - **2026-09-26:** proposal written (this doc) after Phase 8 P8.9. Nothing built.
 - **2026-09-26:** revised by the user's decision: the time-shared core (§5, P9.A) goes first; P9.2 folded into it. The other §8 decisions are left for the Phase 9 session.
+- **2026-09-26 (Phase 9 session):** Phase 8 merged (`ea88a29`); branch `phase9/time-shared-core`. **P9.A1:** core design proposal written (§5.1): output-major DSP lanes sharing one sample stream, a tagged stream contract, coefficients in a dual-clock RAM with a swap at the frame, `mixer_core`. Corrected the §5 table's 64 × 64 figure. Side finding from the RTL: a probable one-sample L/R skew on the Pmod DAC outputs today (C7). Awaiting decisions C1–C7.
