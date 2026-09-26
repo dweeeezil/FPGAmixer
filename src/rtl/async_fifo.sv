@@ -71,8 +71,14 @@ module async_fifo #(
     // Distributed RAM: written in wclk, read asynchronously in rclk.
     logic [WIDTH-1:0] mem [DEPTH];
 
-    logic [AW:0] wptr_bin, wptr_gray;   // write side
-    logic [AW:0] rptr_bin, rptr_gray;   // read side
+    // The Gray pointers are the CDC launch registers named by async_fifo.xdc.
+    // DONT_TOUCH: a Gray code's MSB equals the binary MSB, and without it
+    // synthesis merges *_gray_reg[MSB] into *_bin_reg[MSB], so that bit leaves
+    // the constraint's -from list and crosses unbounded (caught by the
+    // methodology gate as TIMING-6/7/8 in the first Phase 8 build).
+    logic [AW:0] wptr_bin, rptr_bin;
+    (* DONT_TOUCH = "TRUE" *) logic [AW:0] wptr_gray;   // write side
+    (* DONT_TOUCH = "TRUE" *) logic [AW:0] rptr_gray;   // read side
 
     // =========================================================================
     // write side

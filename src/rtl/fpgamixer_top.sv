@@ -8,15 +8,20 @@
 //
 //   Pmod JB pins <-> i2s_port u_jb <-> PCM ch0 (L), ch1 (R) -.
 //   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) --+-> pcm_matrix
-//                                                             <-'  u_matrix
+//   PS (Audio Formatter) <-> pcm_link u_link <-> PCM ch4..11 -'   u_matrix
+//                                                                 (12 x 12)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
 //                                                    -> u_matrix.gains_flat
+//                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //
 // Everything this file decides:
 //   - the channel map: which front-door channel is which core channel;
 //   - MATRIX_GAINS: the routing the matrix resets to (identity);
 //   - where the gains come from: the PS (INCLUDE_PS builds), or MATRIX_GAINS
-//     tied on directly (non-PS projects and the Icarus/XSim integration TBs).
+//     tied on directly (non-PS projects and the Icarus/XSim integration TBs);
+//   - whether the PS<->PL link exists (INCLUDE_LINK, phase8 builds). Without
+//     it the link channels read as silence, so the core is 12 x 12 in every
+//     build and the non-PS TBs see the same Pmod routing as before.
 //
 // NOTE (ZU-3EG): the JB/JC names match the board's silkscreen -- module #1 is on
 // Pmod JB, module #2 on Pmod JC. (The ZU-3EG's Pmod JA is the analog XADC Pmod,
@@ -53,7 +58,9 @@ module fpgamixer_top (
     input  logic jc_ad_sdout   // JC10
 );
 
-    localparam int N  = 4;     // core channels in = out (2 per Pmod)
+    localparam int N_PMOD = 4;              // 2 per Pmod
+    localparam int N_LINK = 8;              // PS<->PL link, each way
+    localparam int N  = N_PMOD + N_LINK;    // core channels in = out
     localparam int SW = 24;
     localparam int GW = 18;    // gain width,  Q2.16
     localparam int GF = 16;    // gain fraction bits
@@ -89,40 +96,35 @@ module fpgamixer_top (
         .rx_flat (jc_rx), .rx_valid (jc_rx_valid), .tx_flat (jc_tx)
     );
 
+    // ----- PS<->PL link front door (PCM side) -----
+    logic [N_LINK*SW-1:0] link_rx, link_tx;   // rx = into the core, from the PS
+
     // ----- Channel map (core ch0 at the LSB) -----
     //   ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R   (inputs and outputs)
+    //   ch4..ch11 = link channels 0..7: inputs = what the PS plays (USB: the
+    //   Mac's outputs 1-8), outputs = what the PS records (the Mac's inputs 1-8)
+    // New channels are appended, never interleaved, so saved crosspoint
+    // indices keep their meaning when the core grows.
     logic [N*SW-1:0] core_in, core_out;
-    assign core_in = { jc_rx, jb_rx };
-    assign { jc_tx, jb_tx } = core_out;
+    assign core_in = { link_rx, jc_rx, jb_rx };
+    assign { link_tx, jc_tx, jb_tx } = core_out;
 
-    // ----- Reset routing (Q2.16 gains; rows = outputs, cols = inputs) -----
+    // ----- Reset routing (Q2.16 gains; gain k = o*N + i, output o, input i) -----
     localparam logic signed [GW-1:0] G_UNITY = 18'sh10000;
-    localparam logic signed [GW-1:0] G_HALF  = 18'sh08000;
-    localparam logic signed [GW-1:0] G_ZERO  = 18'sh00000;
 
-    // IDENTITY: each output = its own input at unity, so every Pmod passes its
-    // own ADC input through to its own DAC output. The minimal datapath test --
-    // if an output is noisy here, the clocking or the ports are implicated, not
-    // the routing. Runtime control (INCLUDE_PS) starts from this bank.
-    //   JB_L = JB_L,  JB_R = JB_R,  JC_L = JC_L,  JC_R = JC_R
-    // Rows = outputs (out3..out0), each row lists cols i3,i2,i1,i0.
-    localparam logic [N*N*GW-1:0] MATRIX_GAINS = {
-        //  i3       i2       i1       i0
-        G_UNITY, G_ZERO,  G_ZERO,  G_ZERO,    // out3 JC_R = JC_R in
-        G_ZERO,  G_UNITY, G_ZERO,  G_ZERO,    // out2 JC_L = JC_L in
-        G_ZERO,  G_ZERO,  G_UNITY, G_ZERO,    // out1 JB_R = JB_R in
-        G_ZERO,  G_ZERO,  G_ZERO,  G_UNITY    // out0 JB_L = JB_L in
-    };
-
-    // DEMO routing (a passthrough, a cross-Pmod route, a 0.5+0.5 sum), for a
-    // non-PS build that should exercise real mixing:
-    //   JB_L = JB_L,  JB_R = JC_L,  JC_L = 0.5*JB_L + 0.5*JC_L,  JC_R = JC_R
-    // localparam logic [N*N*GW-1:0] MATRIX_GAINS = {
-    //     G_UNITY, G_ZERO,  G_ZERO,  G_ZERO,    // out3 JC_R = JC_R in
-    //     G_ZERO,  G_HALF,  G_ZERO,  G_HALF,    // out2 JC_L = 0.5*JB_L + 0.5*JC_L
-    //     G_ZERO,  G_UNITY, G_ZERO,  G_ZERO,    // out1 JB_R = JC_L in
-    //     G_ZERO,  G_ZERO,  G_ZERO,  G_UNITY    // out0 JB_L = JB_L in
-    // };
+    // IDENTITY: each output = its own input at unity. For the Pmods that is
+    // each ADC passed to its own DAC (the minimal datapath test: noise here
+    // points at clocking or the ports, not the routing); for the link it is the
+    // PS's playback returned to its capture. Runtime control (INCLUDE_PS)
+    // starts from this bank, and the OSC server seeds missing crosspoints with
+    // the same rule. Other routings for a non-PS build: git history before
+    // Phase 8 has a worked 4 x 4 DEMO bank.
+    function automatic logic [N*N*GW-1:0] identity_gains();
+        logic [N*N*GW-1:0] g = '0;
+        for (int o = 0; o < N; o++) g[(o*N + o)*GW +: GW] = G_UNITY;
+        return g;
+    endfunction
+    localparam logic [N*N*GW-1:0] MATRIX_GAINS = identity_gains();
 
     // ----- Control plane: where the gains come from -----
     logic [N*N*GW-1:0] gains;
@@ -146,7 +148,53 @@ module fpgamixer_top (
     logic        ctrl_bvalid, ctrl_bready, ctrl_arvalid, ctrl_arready;
     logic        ctrl_rvalid, ctrl_rready;
 
+`ifdef INCLUDE_LINK
+    // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
+    logic [31:0] mm2s_tdata, s2mm_tdata;
+    logic [7:0]  mm2s_tid,   s2mm_tid;
+    logic        mm2s_tvalid, mm2s_tready, s2mm_tvalid, s2mm_tready;
+
+    logic [31:0] stat_awaddr, stat_araddr, stat_wdata, stat_rdata;
+    logic [2:0]  stat_awprot, stat_arprot;
+    logic [3:0]  stat_wstrb;
+    logic [1:0]  stat_bresp, stat_rresp;
+    logic        stat_awvalid, stat_awready, stat_wvalid, stat_wready;
+    logic        stat_bvalid, stat_bready, stat_arvalid, stat_arready;
+    logic        stat_rvalid, stat_rready;
+`endif
+
     ps_sys_wrapper u_ps (
+`ifdef INCLUDE_LINK
+        .link_mclk                  (mclk),
+        .link_mreset                (!rst_n),
+        .M_AXIS_LINK_MM2S_tdata     (mm2s_tdata),
+        .M_AXIS_LINK_MM2S_tid       (mm2s_tid),
+        .M_AXIS_LINK_MM2S_tvalid    (mm2s_tvalid),
+        .M_AXIS_LINK_MM2S_tready    (mm2s_tready),
+        .S_AXIS_LINK_S2MM_tdata     (s2mm_tdata),
+        .S_AXIS_LINK_S2MM_tid       (s2mm_tid),
+        .S_AXIS_LINK_S2MM_tvalid    (s2mm_tvalid),
+        .S_AXIS_LINK_S2MM_tready    (s2mm_tready),
+        .M_AXI_LINKSTAT_awaddr      (stat_awaddr),
+        .M_AXI_LINKSTAT_awprot      (stat_awprot),
+        .M_AXI_LINKSTAT_awvalid     (stat_awvalid),
+        .M_AXI_LINKSTAT_awready     (stat_awready),
+        .M_AXI_LINKSTAT_wdata       (stat_wdata),
+        .M_AXI_LINKSTAT_wstrb       (stat_wstrb),
+        .M_AXI_LINKSTAT_wvalid      (stat_wvalid),
+        .M_AXI_LINKSTAT_wready      (stat_wready),
+        .M_AXI_LINKSTAT_bresp       (stat_bresp),
+        .M_AXI_LINKSTAT_bvalid      (stat_bvalid),
+        .M_AXI_LINKSTAT_bready      (stat_bready),
+        .M_AXI_LINKSTAT_araddr      (stat_araddr),
+        .M_AXI_LINKSTAT_arprot      (stat_arprot),
+        .M_AXI_LINKSTAT_arvalid     (stat_arvalid),
+        .M_AXI_LINKSTAT_arready     (stat_arready),
+        .M_AXI_LINKSTAT_rdata       (stat_rdata),
+        .M_AXI_LINKSTAT_rresp       (stat_rresp),
+        .M_AXI_LINKSTAT_rvalid      (stat_rvalid),
+        .M_AXI_LINKSTAT_rready      (stat_rready),
+`endif
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -188,8 +236,61 @@ module fpgamixer_top (
         .mclk (mclk), .mrst_n (rst_n),
         .gains_flat (gains)
     );
+
+`ifdef INCLUDE_LINK
+    // ----- Front door: PS<->PL link (PL half) -----
+    // Same frame strobe as the matrix; the link's only clock crossing is
+    // inside (async_fifo, scoped XDC). aresetn and rst_n are both asserted
+    // from configuration until the PS releases pl_resetn0 and the MMCM locks.
+    logic [31:0] lk_frames_rx, lk_frames_tx, lk_underruns, lk_starved;
+    logic [31:0] lk_overruns, lk_tid_errors;
+    logic [15:0] lk_rx_fill;
+    logic        lk_rx_running;
+
+    localparam int LINK_FIFO_FRAMES = 8;
+
+    pcm_link #(.N_CH (N_LINK), .SW (SW), .FIFO_FRAMES (LINK_FIFO_FRAMES)) u_link (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axis_tdata (mm2s_tdata), .s_axis_tid (mm2s_tid),
+        .s_axis_tvalid (mm2s_tvalid), .s_axis_tready (mm2s_tready),
+        .m_axis_tdata (s2mm_tdata), .m_axis_tid (s2mm_tid),
+        .m_axis_tvalid (s2mm_tvalid), .m_axis_tready (s2mm_tready),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (jb_rx_valid),
+        .rx_flat (link_rx), .rx_valid (), .tx_flat (link_tx),
+        .frames_rx (lk_frames_rx), .frames_tx (lk_frames_tx),
+        .underruns (lk_underruns), .starved (lk_starved),
+        .overruns (lk_overruns), .tid_errors (lk_tid_errors),
+        .rx_fill (lk_rx_fill), .rx_running (lk_rx_running)
+    );
+
+    // ----- Control plane: the link's status window (0x8000_1000) -----
+    pcm_link_stat_regs #(
+        .N_CH_RX (N_LINK), .N_CH_TX (N_LINK),
+        .FIFO_WORDS (LINK_FIFO_FRAMES * 8), .ADDR_WIDTH (12)
+    ) u_link_stat (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (stat_awaddr[11:0]), .s_axi_awvalid (stat_awvalid),
+        .s_axi_awready (stat_awready),
+        .s_axi_wdata   (stat_wdata),  .s_axi_wstrb  (stat_wstrb),
+        .s_axi_wvalid  (stat_wvalid), .s_axi_wready (stat_wready),
+        .s_axi_bresp   (stat_bresp),  .s_axi_bvalid (stat_bvalid),
+        .s_axi_bready  (stat_bready),
+        .s_axi_araddr  (stat_araddr[11:0]), .s_axi_arvalid (stat_arvalid),
+        .s_axi_arready (stat_arready),
+        .s_axi_rdata   (stat_rdata),  .s_axi_rresp  (stat_rresp),
+        .s_axi_rvalid  (stat_rvalid), .s_axi_rready (stat_rready),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (jb_rx_valid),
+        .frames_rx (lk_frames_rx), .frames_tx (lk_frames_tx),
+        .underruns (lk_underruns), .starved (lk_starved),
+        .overruns (lk_overruns), .tid_errors (lk_tid_errors),
+        .rx_fill (lk_rx_fill), .rx_running (lk_rx_running)
+    );
 `else
-    assign gains = MATRIX_GAINS;
+    assign link_rx = '0;
+`endif
+`else
+    assign gains   = MATRIX_GAINS;
+    assign link_rx = '0;
 `endif
 
     // ----- PCM core -----

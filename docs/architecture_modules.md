@@ -77,7 +77,7 @@ Rules:
 - **Packed vectors, not unpacked arrays**, on every port (Icarus drops unpacked-array outputs; see `pcm_matrix.sv` header).
 - Channel counts are parameters. A block states its channel count; the platform layer decides which front-door channels feed which core inputs.
 
-Today's channel map (platform layer, `fpgamixer_top`): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, in and out. Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is just `{jc, jb}` concatenation.
+Today's channel map (platform layer, `fpgamixer_top`, since Phase 8): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, **ch4–ch11 = PS↔PL link channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records). Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is the concatenation `{link, jc, jb}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without the link (non-PS builds) ch4–11 read as silence; the core is 12 × 12 in every build.
 
 ---
 
@@ -116,8 +116,12 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 
 | Window | Block | Since |
 |---|---|---|
-| 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`) | Phase 5 |
-| 0x8000_1000… | reserved: bus matrix, DSP blocks | — |
+| 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`), 12 × 12 since Phase 8 | Phase 5 |
+| 0x8000_1000 | PS↔PL link status (`u_link_stat`, read-only, ID `0x4C4B_5001`) | Phase 8 |
+| 0x8000_2000… | reserved: bus matrix, DSP blocks | — |
+| 0x8010_0000 (64K) | AMD Audio Formatter registers: **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
+
+Driver-owned devices go at 0x801x_xxxx, so the 0x8000_x000 range stays for windows with the ID/CONFIG header.
 
 Adding a block = one more SmartConnect master port, one more window, one more register-block instance. Nothing existing moves, and no constraint needs writing: the handoff's scoped XDC covers the new instance.
 

@@ -265,6 +265,14 @@ EDF's distro config creates `amd-edf` with an **empty, immediately expired** pas
 
 **Image rebuilt 2026-09-26** (Type-C UFP in the gadget script + bench login): 14,739 tasks, all succeeded, 22 warnings (the usual set). Checked in the rootfs tarball: `amd-edf`'s `/etc/shadow` entry has the fixed-salt hash and a normal last-change date (so no forced change); groups `aie,audio,video,wayland` and `/etc/sudoers.d/99-amd-edf` are unchanged; the packaged gadget script has `typec_ufp`; `i2cget`/`i2cset` are present. Copied to **`build/sd/p8-usb-20260926.wic.xz`** (MD5 `fef80c61…`).
 
+### Bench test S1: PASS, 2026-09-26 (image `p8-usb-20260926`)
+
+- Flash, power-off, boot: **SSH worked straight away with the bench login**; no serial console.
+- `journalctl -u fpgamixer-usb-gadget -b`: `Type-C: TUSB322 mode register 0x06 -> 0x16 (UFP)`, `gadget bound to fe200000.usb`, so the boot sequence does the UFP switch by itself.
+- The Mac lists the gadget (as two devices, see above; the user uses an Aggregate Device for now).
+- **Loopback in Linux:** `alsaloop -C hw:UAC2Gadget -P hw:UAC2Gadget -f S24_3LE -c 8 -r 48000 -t 20000`, and audio played to FPGAmixer comes back on its inputs. The first try without `-f/-c/-r` failed with "Sample format not available for playback": alsaloop defaults to S16_LE stereo, and the gadget offers only S24_3LE × 8.
+- Side check: OSC sets for crosspoints with USB indices (`4_4`, `4_0`, …) are logged by the server as `outside the 4x4 matrix, ignored` (no echo), as designed until P8.4. An earlier "connection reset by peer" in the console came from the board rebooting under an open session, not from a server fault (the server journal for the boot is clean).
+
 ### Bench test S1: original plan
 
 **Image built 2026-09-25:** `bitbake edf-linux-disk-image xilinx-bootbin`, 14,739 tasks, all succeeded, the usual 22 warnings. The manifest has `fpgamixer-usb-gadget`, `libasound2` and `alsa-utils-{alsaloop,aplay,amixer,speakertest}`. The package holds the script, the unit and a `98-fpgamixer-usb-gadget.preset` (enabled). Copied to **`build/sd/p8-usb-20260925.wic.xz`** (MD5 `b3604ac9…`, same on both ends). Reflashing resets `/var/lib/fpgamixer/mixer_state.json`, as noted in Phase 6.
@@ -313,6 +321,78 @@ Needs that image flashed, then a full power-off. The existing bitstream is fine:
 
 ---
 
-## 13. Log
+## 13. P8.4: the link in the bitstream, core 12 × 12
+
+**`scripts/create_project.tcl`**, new `current_phase = phase8` (phase5 = the same without the link; it stays selectable):
+
+| BD piece | What |
+|---|---|
+| `link_formatter` (Audio Formatter v1.0) | 8 ch each way, interleaved; formats left at the IP defaults, **MM2S PCM→AES, S2MM AES→PCM** (PCM in memory, AES3-subframe layout on the stream, sample at `[27:4]`); all AXI/AXIS clocks `pl_clk0` |
+| registers | control SmartConnect grows to 3 masters: M00 matrix window (0x8000_0000), **M01 link status window (0x8000_1000)**, **M02 formatter (0x8010_0000, 64K)**. Driver-owned devices go at 0x801x_xxxx; 0x8000_x000 stays for our self-describing windows. |
+| DMA | `m_axi_mm2s` + `m_axi_s2mm` → `link_dma_smc` → **`S_AXI_HPC0_FPD`** (enabled and clocked by the preset since Phase 4, unused until now). Mapped: HPC0 DDR_LOW / DDR_HIGH / … as usual. **No PS8 setting changed.** |
+| IRQs | `irq_mm2s`, `irq_s2mm` → `xlconcat` → `pl_ps_irq0` (already enabled) |
+| ports | `M_AXIS_LINK_MM2S`, `S_AXIS_LINK_S2MM` (AXIS, TDATA 32, TID 8, on `ctrl_aclk`); `M_AXI_LINKSTAT` (AXI4-Lite); `link_mclk` (the RTL's `mclk`, BD frequency 12.288 MHz nominal); `link_mreset` (active-high, `!rst_n`) |
+| defines | `INCLUDE_PS INCLUDE_LINK`; `constraints/async_fifo.xdc` scoped to `async_fifo` |
+
+BD notes (warnings accepted): BD 41-3281 (the PS and the formatter sit between SmartConnects, so Vivado won't auto-tune their AXI settings; the defaults are what we want); BD 41-237 AxUSER 4 → 1 bits into HPC0 (the formatter's user bits are dropped; HPC0 coherency uses AxCACHE/AxDOMAIN, not AxUSER). Two warnings were fixed on the way: `ASSOCIATED_BUSIF` named the link ports before they existed, and `link_mclk` needed `-freq_hz` at creation.
+
+**`src/rtl/fpgamixer_top.sv`:** `N = N_PMOD + N_LINK = 4 + 8 = 12`. Channel map `core_in = {link_rx, jc_rx, jb_rx}`: Pmods stay 0–3, link 4–11 appended. Reset bank = identity (a function, replacing the hand-written 4 × 4 literal). Under `INCLUDE_LINK`: `pcm_link u_link` (frame strobe = the matrix's `jb_rx_valid`, AXIS on `ctrl_aclk`) and `pcm_link_stat_regs u_link_stat`. Without the link (non-PS builds, the integration TBs) the link inputs are zero, so the core is 12 × 12 in every build.
+
+**`scripts/build.tcl` (new):** the batch build that used to be typed by hand. Synthesis, implementation, bitstream, methodology gate, then the timing / utilization / CDC / clock-interaction / exceptions reports and the XSA (`build/fpgamixer_<tag>.xsa`); exits non-zero on negative slack.
+
+**Regression before the build (XSim):** `tb_phase3_datapath`, `tb_phase3_dynamic` (the whole non-PS top, now 12 × 12), `tb_pcm_matrix`, `tb_pcm_matrix_rect`: all PASS.
+
+### First build: stopped by the methodology gate. A real CDC hole, fixed
+
+The first full build failed the post-route methodology gate: **TIMING-6/7/8, `clk_out1_clk_wiz_audio` (mclk) and `clk_pl_0` timed together**. Listing every timed path between the two clocks from the routed checkpoint: all the LUTRAM read paths were covered by `async_fifo.xdc` (10 ns, ~6.5 ns slack). **Four paths had no exception, at −3.8 to −4.3 ns:** `u_link/u_{rx,tx}_fifo/{w,r}ptr_bin_reg[6]` → `{rsync_wptr1,wsync_rptr1}_reg[6]`.
+
+**Cause:** a Gray code's MSB *is* the binary MSB, so synthesis merged `*ptr_gray_reg[6]` into `*ptr_bin_reg[6]` (and phys-opt even replicated one). The XDC names `*ptr_gray_reg[*]`, so the MSB of every Gray pointer crossed **with no bound**. Logically it's the same signal, but an unbounded bit in a Gray-pointer crossing is exactly how a FIFO pointer goes wrong on hardware. No simulation can see this.
+
+**Fix:** `(* DONT_TOUCH = "TRUE" *)` on `wptr_gray` / `rptr_gray` (what AMD's XPM FIFOs do), so every launch register the XDC names survives synthesis. `tb_pcm_link` still passes. The gate was added in Phase 3 for exactly this kind of catch.
+
+### Build result (Vivado 2026.1, `build.tcl p8`): clean
+
+| | Phase 6 bitstream (D1+D2) | **Phase 8 (`fpgamixer_p8.xsa`)** |
+|---|---|---|
+| WNS / WHS | +2.282 / +0.032 ns | **+1.628 / +0.010 ns**, 0 failing endpoints, methodology gate clean, 0 critical warnings |
+| worst setup path | codec RX-sampling check | `pl_clk0`: SmartConnect write address → `u_regs` shadow bank (the 144-way coefficient decode), not a clock crossing |
+| LUTs / FFs | 955 / 1711 | 8453 (12%) / 19505 (14%): formatter, 2 SmartConnects, the 144-gain bank and its CDC copy |
+| DSP48E2 | 16 | **144 (40%)**, one per crosspoint as planned |
+| BRAM | 0 | 0 (the link FIFOs are LUTRAM) |
+
+**CDC report, all 4193 crossings reviewed; every one carries an exception:**
+
+| Structure | Count | Type |
+|---|---|---|
+| matrix gain bank (`u_regs/u_handoff`, 144 × 18 bits) | 2592 | CDC-15, the Phase 5 enable-captured bank |
+| link status snapshot (`u_link_stat/u_handoff`, reverse) | 247 | CDC-15 |
+| `async_fifo` LUTRAM read paths (both FIFOs; the TX one ends inside the formatter's S2MM input, since our FWFT output feeds it directly) | ~1200 | CDC-1 "unknown circuitry" + CDC-15. Vivado doesn't recognise a LUTRAM-read FIFO as a synchronizer. Safe by design (a word is read only after its pointer crossed), bounded to 10 ns, slack ~6.5 ns |
+| Gray pointers, 7 bits each (4 buses) | 4 | CDC-6, ASYNC_REG, now all 7 bits |
+| handoff toggles | 4 | CDC-3 |
+| formatter internals (Fs multiplier, sample pulse) | 2 | AMD's `xpm_cdc`, its own false paths |
+
+Reports: `build/p8_{timing,util,cdc,clocks,exceptions}.rpt`.
+
+## 14. P8.5: the ALSA card (`fpgamixer-link-card`)
+
+`yocto/meta-fpgamixer/recipes-kernel/fpgamixer-link-card/`: an out-of-tree ASoC machine driver (~140 lines) + `inherit module` recipe. One DAI link: ASoC's dummy DAI as CPU and codec (`snd_soc_dummy_dlc`), the formatter's component as platform. Its `hw_params` gives the formatter `sysclk = mclk-frequency` (12.288 MHz), so the MM2S Fs multiplier is 256 at 48 kHz. Card name `FPGAmixerLink`. Bound by DT compatible `fpgamixer,pcm-link-card` and loaded by udev from its modalias.
+
+**A trap found by reading the formatter driver** (`xlnx_formatter_pcm.c`): on capture in AES→PCM mode (ours) its `hw_params` does `strstr(adata->nodes[XLNX_CAPTURE]->name, "hdmi")` with **no NULL check**. That node comes from the formatter's `xlnx,rx` phandle. Without that phandle, the first `arecord` would oops the kernel. So the formatter node gets `xlnx,tx` / `xlnx,rx` pointing at our card node, whose name must not contain "hdmi", "sdi" or "dp". The formatter then also spawns AMD's `xlnx_snd_card` device; its probe looks for `xlnx,snd-pcm` in our node, logs "platform node not found" and gives up (`-ENODEV`): one harmless error line, no card.
+
+**Build check:** `bitbake fpgamixer-link-card` against the EDF 6.18.10 kernel compiles clean, no warnings; package `kernel-module-fpgamixer-link-card` → `/usr/lib/modules/6.18.10-xilinx-…/updates/fpgamixer-link-card.ko`. The DT node and the image entry follow once sdtgen names the formatter node.
+
+## 15. P8.6: software
+
+| File | Change |
+|---|---|
+| `tools/mixer_hw.py` | `LinkStatHW` (ID `0x4C4B_5001`; `read_all()` re-reads if a new snapshot lands mid-read); `WINDOWS["linkstat"] = 0x8000_1000`; CLI `link [seconds]` (counters, or deltas and rates over an interval); `info` reports windows absent from the running bitstream instead of stopping |
+| `tools/osc_mixer_server.py` | simulator default `--matrix-size 12`. With `--hw` the size already comes from the window's CONFIG, so no server change was needed for 12 × 12. |
+| `tools/test_mixer_hw.py` | **migration test:** a full 4 × 4 state file plus two bench routes restored onto a 12 × 12 window. The old values land at their new bank positions (`k = out·12 + in`), the 128 new crosspoints are seeded (link identity on, the rest off), the store keeps the old values, one COMMIT. Plus `LinkStat`: header/words decode, wrong-ID refusal. |
+
+Results: `test_mixer_hw` + `test_mixer_state` on the Linux VM **28/28**; `osc_mixer_test.py --inputs 12 --buses 12` against the simulator **18/19** (the known unframed-TCP case).
+
+---
+
+## 16. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
