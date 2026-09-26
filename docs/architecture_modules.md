@@ -44,10 +44,15 @@ There are four kinds of block:
 | Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
 | Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding |
+| Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8, in progress: `phase8_status_2026-09-25.md`) |
+| Generic | `src/rtl/async_fifo.sv` + `constraints/async_fifo.xdc` | dual-clock FIFO; XDC scoped to the module like `coef_bank_handoff.xdc` |
+| Platform (image) | `yocto/meta-fpgamixer/recipes-kernel/`, `recipes-apps/fpgamixer-usb-gadget` | kernel fragment for USB device mode; the UAC2 gadget (USB front door, Linux half) |
 | PCM core | `src/rtl/pcm_matrix.sv` | N_IN × N_OUT crosspoint matrix |
 | Control plane (generic) | `src/rtl/axil_coef_window.sv` | AXI4-Lite slave, common header, shadow bank |
 | Control plane (generic) | `src/rtl/coef_bank_handoff.sv` + `constraints/coef_bank_handoff.xdc` | COMMIT + CDC; the XDC is scoped to the module, so every instance is constrained |
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
+| Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
+| Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`) |
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
@@ -72,7 +77,7 @@ Rules:
 - **Packed vectors, not unpacked arrays**, on every port (Icarus drops unpacked-array outputs; see `pcm_matrix.sv` header).
 - Channel counts are parameters. A block states its channel count; the platform layer decides which front-door channels feed which core inputs.
 
-Today's channel map (platform layer, `fpgamixer_top`): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, in and out. Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is just `{jc, jb}` concatenation.
+Today's channel map (platform layer, `fpgamixer_top`, since Phase 8): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, **ch4–ch11 = PS↔PL link channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records). Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is the concatenation `{link, jc, jb}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without the link (non-PS builds) ch4–11 read as silence; the core is 12 × 12 in every build.
 
 ---
 
@@ -103,6 +108,7 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 | 0x00C | COMMITS | commits applied |
 | 0x100… | coefficients | block-specific |
 
+- **Status windows** (since Phase 8) use the same header with the data flowing the other way: `axil_stat_window` shows read-only words that a `coef_bank_handoff` (src = the block's clock, dst = the AXI clock) delivers as one consistent snapshot per frame. CTRL reads 0 and 0x00C is a snapshot sequence number. There is no CLEAR: counters are free-running and software takes differences.
 - Writes go to a shadow bank; COMMIT hands the whole bank to `mclk` (toggle handshake in `coef_bank_handoff`). This is what satisfies the "whole bank on one edge" rule in §3.
 - A block's register binding is small: it instantiates `axil_coef_window` + `coef_bank_handoff` and supplies an ID, a CONFIG word and a bank size (see `matrix_regs_axil.sv`, about 40 lines of logic).
 
@@ -110,8 +116,12 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 
 | Window | Block | Since |
 |---|---|---|
-| 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`) | Phase 5 |
-| 0x8000_1000… | reserved: bus matrix, DSP blocks | — |
+| 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`), 12 × 12 since Phase 8 | Phase 5 |
+| 0x8000_1000 | PS↔PL link status (`u_link_stat`, read-only, ID `0x4C4B_5001`) | Phase 8 |
+| 0x8000_2000… | reserved: bus matrix, DSP blocks | — |
+| 0x8010_0000 (64K) | AMD Audio Formatter registers: **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
+
+Driver-owned devices go at 0x801x_xxxx, so the 0x8000_x000 range stays for windows with the ID/CONFIG header.
 
 Adding a block = one more SmartConnect master port, one more window, one more register-block instance. Nothing existing moves, and no constraint needs writing: the handoff's scoped XDC covers the new instance.
 
@@ -156,7 +166,9 @@ Listed honestly, so they're fixed deliberately rather than worked around. None o
 | Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at window 0x8000_1000; a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
 | Phase 6 persistence | control plane only | server-side; already restores and pushes the bank at startup |
 | Phase 7 DSP | PCM contract + coefficient contract + a window per DSP block | one core block per DSP type |
-| Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux |
+| Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux. **Proposal (2026-09-25, awaiting decisions):** `phase8_status_2026-09-25.md`: Audio Formatter → ALSA card on `mclk` time, `pcm_link` PL front door, new generic RO `axil_stat_window` |
+
+**Phase 9 (AVB), proposed 2026-09-26** (`phase9_status_2026-09-26.md`): a **second link instance** (formatter + `pcm_link`, core channels 12–19 appended) with an AVB front door whose Linux half is gPTP + CBS shaping + the alsa-plugins AAF talker/listener + a bridge. One new **platform** piece: `mclk` disciplined to gPTP, so the network disciplines the core's own clock and the core still never sees a foreign one. One **core** change with an unchanged interface: a time-multiplexed `pcm_matrix`.
 
 ### Why there is no "quick USB" path (asked 2026-09-25)
 

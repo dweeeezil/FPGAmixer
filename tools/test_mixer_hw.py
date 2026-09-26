@@ -132,6 +132,78 @@ class Registers(unittest.TestCase):
         self.assertEqual(state.get("inputMatrix/0_0/level"), 0.0)   # seeded into the store
         self.assertEqual(state.get("inputMatrix/0_1/level"), -90.0)
 
+    def test_state_from_4x4_migrates_onto_12x12(self):
+        """Phase 8: a state file saved on the 4x4 matrix, restored on the
+        12x12 one (4 Pmod + 8 link channels, appended). The 16 old crosspoints
+        keep their values at their new bank positions (k = out*12 + in); the
+        128 new ones are seeded with the identity rule; one COMMIT."""
+        import osc_mixer_server as srv
+        from mixer_state import MixerState
+        srv.log = lambda m: None
+        os.unlink(self.path)
+        self.path = make_window_file(config=0x0C0C1210)          # 12 out, 12 in, Q2.16
+        real_open = mixer_hw.open_window
+        mixer_hw.open_window = lambda name, dev=self.path: mixer_hw.MatrixHW(0, dev)
+        try:
+            state = MixerState("mixer", None)
+            for i in range(4):                                    # a full old 4x4 file
+                for o in range(4):
+                    state.set(f"inputMatrix/{i}_{o}/level", 0.0 if i == o else -90.0)
+            state.set("inputMatrix/0_2/level", -6.0206)           # JB_L -> JC_L, as on the bench
+            state.set("inputMatrix/2_2/level", -90.0)             # JC_L's own input off
+            backends = srv.build_backends(True, 4)
+        finally:
+            mixer_hw.open_window = real_open
+        b = backends["inputMatrix"]
+        self.assertEqual((b.n_in, b.n_out), (12, 12))
+        b.seed_and_push(state)
+        k = lambda i, o: 0x100 + 4 * (o * 12 + i)
+        self.assertEqual(reg(self.path, k(0, 2)), 0x8000)         # old values, new positions
+        self.assertEqual(reg(self.path, k(2, 2)), 0)
+        self.assertEqual(reg(self.path, k(1, 1)), 0x10000)
+        self.assertEqual(reg(self.path, k(4, 4)), 0x10000)        # new: link identity
+        self.assertEqual(reg(self.path, k(11, 11)), 0x10000)
+        self.assertEqual(reg(self.path, k(4, 0)), 0)              # new: off
+        self.assertEqual(reg(self.path, k(0, 4)), 0)
+        self.assertEqual(state.get("inputMatrix/0_2/level"), -6.0206)  # store untouched
+        self.assertEqual(state.get("inputMatrix/5_5/level"), 0.0)      # and seeded
+        self.assertEqual(state.get("inputMatrix/5_3/level"), -90.0)
+        self.assertEqual(reg(self.path, mixer_hw.REG_CTRL) & 1, 1)     # committed
+
+
+@unittest.skipIf(os.name == "nt", "mmap with Linux flags")
+class LinkStat(unittest.TestCase):
+    """The Phase 8 link status window, against a fake 4 KB file."""
+
+    def setUp(self):
+        self.path = make_window_file(ident=0x4C4B5001, config=0x08080040)
+        words = [1000, 999, 2, 50, 3, 0, 17, 9, 24, 1]          # see LinkStatHW.WORDS
+        with open(self.path, "r+b") as f:
+            f.seek(mixer_hw.REG_COMMITS)
+            f.write(struct.pack("<I", 1234))
+            f.seek(mixer_hw.REG_COEF0)
+            f.write(struct.pack(f"<{len(words)}I", *words))
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_header_and_words(self):
+        ls = mixer_hw.LinkStatHW(0, dev=self.path)
+        self.assertEqual((ls.n_rx, ls.n_tx, ls.fifo_words), (8, 8, 64))
+        v = ls.read_all()
+        self.assertEqual(v["frames_rx"], 1000)
+        self.assertEqual(v["starved"], 50)
+        self.assertEqual((v["rx_fill"], v["rx_fill_low"], v["rx_fill_high"]), (17, 9, 24))
+        self.assertTrue(v["rx_running"])
+        self.assertEqual(v["snapshots"], 1234)
+        self.assertEqual(ls.status(), {"snapshots": 1234})
+
+    def test_matrix_id_refused(self):
+        os.unlink(self.path)
+        self.path = make_window_file()                           # a matrix window
+        with self.assertRaises(RuntimeError):
+            mixer_hw.LinkStatHW(0, dev=self.path)
+
 
 if __name__ == "__main__":
     unittest.main()

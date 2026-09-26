@@ -1,0 +1,18 @@
+[Unit]
+Description=FPGAmixer USB bridge (UAC2 gadget <-> PS/PL audio link, clock-steered)
+# Design: docs/phase8_status_2026-09-25.md in the FPGAmixer repo
+# The gadget card must exist first; the link card comes from the DT at boot.
+Requires=fpgamixer-usb-gadget.service
+After=fpgamixer-usb-gadget.service sound.target
+
+[Service]
+ExecStart=/usr/bin/fpgamixer-usb-bridge
+# Exits non-zero when a card can't be opened (e.g. a pre-Phase 8 bitstream
+# without the link); retry slowly rather than spin.
+Restart=always
+RestartSec=5
+# The bridge holds both cards while running: stop it (systemctl stop
+# fpgamixer-usb-bridge) before testing either card by hand.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,135 @@
+From 710673c8f77653f2365ec6b1bfe47152ac6b0a86 Mon Sep 17 00:00:00 2001
+From: Alexander Kelly <kelly.j.alex@gmail.com>
+Date: Sat, 26 Sep 2026 12:47:49 -0700
+Subject: [PATCH] usb: gadget: f_uac2: add optional single clock source
+
+f_uac2 always describes two Clock Source entities, one per direction.
+Hosts that present one audio device per clock domain (macOS) then show
+a playback-only and a capture-only device, even when the gadget's
+playback and capture run from one clock.
+
+Add a configfs attribute single_clock (default 0, unchanged behaviour).
+When set, and both directions are enabled, the function describes one
+Clock Source that all four terminals reference, the second clock
+descriptor is dropped from the AC header, and a SET_CUR of the sampling
+frequency applies to both directions. Binding fails if the playback
+and capture rate lists differ.
+
+Upstream-Status: Pending [generic; not yet submitted]
+---
+ drivers/usb/gadget/function/f_uac2.c | 30 ++++++++++++++++++++++++----
+ drivers/usb/gadget/function/u_uac2.h |  1 +
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/usb/gadget/function/f_uac2.c b/drivers/usb/gadget/function/f_uac2.c
+index dd252ff..e76b545 100644
+--- a/drivers/usb/gadget/function/f_uac2.c
++++ b/drivers/usb/gadget/function/f_uac2.c
+@@ -55,6 +55,15 @@
+ #define FUIN_EN(_opts) (EPIN_EN(_opts) \
+ 				&& ((_opts)->p_mute_present \
+ 				|| (_opts)->p_volume_present))
++/*
++ * One Clock Source entity for both directions: only when asked for, and only
++ * when both directions exist (afunc_validate_opts() also requires identical
++ * sampling rates). Hosts such as macOS present each clock domain as a device
++ * of its own, so two clock sources show up as a playback-only and a
++ * capture-only device; a device whose playback and capture really run from
++ * one clock can say so and appear as one duplex device.
++ */
++#define SINGLE_CLK(_opts) ((_opts)->single_clock && EPIN_EN(_opts) && EPOUT_EN(_opts))
+ #define FUOUT_EN(_opts) (EPOUT_EN(_opts) \
+ 				&& ((_opts)->c_mute_present \
+ 				|| (_opts)->c_volume_present))
+@@ -829,7 +838,7 @@ static void setup_headers(struct f_uac2_opts *opts,
+ 	headers[i++] = USBDHDR(&iad_desc);
+ 	headers[i++] = USBDHDR(&std_ac_if_desc);
+ 	headers[i++] = USBDHDR(&ac_hdr_desc);
+-	if (EPIN_EN(opts))
++	if (EPIN_EN(opts) && !SINGLE_CLK(opts))
+ 		headers[i++] = USBDHDR(&in_clk_src_desc);
+ 	if (EPOUT_EN(opts)) {
+ 		headers[i++] = USBDHDR(&out_clk_src_desc);
+@@ -908,7 +917,9 @@ static void setup_descriptor(struct f_uac2_opts *opts)
+ 		in_feature_unit_desc->bUnitID = i++;
+ 	if (EPOUT_EN(opts))
+ 		out_clk_src_desc.bClockID = i++;
+-	if (EPIN_EN(opts))
++	if (SINGLE_CLK(opts))
++		in_clk_src_desc.bClockID = out_clk_src_desc.bClockID;
++	else if (EPIN_EN(opts))
+ 		in_clk_src_desc.bClockID = i++;
+ 
+ 	usb_out_it_desc.bCSourceID = out_clk_src_desc.bClockID;
+@@ -940,7 +951,8 @@ static void setup_descriptor(struct f_uac2_opts *opts)
+ 	if (EPIN_EN(opts)) {
+ 		u16 len = le16_to_cpu(ac_hdr_desc.wTotalLength);
+ 
+-		len += sizeof(in_clk_src_desc);
++		if (!SINGLE_CLK(opts))
++			len += sizeof(in_clk_src_desc);
+ 		len += sizeof(usb_in_ot_desc);
+ 
+ 		if (FUIN_EN(opts))
+@@ -1010,6 +1022,9 @@ static int afunc_validate_opts(struct g_audio *agdev, struct device *dev)
+ 		msg = "incorrect playback HS/SS bInterval (1-4: fixed, 0: auto)";
+ 	else if ((opts->c_hs_bint < 0) || (opts->c_hs_bint > 4))
+ 		msg = "incorrect capture HS/SS bInterval (1-4: fixed, 0: auto)";
++	else if (SINGLE_CLK(opts) &&
++		 memcmp(opts->p_srates, opts->c_srates, sizeof(opts->p_srates)))
++		msg = "single_clock needs identical playback and capture sampling rates";
+ 
+ 	if (msg) {
+ 		dev_err(dev, "Error: %s\n", msg);
+@@ -1705,6 +1720,7 @@ static void uac2_cs_control_sam_freq(struct usb_ep *ep, struct usb_request *req)
+ 	struct usb_function *fn = ep->driver_data;
+ 	struct g_audio *agdev = func_to_g_audio(fn);
+ 	struct f_uac2 *uac2 = func_to_uac2(fn);
++	struct f_uac2_opts *opts = g_audio_to_uac2_opts(agdev);
+ 	u32 val;
+ 
+ 	if (req->actual != 4)
+@@ -1712,7 +1728,11 @@ static void uac2_cs_control_sam_freq(struct usb_ep *ep, struct usb_request *req)
+ 
+ 	val = le32_to_cpu(*((__le32 *)req->buf));
+ 	dev_dbg(&agdev->gadget->dev, "%s val: %d.\n", __func__, val);
+-	if (uac2->clock_id == USB_IN_CLK_ID) {
++	if (SINGLE_CLK(opts)) {
++		/* one clock: its rate is both directions' rate */
++		u_audio_set_playback_srate(agdev, val);
++		u_audio_set_capture_srate(agdev, val);
++	} else if (uac2->clock_id == USB_IN_CLK_ID) {
+ 		u_audio_set_playback_srate(agdev, val);
+ 	} else if (uac2->clock_id == USB_OUT_CLK_ID) {
+ 		u_audio_set_capture_srate(agdev, val);
+@@ -2106,6 +2126,7 @@ UAC2_ATTRIBUTE(s16, c_volume_min);
+ UAC2_ATTRIBUTE(s16, c_volume_max);
+ UAC2_ATTRIBUTE(s16, c_volume_res);
+ UAC2_ATTRIBUTE(u32, fb_max);
++UAC2_ATTRIBUTE(bool, single_clock);
+ UAC2_ATTRIBUTE_STRING(function_name);
+ UAC2_ATTRIBUTE_STRING(if_ctrl_name);
+ UAC2_ATTRIBUTE_STRING(clksrc_in_name);
+@@ -2137,6 +2158,7 @@ static struct configfs_attribute *f_uac2_attrs[] = {
+ 	&f_uac2_opts_attr_c_sync,
+ 	&f_uac2_opts_attr_req_number,
+ 	&f_uac2_opts_attr_fb_max,
++	&f_uac2_opts_attr_single_clock,
+ 
+ 	&f_uac2_opts_attr_p_mute_present,
+ 	&f_uac2_opts_attr_p_volume_present,
+diff --git a/drivers/usb/gadget/function/u_uac2.h b/drivers/usb/gadget/function/u_uac2.h
+index 0df8082..1457a6b 100644
+--- a/drivers/usb/gadget/function/u_uac2.h
++++ b/drivers/usb/gadget/function/u_uac2.h
+@@ -66,6 +66,7 @@ struct f_uac2_opts {
+ 
+ 	int				req_number;
+ 	int				fb_max;
++	bool			single_clock;
+ 	bool			bound;
+ 
+ 	char			function_name[USB_MAX_STRING_LEN];
+-- 
+2.55.0.windows.5
+

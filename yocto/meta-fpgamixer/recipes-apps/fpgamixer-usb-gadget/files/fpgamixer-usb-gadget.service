@@ -1,0 +1,15 @@
+[Unit]
+Description=FPGAmixer USB audio gadget (UAC2 on the Type-C port)
+# Design: docs/phase8_status_2026-09-25.md in the FPGAmixer repo
+# configfs is mounted by systemd's sys-kernel-config.mount
+Requires=sys-kernel-config.mount
+After=sys-kernel-config.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/fpgamixer/fpgamixer-usb-gadget.sh start
+ExecStop=/usr/lib/fpgamixer/fpgamixer-usb-gadget.sh stop
+
+[Install]
+WantedBy=multi-user.target

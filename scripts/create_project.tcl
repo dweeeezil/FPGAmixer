@@ -38,7 +38,7 @@ if {[file isdirectory $xhub_boards]} {
 # ------ Phase selection -------------------------------------------------------
 # current_phase drives the synthesis top module, which XDC is used, and (phase4
 # onwards) whether the PS block design is built.
-set current_phase "phase5"
+set current_phase "phase8"
 set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
@@ -50,6 +50,11 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 #                   M_AXI_CTRL port and the matrix gain registers. Since the
 #                   Phase 5 control plane landed these are the same build; the
 #                   PS-only Phase 4 design is in git history (82d4386).
+# phase8          : phase5 + the PS<->PL audio link (INCLUDE_LINK): the AMD
+#                   Audio Formatter in the BD, pcm_link + its status window in
+#                   fpgamixer_top, and the matrix grown to 12 x 12
+#                   (docs/phase8_status_2026-09-25.md). The phase5 build (4 x 4,
+#                   no link) is in git history before this change.
 #
 # The top-level XDC names a few instances by path (u_clk/u_mmcm and
 # u_jb|u_jc/u_fwd_*/u_oddr). Adding hierarchy ABOVE fpgamixer_top, or renaming
@@ -61,15 +66,20 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 # applied to EVERY instance of its module (SCOPED_TO_REF), with cell names
 # relative to the instance, so a constraint travels with its module instead of
 # naming instance paths in the top-level XDC (docs/architecture_modules.md).
-set include_ps 0
+set include_ps   0
+set include_link 0
 set scoped_xdc {}
-if {$current_phase in {phase3 phase4 phase5}} {
+if {$current_phase in {phase3 phase4 phase5 phase8}} {
     set synth_top "fpgamixer_top"
     set xdc_file  "constraints/fpgamixer_genesys_zu.xdc"
 }
-if {$current_phase in {phase4 phase5}} {
+if {$current_phase in {phase4 phase5 phase8}} {
     set include_ps 1
     lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
+}
+if {$current_phase in {phase8}} {
+    set include_link 1
+    lappend scoped_xdc {constraints/async_fifo.xdc async_fifo}
 }
 
 # ------ Verify we're at the repo root ------
@@ -286,7 +296,10 @@ if {$include_ps} {
 
     set smc [create_bd_cell -type ip \
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc]
-    set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $smc
+    # M00 = matrix window; with the link also M01 = link status window and
+    # M02 = the Audio Formatter's own registers (below).
+    set_property -dict [list CONFIG.NUM_SI {1} \
+        CONFIG.NUM_MI [expr {$include_link ? 3 : 1}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -304,6 +317,8 @@ if {$include_ps} {
     connect_bd_intf_net [get_bd_intf_pins $smc/M00_AXI] $m_ctrl
 
     set ctrl_clk [create_bd_port -dir O -type clk ctrl_aclk]
+    # (Phase 8 extends ASSOCIATED_BUSIF once the link ports exist; naming a
+    # port before it is created only warns and is dropped.)
     set_property -dict [list \
         CONFIG.FREQ_HZ          $pl_clk0_hz \
         CONFIG.ASSOCIATED_BUSIF {M_AXI_CTRL} \
@@ -319,6 +334,118 @@ if {$include_ps} {
         [get_bd_addr_segs M_AXI_CTRL/Reg]
     puts "INFO: M_AXI_CTRL      = [get_property OFFSET [get_bd_addr_segs \
 zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
+
+    # ----- Phase 8: the PS <-> PL audio link (docs/phase8_status_2026-09-25.md) -----
+    # AMD Audio Formatter (PG330, no-charge IP): DMA between DDR ring buffers
+    # and AXI4-Stream audio. Linux drives it with the in-kernel ASoC driver
+    # xlnx_formatter_pcm (compatible "xlnx,audio-formatter-1.0").
+    #   registers : control SmartConnect M02, 0x8010_0000 (64K). Driver-owned
+    #               devices live at 0x801x_xxxx; 0x8000_x000 stays for our
+    #               self-describing windows (ID/CONFIG header).
+    #   DMA       : m_axi_mm2s + m_axi_s2mm -> SmartConnect -> S_AXI_HPC0_FPD,
+    #               which the preset already enables and clocks from pl_clk0.
+    #               So, as in Phase 5, NO PS8 setting changes.
+    #   IRQs      : irq_mm2s, irq_s2mm -> xlconcat -> pl_ps_irq0 (enabled by
+    #               the preset).
+    #   streams   : exported as M_AXIS_LINK_MM2S / S_AXIS_LINK_S2MM on pl_clk0;
+    #               pcm_link in fpgamixer_top crosses them to mclk.
+    #   aud_mclk  : = the design's mclk (input port link_mclk). The formatter
+    #               paces MM2S at aud_mclk / Fs multiplier, which is what puts
+    #               the Linux-side ALSA card on mclk time. FREQ_HZ on the port is
+    #               the nominal 12.288 MHz (it reaches the device tree; the real
+    #               clock is 12.2919 MHz, see the status doc).
+    # Formatter modes are its defaults: MM2S PCM -> AES and S2MM AES -> PCM,
+    # i.e. PCM (S24_LE) in memory and the AES3-subframe layout on the stream
+    # (sample at TDATA[27:4]), which is what pcm_link expects.
+    if {$include_link} {
+        set fmt [create_bd_cell -type ip \
+            -vlnv [get_ipdefs -filter {NAME == audio_formatter}] link_formatter]
+        set_property -dict [list \
+            CONFIG.C_INCLUDE_MM2S          {1} \
+            CONFIG.C_INCLUDE_S2MM          {1} \
+            CONFIG.C_MAX_NUM_CHANNELS_MM2S {8} \
+            CONFIG.C_MAX_NUM_CHANNELS_S2MM {8} \
+            CONFIG.C_PACKING_MODE_MM2S     {0} \
+            CONFIG.C_PACKING_MODE_S2MM     {0} \
+        ] $fmt
+
+        foreach p {s_axi_lite_aclk m_axis_mm2s_aclk s_axis_s2mm_aclk} {
+            connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $fmt/$p]
+        }
+        foreach p {s_axi_lite_aresetn m_axis_mm2s_aresetn s_axis_s2mm_aresetn} {
+            connect_bd_net [get_bd_pins $rst/peripheral_aresetn] [get_bd_pins $fmt/$p]
+        }
+        connect_bd_intf_net [get_bd_intf_pins $smc/M02_AXI] [get_bd_intf_pins $fmt/s_axi_lite]
+
+        set link_mclk [create_bd_port -dir I -type clk -freq_hz 12288000 link_mclk]
+        connect_bd_net $link_mclk [get_bd_pins $fmt/aud_mclk]
+        set link_mreset [create_bd_port -dir I -type rst link_mreset]
+        set_property CONFIG.POLARITY {ACTIVE_HIGH} $link_mreset
+        connect_bd_net $link_mreset [get_bd_pins $fmt/aud_mreset]
+
+        set dma_smc [create_bd_cell -type ip \
+            -vlnv [get_ipdefs -filter {NAME == smartconnect}] link_dma_smc]
+        set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] $dma_smc
+        connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $dma_smc/aclk]
+        connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $dma_smc/aresetn]
+        connect_bd_intf_net [get_bd_intf_pins $fmt/m_axi_mm2s] [get_bd_intf_pins $dma_smc/S00_AXI]
+        connect_bd_intf_net [get_bd_intf_pins $fmt/m_axi_s2mm] [get_bd_intf_pins $dma_smc/S01_AXI]
+        connect_bd_intf_net [get_bd_intf_pins $dma_smc/M00_AXI] \
+                            [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HPC0_FPD]
+
+        set irqs [create_bd_cell -type ip \
+            -vlnv [get_ipdefs -filter {NAME == xlconcat}] link_irqs]
+        set_property CONFIG.NUM_PORTS {2} $irqs
+        connect_bd_net [get_bd_pins $fmt/irq_mm2s] [get_bd_pins $irqs/In0]
+        connect_bd_net [get_bd_pins $fmt/irq_s2mm] [get_bd_pins $irqs/In1]
+        connect_bd_net [get_bd_pins $irqs/dout] [get_bd_pins zynq_ultra_ps_e_0/pl_ps_irq0]
+
+        set m_mm2s [create_bd_intf_port -mode Master \
+            -vlnv xilinx.com:interface:axis_rtl:1.0 M_AXIS_LINK_MM2S]
+        connect_bd_intf_net [get_bd_intf_pins $fmt/m_axis_mm2s] $m_mm2s
+        set s_s2mm [create_bd_intf_port -mode Slave \
+            -vlnv xilinx.com:interface:axis_rtl:1.0 S_AXIS_LINK_S2MM]
+        set_property -dict [list \
+            CONFIG.TDATA_NUM_BYTES {4} CONFIG.TID_WIDTH {8} \
+            CONFIG.HAS_TREADY {1} CONFIG.FREQ_HZ $pl_clk0_hz \
+        ] $s_s2mm
+        connect_bd_intf_net $s_s2mm [get_bd_intf_pins $fmt/s_axis_s2mm]
+
+        # Link status window: plain RTL (pcm_link_stat_regs) outside the BD,
+        # like the matrix window.
+        set m_stat [create_bd_intf_port -mode Master \
+            -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_LINKSTAT]
+        set_property -dict [list \
+            CONFIG.PROTOCOL   {AXI4LITE} \
+            CONFIG.DATA_WIDTH {32} \
+            CONFIG.ADDR_WIDTH {32} \
+            CONFIG.FREQ_HZ    $pl_clk0_hz \
+        ] $m_stat
+        connect_bd_intf_net [get_bd_intf_pins $smc/M01_AXI] $m_stat
+
+        set_property CONFIG.ASSOCIATED_BUSIF \
+            {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
+            [get_bd_ports ctrl_aclk]
+
+        assign_bd_address -offset 0x80001000 -range 4K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs M_AXI_LINKSTAT/Reg]
+        assign_bd_address -offset 0x80100000 -range 64K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs $fmt/s_axi_lite/reg0]
+        # The formatter's two DMA masters see DDR through HPC0.
+        assign_bd_address
+        foreach seg [get_bd_addr_segs -of_objects [get_bd_addr_spaces zynq_ultra_ps_e_0/Data]] {
+            puts "INFO: PS address map: [get_property NAME $seg] \
+[get_property OFFSET $seg] [get_property RANGE $seg]"
+        }
+        foreach sp [get_bd_addr_spaces $fmt/*] {
+            foreach seg [get_bd_addr_segs -of_objects $sp] {
+                puts "INFO: [get_property NAME $sp] -> [get_property NAME $seg] \
+[get_property OFFSET $seg] [get_property RANGE $seg]"
+            }
+        }
+    }
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
     puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \
@@ -339,8 +466,13 @@ dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
     add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
 
     # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in fpgamixer_top.
-    set_property verilog_define {INCLUDE_PS} [get_filesets sources_1]
-    puts "INFO: verilog_define INCLUDE_PS set -- fpgamixer_top instantiates the PS"
+    if {$include_link} {
+        set_property verilog_define {INCLUDE_PS INCLUDE_LINK} [get_filesets sources_1]
+        puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK -- PS + PS<->PL audio link"
+    } else {
+        set_property verilog_define {INCLUDE_PS} [get_filesets sources_1]
+        puts "INFO: verilog_define INCLUDE_PS set -- fpgamixer_top instantiates the PS"
+    }
 }
 
 # ------ Methodology gate ------

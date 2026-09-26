@@ -41,6 +41,8 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py dump                  # matrix gains, in dB
     python3 mixer_hw.py set <out> <in> <dB>   # one crosspoint, then COMMIT
     python3 mixer_hw.py identity              # unity diagonal, rest off
+    python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
+                                              # with seconds: deltas and rates
 """
 
 import math
@@ -198,10 +200,51 @@ class MatrixHW(RegWindow):
                           for (o, i), db in levels.items()})
 
 
+class LinkStatHW(RegWindow):
+    """A pcm_link status window (src/rtl/pcm_link_stat_regs.sv, Phase 8):
+    read-only, same header, 0x00C = snapshot sequence. Counters are
+    free-running and wrap at 32 bits; take differences (no CLEAR).
+    CONFIG = [31:24] channels PL->PS, [23:16] channels PS->PL,
+    [15:0] PS->PL FIFO depth in words."""
+
+    ID = 0x4C4B_5001
+    WORDS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns",
+             "tid_errors", "rx_fill", "rx_fill_low", "rx_fill_high", "flags")
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n_tx = (self.config >> 24) & 0xFF
+        self.n_rx = (self.config >> 16) & 0xFF
+        self.fifo_words = self.config & 0xFFFF
+
+    def describe(self):
+        return (f"PS<->PL link, {self.n_rx} ch PS->PL, {self.n_tx} ch PL->PS, "
+                f"FIFO {self.fifo_words} words")
+
+    def status(self):
+        return {"snapshots": self.rd(REG_COMMITS)}
+
+    def read_all(self):
+        """All words, from one snapshot when possible: re-read if the
+        snapshot sequence moved while reading (a new one lands per frame)."""
+        for _ in range(5):
+            seq = self.rd(REG_COMMITS)
+            vals = {n: self.rd(REG_COEF0 + 4 * k) for k, n in enumerate(self.WORDS)}
+            if self.rd(REG_COMMITS) == seq:
+                break
+        vals["snapshots"] = seq
+        vals["rx_running"] = bool(vals.pop("flags") & 1)
+        return vals
+
+
 # name -> (physical base, class). Mirrors assign_bd_address; see ADDRESS MAP.
+# (The Audio Formatter at 0x8010_0000 is driver-owned, not listed here.)
 WINDOWS = {
-    "matrix": (0x8000_0000, MatrixHW),
+    "matrix":   (0x8000_0000, MatrixHW),
+    "linkstat": (0x8000_1000, LinkStatHW),     # Phase 8 bitstreams only
 }
+
+COUNTERS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns", "tid_errors")
 
 
 def open_window(name, dev="/dev/mem"):
@@ -216,9 +259,35 @@ def _main(argv):
     cmd = argv[1]
     if cmd == "info":
         for name in WINDOWS:
-            w = open_window(name)
+            try:
+                w = open_window(name)
+            except RuntimeError as e:    # absent from this bitstream: say so, go on
+                print(f"{name:8} @ 0x{WINDOWS[name][0]:08x}: not available ({e})")
+                continue
             print(f"{name:8} @ 0x{w.base:08x}: {w.describe()}  ({RegWindow.describe(w)}), "
                   f"{w.status()}")
+        return 0
+
+    if cmd == "link":
+        # link           one reading
+        # link <sec>     two readings <sec> apart: counter deltas and rates
+        ls = open_window("linkstat")
+        a = ls.read_all()
+        if len(argv) == 3:
+            import time
+            dt = float(argv[2])
+            time.sleep(dt)
+            b = ls.read_all()
+            for n in COUNTERS:
+                d = (b[n] - a[n]) & 0xFFFF_FFFF
+                print(f"{n:12} +{d:<10} {d / dt:10.1f}/s")
+            a = b
+        else:
+            for n in COUNTERS:
+                print(f"{n:12} {a[n]}")
+        print(f"rx_fill      {a['rx_fill']} words (low {a['rx_fill_low']}, "
+              f"high {a['rx_fill_high']} since the stream started; 65535 = never ran)")
+        print(f"rx_running   {a['rx_running']}   snapshots {a['snapshots']}")
         return 0
 
     hw = open_window("matrix")
