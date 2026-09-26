@@ -13,6 +13,7 @@
 # Usage (from repo root):
 #   make -f scripts/sim.mk matrix     # matrix unit test
 #   make -f scripts/sim.mk matrix_rect  # non-square matrices (3->5, 5->2)
+#   make -f scripts/sim.mk stream     # Phase 9 PCM stream contract + packed<->stream converters
 #   make -f scripts/sim.mk link       # Phase 8 PS<->PL link front door (AXIS <-> PCM, two clocks)
 #   make -f scripts/sim.mk linkstat   # Phase 8 link status window (RO, snapshot atomicity)
 #   make -f scripts/sim.mk regs       # Phase 5 AXI gain registers + CDC + matrix
@@ -36,8 +37,8 @@ CORE_RTL := $(RTL)/pcm_matrix.sv $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.s
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect regs link linkstat phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect regs link linkstat phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect stream regs link linkstat phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect stream regs link linkstat phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -84,6 +85,14 @@ matrix_rect: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix_rect -o $(BUILD)/tb_pcm_matrix_rect.vvp \
 		$(RTL)/pcm_matrix.sv $(SIM)/tb_pcm_matrix_rect.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix_rect.vvp
+
+# --- Phase 9: PCM stream contract, packed <-> stream converters (N = 1, 12, 20) ---
+stream: | $(BUILD)
+	@echo ">>> Building tb_pcm_stream"
+	@$(IVERILOG) $(FLAGS) -s tb_pcm_stream -o $(BUILD)/tb_pcm_stream.vvp \
+		$(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
+		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_stream.sv
+	@$(VVP) $(BUILD)/tb_pcm_stream.vvp
 
 # --- Phase 8: PS<->PL link front door, formatter AXIS <-> PCM on unrelated clocks ---
 link: | $(BUILD)

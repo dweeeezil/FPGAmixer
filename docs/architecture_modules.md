@@ -47,7 +47,9 @@ There are four kinds of block:
 | Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8, in progress: `phase8_status_2026-09-25.md`) |
 | Generic | `src/rtl/async_fifo.sv` + `constraints/async_fifo.xdc` | dual-clock FIFO; XDC scoped to the module like `coef_bank_handoff.xdc` |
 | Platform (image) | `yocto/meta-fpgamixer/recipes-kernel/`, `recipes-apps/fpgamixer-usb-gadget` | kernel fragment for USB device mode; the UAC2 gadget (USB front door, Linux half) |
-| PCM core | `src/rtl/pcm_matrix.sv` | N_IN × N_OUT crosspoint matrix |
+| PCM core | `src/rtl/pcm_matrix.sv` | N_IN × N_OUT crosspoint matrix (time-shared from P9.A4) |
+| PCM core (generic) | `src/rtl/pcm_pack2stream.sv`, `src/rtl/pcm_stream2pack.sv` | core boundary: packed PCM contract ↔ PCM stream contract (§2.1). Phase 9 P9.A2; enter the build with `mixer_core` (P9.A4/A5) |
+| Simulation (generic) | `src/sim/pcm_stream_monitor.sv` | checks a stream against §2.1 and a block's stated timing |
 | Control plane (generic) | `src/rtl/axil_coef_window.sv` | AXI4-Lite slave, common header, shadow bank |
 | Control plane (generic) | `src/rtl/coef_bank_handoff.sv` + `constraints/coef_bank_handoff.xdc` | COMMIT + CDC; the XDC is scoped to the module, so every instance is constrained |
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
@@ -77,6 +79,29 @@ Rules:
 - **Packed vectors, not unpacked arrays**, on every port (Icarus drops unpacked-array outputs; see `pcm_matrix.sv` header).
 - Channel counts are parameters. A block states its channel count; the platform layer decides which front-door channels feed which core inputs.
 
+### 2.1 PCM stream contract (inside the core, since Phase 9)
+
+Decided 2026-09-26 (`phase9_status_2026-09-26.md` §5.1, C1/C2/C6). Core blocks that are time-shared (the matrix from P9.A4, the Phase 7 DSP blocks) pass samples **one channel per beat** instead of as a packed vector. Front doors keep the packed contract; the core boundary converts.
+
+| Signal | Definition |
+|---|---|
+| `clk`, `rst_n` | `mclk`, as the packed contract |
+| `frame` | the frame strobe, shared by the whole core (the packed contract's `valid`) |
+| `s_valid` | one beat |
+| `s_ch` | channel index, `$clog2(N)` bits (1 bit for N = 1) |
+| `s_data` | sample, signed, `SW` bits (24 today; a parameter) |
+
+Rules:
+
+- **Each channel exactly once per frame, in ascending order 0 … N−1.** Idle cycles between beats are allowed.
+- **All beats of frame *k* lie between strobe *k* and strobe *k*+1.** A block that can't finish inside the frame retimes to the next one and states the extra frame of latency.
+- **No back-pressure.** Schedules are static; each producer's timing is known at elaboration.
+- **Every block states its timing** in its header: first and last beat in cycles after the strobe. Cycle numbering: the edge that samples `frame` high is edge 0, and cycle *c* is the interval after edge *c*. A frame is exactly 256 cycles (LRCK = `mclk`/256), whatever `mclk`'s steering does to the cycle's length.
+- **The core's packed output updates on one edge at a stated cycle D of the same frame** (C2): today's latency to the link and the Pmods is kept.
+- Consumers may check `s_ch` (as the link checks TID). `src/sim/pcm_stream_monitor.sv` checks all of the above and is used by every core TB.
+
+Boundary converters (generic, P9.A2): **`pcm_pack2stream`** captures the packed vector on the strobe and emits channels 0 … N−1 on cycles 1 … N. **`pcm_stream2pack`** collects beats by `s_ch` and moves all channels to its packed output together, one cycle after the beat for N−1; `err_o` pulses on an out-of-order beat or an incomplete frame.
+
 Today's channel map (platform layer, `fpgamixer_top`, since Phase 8): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, **ch4–ch11 = PS↔PL link channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records). Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is the concatenation `{link, jc, jb}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without the link (non-PS builds) ch4–11 read as silence; the core is 12 × 12 in every build.
 
 ---
@@ -88,6 +113,8 @@ Every tunable core block exposes its parameters as one flat **coefficient port**
 - in the `mclk` domain;
 - changes only as a **whole bank on one `mclk` edge**, so every frame sees one consistent set (the block samples it on the frame's `valid`);
 - the block has **no idea** whether the value came from a register, a constant, or a test bench. `pcm_matrix.gains_flat` is the first instance: the PS build drives it from `matrix_regs_axil`, the non-PS build ties it to `MATRIX_GAINS`, and the unit TB drives a constant.
+
+**Changing in Phase 9 (decided 2026-09-26, C3; lands in P9.A3):** the meaning stays, the form becomes a **read port** (the block drives an address, gets a word of coefficients a cycle later; the bank behind it swaps only at a frame strobe), served by a generic `coef_bank_ram` in the PS build and by `coef_flat_reader` over a flat vector in non-PS builds and TBs. The register window doesn't change.
 
 Smoothing (click-free gain changes) is a property of the core block, added later as a lowpass/ramp on the coefficient *inside* the block, so the contract doesn't change.
 

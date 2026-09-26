@@ -235,6 +235,38 @@ D1 postponed `mixer_core` until the core held more than one block. It now holds 
 | C6 | Core sample width 24, as a parameter; widening decided in Phase 7? | **Yes** |
 | C7 | The probable Pmod L/R skew: confirm in simulation, then fix in `i2s_port` as its own small step (before or after the core)? | **Confirm now, fix right after P9.A2** (small, independent, and the bench can hear it only with stereo cables) |
 
+**Decided by the user, 2026-09-26: all as recommended.** C1 tagged stream contract; C2 (a) in-frame latency; C3 `coef_bank_ram` + `coef_flat_reader`, register map unchanged; C4 `mixer_core` now; C5 DSP inference; C6 `SW` = 24 as a parameter; C7 the L/R skew fixed in `i2s_port` right after P9.A2.
+
+### 5.2 P9.A2: the stream contract and the boundary converters (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/pcm_pack2stream.sv` (new, generic) | captures `in_flat` on the strobe (a shift register, so the front doors may change it mid-frame); beats 0 … N−1 on cycles 1 … N, contiguous. `$error` if N doesn't fit the frame |
+| `src/rtl/pcm_stream2pack.sv` (new, generic) | stages beats by `s_ch`; on the beat for N−1 all channels move to `out_flat` on one edge (cycle N+1 behind `pcm_pack2stream`), `valid_o` pulses. `err_o` pulses on a beat that isn't the expected next channel, and on a strobe that finds a frame incomplete. A frame whose last beat never comes isn't delivered; audio is never blocked |
+| `src/sim/pcm_stream_monitor.sv` (new, sim) | the reusable contract checker: order, once per frame, inside the frame, stated first/last-beat cycles, contiguity |
+| `src/sim/tb_pcm_stream.sv` (new) + `sim.mk` target `stream` | below |
+| `docs/architecture_modules.md` | new §2.1 (the contract), file map, §3 note on the coming coefficient read port |
+
+**`tb_pcm_stream` (XSim 2026.1): PASS.**
+
+| Part | Result |
+|---|---|
+| round trip N = 1, 12, 20 (random samples each frame; the packed input also scrambled mid-frame) | 40 frames each, **bit-exact**; output changes only on the `valid_o` edge, at **cycle N+1** exactly; the monitor sees beats 0 … N−1 on cycles 1 … N, contiguous; `err_o` never |
+| `pcm_stream2pack` alone, N = 5, beats written by the TB | idle gaps between beats: delivered, no error. Channels 1 and 2 swapped: exactly 3 `err_o` (the beats for 2, 1 and 3 each arrive unexpected), frame still delivered. Last beat missing: `err_o` at the next strobe, output unchanged |
+
+**Mutation check** (mutated copies compiled from the scratchpad; the sources untouched):
+
+| Mutant | Result |
+|---|---|
+| M1: wrong channel tag (`s_ch ^ 1`) | FAIL (N = 1 never delivers; 566,397 / 878,893 errors at N = 12 / 20 by the time-out) |
+| M2: stage written at the neighbour's slot | FAIL, 40 of 40 frames wrong at N = 12 and 20, and part 2. (N = 1 can't see it: one channel.) |
+| M3: not atomic (each beat straight to the output) | FAIL, 440 / 760 errors ("changed without `valid_o`") |
+| M4: capture one cycle late (timing) | FAIL, 160 errors per size (first/last beat cycle, `valid_o` cycle) |
+
+Not run: the Icarus path (`make -f scripts/sim.mk stream`); Icarus isn't installed on this PC. The target is written in the same form as the others.
+
+**Found along the way:** a Python heredoc run through the Bash tool dropped the backslash line continuations in the new `sim.mk` rule, the known failure mode. Caught by the check afterwards and fixed with the editor.
+
 ## 6. Proposed steps
 
 Each step is verified and committed separately; the status doc and `architecture_modules.md` are updated with it.
@@ -280,3 +312,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26:** proposal written (this doc) after Phase 8 P8.9. Nothing built.
 - **2026-09-26:** revised by the user's decision: the time-shared core (§5, P9.A) goes first; P9.2 folded into it. The other §8 decisions are left for the Phase 9 session.
 - **2026-09-26 (Phase 9 session):** Phase 8 merged (`ea88a29`); branch `phase9/time-shared-core`. **P9.A1:** core design proposal written (§5.1): output-major DSP lanes sharing one sample stream, a tagged stream contract, coefficients in a dual-clock RAM with a swap at the frame, `mixer_core`. Corrected the §5 table's 64 × 64 figure. Side finding from the RTL: a probable one-sample L/R skew on the Pmod DAC outputs today (C7). Awaiting decisions C1–C7.
+- **2026-09-26:** decisions C1–C7: all as recommended. **P9.A2 PASS** (§5.2): stream contract in `architecture_modules.md` §2.1, `pcm_pack2stream` / `pcm_stream2pack`, `pcm_stream_monitor`, `tb_pcm_stream` bit-exact at N = 1, 12, 20, 4 mutants all caught. Next: C7 (Pmod L/R skew), then P9.A3.
