@@ -168,6 +168,8 @@ Listed honestly, so they're fixed deliberately rather than worked around. None o
 | Phase 7 DSP | PCM contract + coefficient contract + a window per DSP block | one core block per DSP type |
 | Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux. **Proposal (2026-09-25, awaiting decisions):** `phase8_status_2026-09-25.md`: Audio Formatter → ALSA card on `mclk` time, `pcm_link` PL front door, new generic RO `axil_stat_window` |
 
+**Phase 9 (AVB), proposed 2026-09-26** (`phase9_status_2026-09-26.md`): a **second link instance** (formatter + `pcm_link`, core channels 12–19 appended) with an AVB front door whose Linux half is gPTP + CBS shaping + the alsa-plugins AAF talker/listener + a bridge. One new **platform** piece: `mclk` disciplined to gPTP, so the network disciplines the core's own clock and the core still never sees a foreign one. One **core** change with an unchanged interface: a time-multiplexed `pcm_matrix`.
+
 ### Why there is no "quick USB" path (asked 2026-09-25)
 
 USB device mode itself is available on this board (Type-C, DWC3, Linux `f_uac2` gadget), and getting the Mac to see a soundcard is quick. The audio then exists only in Linux memory. Getting it into the matrix needs:
