@@ -399,6 +399,20 @@ X1 and X4 are exactly why the sweep includes multi-lane sizes that today's 12 ×
 
 Not checked here: the bench (P9.A6).
 
+### 5.7 P9.A6: image built; bench pending
+
+**SDT** (`sdtgen` on `fpgamixer_p9a5.xsa` → `build/sdt`; the Phase 8 one kept as `build/sdt.p8` and `~/edf/sdt.p8` on the VM): `psu_init.tcl`, `zynqmp.dtsi`, `pcw.dtsi`, `system-top.dts` **identical** to Phase 8; `pl.dtsi` differs only in `firmware-name` (`fpgamixer_p9a5.bit.bin`). So the PS configuration and the device tree didn't change; only the bitstream did.
+
+**Layer sync:** the VM's copy was from `169eaa5-dirty` (P8.9), older than the bridge fix committed in `b2dd92a`. Synced at `89ebfc4` (clean). The synced `fpgamixer-usb-bridge.c` has the coarse correction and `HOLD_S`.
+
+**Image built 2026-09-26:** `gen-machine-conf` (exit 0) + `bitbake edf-linux-disk-image xilinx-bootbin`: 14,821 tasks, all succeeded, 6 min 48 s, 23 warnings (the usual runqueue-deadlock / "image not supported" set). Checked: the deployed `download-genesys-zu3eg.bit` MD5 = Vivado's `fpgamixer_p9a5.bit` (`4df4e23e…`); the rootfs's `/usr/bin/fpgamixer-usb-bridge` has the "coarse fixes" status line, i.e. **the Phase 8 servo fix is in an image for the first time**. Copied to **`build/sd/p9a6-core-20260926.wic.xz`** (MD5 `f861eeaa…`, same on both ends).
+
+**Bench plan (Phase 8 S3 + S4 on the new core):**
+1. `mixer_hw.py info`: matrix window 12 in × 12 out, Q2.16 (the register map unchanged).
+2. Bridge start-up (`journalctl -u fpgamixer-usb-bridge -b`): the coarse fix instead of the old +650 ppm swing in direction B.
+3. S3: Mac → USB 1/2 → JB-L / JC-L by ear; `mixer_hw.py link 10`: 0 underruns/overruns/TID errors.
+4. S4: `crosspoint_restore_test.py set` (Pi) → `check-hw` (board) 144/144 → power pull → `check-hw` 144/144.
+
 ## 6. Proposed steps
 
 Each step is verified and committed separately; the status doc and `architecture_modules.md` are updated with it.
