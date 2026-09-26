@@ -436,6 +436,23 @@ Build: `bitbake fpgamixer-usb-bridge`, and a forced recompile shows **0 warnings
 
 ---
 
-## 19. Log
+## 19. Bench test S3 (Mac ↔ matrix, clock-steered): PASS, 2026-09-26
+
+Setup: the `p8-link` image with the bridge binary run by hand (`./fpgamixer-usb-bridge -v`); the Mac plays stereo into FPGAmixer outputs 1/2 (Aggregate Device); OSC routes USB L (in 4) → JB_L (out 0), USB R (in 5) → **JC_L** (out 2; the bench's mono cables only carry left channels), the Pmods' own inputs muted there; USB 1/2 → Mac inputs 1/2 by the identity seeding.
+
+| Check | Result |
+|---|---|
+| by ear | **USB L on JB-L, USB R on JC-L: heard** |
+| return path | **the Mac sees the audio coming back** on FPGAmixer inputs 1/2 |
+| bridge throughput | both directions **48,016 frames/s**: the Mac runs at the board's mclk rate, not its own 48,000 |
+| servo | pitch settles at **≈1000340–1000350** (+~345 ppm: the board's +324 plus the Mac's own offset); queue within a few frames of target (A −7…+3, B +17…+10 over the logged minute) |
+| link counters (`mixer_hw.py link 10`) | 48,018 in and out, **starved 0, underruns 0, overruns 0, tid_errors 0** |
+| xruns | A: 1, B: 68, **all at start-up**; B's (EIO / EPIPE on gadget playback) look like the Mac's input stream not running until something opens FPGAmixer's inputs (not confirmed). During them B's integrator wound up (pitch 1000718) before settling. |
+
+Follow-ups: reset the servo's integrator and filter on every xrun (start-up overshoot); the power-cycle restore test with audio on every crosspoint (§7 S4).
+
+---
+
+## 20. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
