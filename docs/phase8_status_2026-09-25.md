@@ -501,7 +501,31 @@ Only the post-pull `check-hw` appears in the terminal logs; the pattern had been
 
 ---
 
-## 20. Log
+## 20. P8.9: one 8 × 8 device on the Mac (`f_uac2` single clock source)
+
+**Order decided by the user (2026-09-26):** this step, then **AVB / network audio (Phase 9)**, then DSP (Phase 7). Phase 7 is deferred because the planned DSP module library makes it large. Host mode (P8.8) isn't scheduled.
+
+**The patch** (`recipes-kernel/linux-xlnx/files/0001-usb-gadget-f_uac2-add-optional-single-clock-source.patch`, against linux-xlnx v2026.1 / 6.18.10 `4f7afe14f724`, read from the board kernel's own `work-shared` source; +27 / −4 lines in `f_uac2.c`, +1 in `u_uac2.h`):
+
+- new configfs attribute **`single_clock`** (bool, default 0 = upstream behaviour);
+- when set **and** both directions are enabled (`SINGLE_CLK()`):
+  - one Clock Source entity: the IN terminals take the OUT clock's ID, the IN clock descriptor is left out of the descriptor list and out of the AC header's `wTotalLength`;
+  - a SET_CUR of the sampling frequency on that clock sets **both** directions' rates (GET_CUR / GET RANGE already answer correctly, since the IDs are equal and the rate lists must be too);
+- `afunc_validate_opts()` refuses to bind if `single_clock` is set with different playback/capture rate lists ("single_clock needs identical playback and capture sampling rates").
+
+Why it's honest for this device: both directions really run on one clock, `mclk`. The bridge steers the Mac's OUT stream via feedback and sizes our IN packets to it, and on the bench both pitches settled at the same value (≈1000340).
+
+**Gadget script:** writes `single_clock = 1` and names the clock "FPGAmixer clock", **only if the attribute exists**; on an unpatched kernel it keeps the two clock sources and logs which mode it used. `bcdDevice` 0x0100 → **0x0101**, so macOS drops its cached two-device descriptors.
+
+**Upstream status:** OE `Pending`, generic enough to propose upstream. The patch carries no `Signed-off-by` (a DCO sign-off is the author's own declaration).
+
+Checks so far: the patch applies to the board kernel source (`bitbake -c patch linux-xlnx`); the script passes `sh -n`.
+
+**Image built 2026-09-26:** 14,821 tasks, all succeeded, 23 warnings (the usual 22 + one for the forced `do_patch`). The kernel compile log has **0 compiler warnings**, and `f_uac2.o` was rebuilt from the patched source. The rootfs has the new gadget script. It also has the bridge's xrun-hold fix, first time on hardware. Copied to **`build/sd/p8-1dev-20260926.wic.xz`** (MD5 `fd8f5ed3…`). Bench test: below.
+
+---
+
+## 21. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
 - **2026-09-26:** P8.1 bench S1 (Type-C role found and fixed; bench login); P8.4 bitstream (a Gray-MSB CDC hole caught by the methodology gate and fixed); P8.5 card; P8.6 software; S2 PASS; alsaloop rejected, own bridge written (P8.7); S3 PASS (Mac ↔ matrix, clock-locked); S4 PASS (power-cycle restore of all 144 crosspoints with audio). Bridge servo: pause 1 s after an xrun, integral kept (built with 0 warnings; **not yet on hardware**, goes into the next image).

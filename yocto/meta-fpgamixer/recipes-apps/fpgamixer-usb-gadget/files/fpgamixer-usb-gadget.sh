@@ -25,7 +25,8 @@ C=configs/c.1
 
 VID=0x1d6b         # Linux Foundation
 PID=0x0104         # Multifunction Composite Gadget
-BCD_DEVICE=0x0100  # bump on any descriptor change (see above)
+BCD_DEVICE=0x0101  # bump on any descriptor change (see above)
+                   # 0x0101: one clock source (single_clock), 2026-09-26
 
 CHANNELS_MASK=0xff # 8 channels each way
 RATE=48000
@@ -110,6 +111,19 @@ start() {
     echo $RATE          > $F/p_srate
     echo $SSIZE         > $F/p_ssize
     echo "FPGAmixer"    > $F/function_name
+
+    # One clock source for both directions, so the Mac shows ONE 8x8 device.
+    # True here: both directions run on the PL's mclk (the bridge steers the
+    # Mac to it). Needs the carried f_uac2 patch (meta-fpgamixer
+    # recipes-kernel/linux-xlnx); on a kernel without it, fall back to the
+    # stock two clock sources (two devices on the Mac).
+    if [ -e $F/single_clock ]; then
+        echo 1 > $F/single_clock
+        echo "FPGAmixer clock" > $F/clksrc_out_name
+        echo "UAC2: one clock source (single_clock)"
+    else
+        echo "UAC2: kernel without single_clock, two clock sources (two devices on a Mac)"
+    fi
 
     mkdir -p $C/strings/0x409
     echo "UAC2" > $C/strings/0x409/configuration
