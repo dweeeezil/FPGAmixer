@@ -399,7 +399,25 @@ X1 and X4 are exactly why the sweep includes multi-lane sizes that today's 12 ×
 
 Not checked here: the bench (P9.A6).
 
-### 5.7 P9.A6: image built; bench pending
+### 5.7 P9.A6: bench: PASS (2026-09-26, image `p9a6-core-20260926`)
+
+| Check | Result (read from the terminal logs) |
+|---|---|
+| boot | flash, full power-off, boot; SSH straight away with the bench login |
+| `mixer_hw.py info` | `matrix 12 in x 12 out, Q2.16 (ID 0x4d585001, CONFIG 0x0c0c1210)`, BUSY/QUEUED clear, **COMMITS 1** (the OSC server's start-up push; the store's own reset commit isn't counted, as designed); linkstat present |
+| S3 by ear (user) | USB → JB-L / JC-L and USB → Mac: "everything works just as it did before" |
+| `mixer_hw.py link 10` | **48,018.1 / 48,018.0 frames/s**, underruns 0, starved 0, overruns 0, tid_errors 0, rx_running True |
+| S4 `set` (Pi → board over OSC) | **144 sent, 144 echoed as sent, 0 differ** (each set is a write + COMMIT through the new store) |
+| S4 `check-hw` before the power pull | **144/144** gain registers match |
+| power pulled (the SSH session dropped: "closed by remote host"), rebooted, nothing typed | |
+| S4 `check-hw` after | **144/144** |
+| bridge start-up log | only the 7 start lines were in the journal when read (cards opened, both pitches start at 1000324); **no status line yet, so the coarse fix's effect on direction B is not observed yet**. Open item |
+
+So the time-shared core with its RAM coefficient bank behaves on hardware exactly as the parallel matrix did, through the same register window, the same OSC server and the same saved state.
+
+**P9.A (the time-shared core) is done.** Totals: DSP48E2 144 → 1, CDC crossings 4193 → 1473, LUTs −19 %, FFs −35 %; 20 × 20 fits on 2 DSPs.
+
+#### Image notes
 
 **SDT** (`sdtgen` on `fpgamixer_p9a5.xsa` → `build/sdt`; the Phase 8 one kept as `build/sdt.p8` and `~/edf/sdt.p8` on the VM): `psu_init.tcl`, `zynqmp.dtsi`, `pcw.dtsi`, `system-top.dts` **identical** to Phase 8; `pl.dtsi` differs only in `firmware-name` (`fpgamixer_p9a5.bit.bin`). So the PS configuration and the device tree didn't change; only the bitstream did.
 
@@ -407,11 +425,6 @@ Not checked here: the bench (P9.A6).
 
 **Image built 2026-09-26:** `gen-machine-conf` (exit 0) + `bitbake edf-linux-disk-image xilinx-bootbin`: 14,821 tasks, all succeeded, 6 min 48 s, 23 warnings (the usual runqueue-deadlock / "image not supported" set). Checked: the deployed `download-genesys-zu3eg.bit` MD5 = Vivado's `fpgamixer_p9a5.bit` (`4df4e23e…`); the rootfs's `/usr/bin/fpgamixer-usb-bridge` has the "coarse fixes" status line, i.e. **the Phase 8 servo fix is in an image for the first time**. Copied to **`build/sd/p9a6-core-20260926.wic.xz`** (MD5 `f861eeaa…`, same on both ends).
 
-**Bench plan (Phase 8 S3 + S4 on the new core):**
-1. `mixer_hw.py info`: matrix window 12 in × 12 out, Q2.16 (the register map unchanged).
-2. Bridge start-up (`journalctl -u fpgamixer-usb-bridge -b`): the coarse fix instead of the old +650 ppm swing in direction B.
-3. S3: Mac → USB 1/2 → JB-L / JC-L by ear; `mixer_hw.py link 10`: 0 underruns/overruns/TID errors.
-4. S4: `crosspoint_restore_test.py set` (Pi) → `check-hw` (board) 144/144 → power pull → `check-hw` 144/144.
 
 ## 6. Proposed steps
 
@@ -463,3 +476,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26: P9.A3 PASS** (§5.4): `coef_bank_ram` + `coef_flat_reader` + scoped XDC; `tb_coef_bank_ram` at 5 × 7 / 3 lanes and 12 × 12 / 1 lane, 5 mutants caught. Corrected: a queued commit no longer picks up writes made after it (writes stall while queued). Next: P9.A4, the switch-over (window on the store interface, time-shared matrix, `mixer_core`, top).
 - **2026-09-26: P9.A4 PASS** (§5.5): time-shared `pcm_matrix` (1 lane at 12 × 12, D = 162), `mixer_core`, `axil_coef_window` on the store, `matrix_regs_axil` on `coef_bank_ram`, top switched; bit-exact at 7 sizes / lane counts, 4 matrix mutants caught; `xsim_regress.ps1` 13/13. Next: P9.A5, the Vivado build (DSP count, CDC, timing, methodology gate).
 - **2026-09-26: P9.A5 clean** (§5.6): WNS +2.300 / WHS +0.005 ns, methodology gate PASS, **1 DSP48E2** (was 144), 1 RAMB18, CDC 1473 crossings (was 4193) all with exceptions, the matrix's share 2 toggles (was 2592). Next: P9.A6, the image and the bench.
+- **2026-09-26: P9.A6 PASS** (§5.7), image `p9a6-core-20260926`: matrix window 12 × 12, link 48,018 frames/s clean, S3 by ear as before, S4 144/144 set → check-hw 144/144 → power pull → 144/144. **P9.A done.** Open: the bridge's coarse fix not yet observed at start-up. Next: the AVB decisions (§8).
