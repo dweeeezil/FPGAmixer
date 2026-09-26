@@ -556,8 +556,9 @@ def main():
     p.add_argument("--hw", action="store_true",
                    help="drive the PL register windows (mixer_hw.WINDOWS) through /dev/mem "
                         "(on the board, as root; Phase 5+ bitstream only)")
-    p.add_argument("--matrix-size", type=int, default=4,
-                   help="simulated matrix size N (NxN) without --hw (default: 4)")
+    p.add_argument("--matrix-size", type=int, default=12,
+                   help="simulated matrix size N (NxN) without --hw (default: 12, the "
+                        "Phase 8 hardware: 4 Pmod + 8 link channels)")
     args = p.parse_args()
     VERBOSE = args.verbose
 
