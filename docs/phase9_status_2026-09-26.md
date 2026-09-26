@@ -287,6 +287,39 @@ The unmodified TB on the old RTL is the mutation check: the new check fails on e
 
 **On the bench:** not audible with the mono cables (L only). With stereo cables it would show as a one-sample L/R offset before the fix. It goes into the next bitstream with the core (P9.A5); no separate build.
 
+### 5.4 P9.A3: the coefficient bank in RAM (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/coef_bank_ram.sv` (new, generic control plane) | shadow RAM (aclk) + **two banks per lane** in dual-clock RAM (port A aclk write, port B mclk read, `ram_style = "block"`); **store interface** on aclk (`st_valid/ready/we/idx/wdata`, `st_rvalid/rdata`) for the window; COMMIT = copy shadow → inactive bank, then a toggle; the swap happens **on the next frame strobe**; BUSY / QUEUED / COMMITS as before. Layout: rows round-robin over lanes (row *r* → lane *r* mod L, word (*r* div L)·ROW_LEN + *c*); for the matrix a row is an output. Reset: an init engine writes the reset bank into the shadow and runs a normal (uncounted) commit; **the toggles have no reset** (the bank in use *is* `ack_tgl`), so a reset of either side alone can't select an older bank |
+| `src/rtl/coef_flat_reader.sv` (new, generic) | the same read port over a flat vector, for non-PS builds and TBs |
+| `constraints/coef_bank_ram.xdc` (new) | scoped: 10 ns `-datapath_only` on the two toggles. The data crosses inside the BRAM. Enters `create_project.tcl` with the module in P9.A5 |
+| `src/sim/tb_coef_bank_ram.sv` (new) + `sim.mk` target `coefram` | below |
+
+Not changed yet: `axil_coef_window` and `matrix_regs_axil` still use the flat shadow + `coef_bank_handoff`. They move to the store interface **in P9.A4**, together with the matrix, `mixer_core` and `fpgamixer_top`, so every commit on the branch still builds.
+
+**`tb_coef_bank_ram` (XSim), aclk 100 MHz vs mclk 12.2919 MHz, strobe every 256 mclk: PASS.** Two geometries: 5 rows × 7 on **3 lanes** (the uneven case: the last pass has an idle lane) and the real 12 × 12 on 1 lane. Every coefficient is tagged {version, index}; a reader on the mclk port reads the whole bank in cycles 1 … DEPTH after every strobe, as the time-shared matrix will.
+
+| Check | 5 × 7 / 3 lanes | 12 × 12 / 1 lane |
+|---|---|---|
+| after reset: the reset bank in effect, COMMITS 0 | ✓ | ✓ |
+| readback of a written value and of a reset value | ✓ | ✓ |
+| layout: every coefficient at its word/lane, idle lane slots 0; `coef_flat_reader` decodes identically | ✓ | ✓ |
+| random bursts (1–3 full versions back to back, the next version written at once after each COMMIT): **no frame reads two banks**, versions never go back | 64 versions, **64 seen at the port**, COMMITS +64, QUEUED for 105,093 aclk cycles | 38, **38 seen**, +38, 34,365 |
+| aclk reset alone with a copy in flight, **at both bank parities**: only the reset bank (or the in-flight one) appears, then the reset bank stays; COMMITS 0 | ✓ | ✓ |
+
+**Mutation check** (scratch copies, source untouched): all five fail.
+
+| Mutant | Result |
+|---|---|
+| C1 swap without waiting for the strobe | FAIL: torn frames, 10 of 64 / 38 versions seen |
+| C2 a queued commit takes the shadow at launch (the old handoff's rule) | FAIL: torn frames, versions merged |
+| C3 lane index off by one in the copy | FAIL: LAYOUT at 3 lanes (invisible at 1 lane, as expected) |
+| C4 `req_tgl` reset by `aresetn` | FAIL: after the aclk reset, an older / partly copied bank appears |
+| C5 writes accepted during the copy | FAIL: 27 / 14 errors |
+
+**Found by this TB: a design choice corrected.** The first run tore 7 frames at 12 × 12. A commit issued while BUSY is queued, and the first version launched it with the shadow *as it was at launch*, i.e. including writes made after the COMMIT (the TB writes the next version straight away). That is `coef_bank_handoff`'s documented "latest wins" rule, which the proposal carried over. From software's side it can apply a half-written bank for a frame. **Now:** while a commit is queued, the store isn't ready for writes, so **a commit holds exactly the writes completed before it**. Cost: a write straight after a COMMIT that had to queue waits for the previous swap, at most about one frame + a copy (≈ 22 µs at 12 × 12); an AXI write is simply held that long. `mixer_hw` writes and commits without polling, so its bulk restore (one COMMIT) is unaffected, and OSC-rate single changes see at most that stall. (The Phase 8 matrix still has the old rule until P9.A4 replaces it; `axil_stat_window`'s reverse handoff has no writes, so the rule doesn't matter there.)
+
 ## 6. Proposed steps
 
 Each step is verified and committed separately; the status doc and `architecture_modules.md` are updated with it.
@@ -334,3 +367,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26 (Phase 9 session):** Phase 8 merged (`ea88a29`); branch `phase9/time-shared-core`. **P9.A1:** core design proposal written (§5.1): output-major DSP lanes sharing one sample stream, a tagged stream contract, coefficients in a dual-clock RAM with a swap at the frame, `mixer_core`. Corrected the §5 table's 64 × 64 figure. Side finding from the RTL: a probable one-sample L/R skew on the Pmod DAC outputs today (C7). Awaiting decisions C1–C7.
 - **2026-09-26:** decisions C1–C7: all as recommended. **P9.A2 PASS** (§5.2): stream contract in `architecture_modules.md` §2.1, `pcm_pack2stream` / `pcm_stream2pack`, `pcm_stream_monitor`, `tb_pcm_stream` bit-exact at N = 1, 12, 20, 4 mutants all caught. Next: C7 (Pmod L/R skew), then P9.A3.
 - **2026-09-26: C7 PASS** (§5.3): the L/R skew confirmed in `tb_phase3_dynamic` (L frame 5, R frame 6), fixed in `i2s_port` (the pair sampled once, at the L load); the TB now checks pairing and fails on the old RTL. Core deadline stated: packed output valid from cycle 253. Next: P9.A3 (`coef_bank_ram`).
+- **2026-09-26: P9.A3 PASS** (§5.4): `coef_bank_ram` + `coef_flat_reader` + scoped XDC; `tb_coef_bank_ram` at 5 × 7 / 3 lanes and 12 × 12 / 1 lane, 5 mutants caught. Corrected: a queued commit no longer picks up writes made after it (writes stall while queued). Next: P9.A4, the switch-over (window on the store interface, time-shared matrix, `mixer_core`, top).

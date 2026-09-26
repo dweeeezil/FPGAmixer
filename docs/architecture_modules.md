@@ -52,6 +52,8 @@ There are four kinds of block:
 | Simulation (generic) | `src/sim/pcm_stream_monitor.sv` | checks a stream against §2.1 and a block's stated timing |
 | Control plane (generic) | `src/rtl/axil_coef_window.sv` | AXI4-Lite slave, common header, shadow bank |
 | Control plane (generic) | `src/rtl/coef_bank_handoff.sv` + `constraints/coef_bank_handoff.xdc` | COMMIT + CDC; the XDC is scoped to the module, so every instance is constrained |
+| Control plane (generic) | `src/rtl/coef_bank_ram.sv` + `constraints/coef_bank_ram.xdc` | Phase 9 (P9.A3): coefficient bank in RAM: shadow + two banks per lane, COMMIT = copy then swap at the frame strobe, a read port for time-shared blocks (§3). Store interface towards the window. Only the two toggles cross clocks. Enters the build in P9.A5 |
+| Generic | `src/rtl/coef_flat_reader.sv` | the same read port over a flat vector (non-PS builds, TBs) |
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
 | Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
 | Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`) |
