@@ -453,6 +453,26 @@ Follow-ups: reset the servo's integrator and filter on every xrun (start-up over
 
 ---
 
-## 19. Log
+## 19. Bench test S4: power-cycle restore with audio on every crosspoint (the Phase 6 follow-up)
+
+**Tool:** `tools/crosspoint_restore_test.py` (standard library only; the same file runs on the Pi, the board and the Mac).
+
+- **Pattern:** all 144 crosspoints on, each at its own level. USB → USB: 64 distinct levels −6.0 … −37.5 dB (0.5 dB steps, scrambled). USB → Pmod: −50 … −57.75 dB except **USB 1 → JB_L and USB 2 → JC_L at −6 dB** (audible). Pmod → Pmod: −60 … −63.75 dB except **JB_L → JB_L and JC_L → JC_L at −12 dB**. Pmod → USB: −70 … −77.75 dB, low enough that an analog source barely touches the tone measurement.
+- **Audio:** the Mac plays one tone per USB input (211, 307, 401, 503, 601, 701, 809, 907 Hz: primes, no tone a harmonic of another; −20 dBFS) and records FPGAmixer inputs 1–8. A Goertzel filter (Hann window, 2 s) measures every tone in every recording, which recovers the **64 USB → USB gains**. Source levels are estimated from the data (per tone, median over the 8 recordings), so the result is independent of track faders. Pass: every residual ≤ 0.5 dB, and before/after identical within 0.5 dB.
+- **Registers:** `check-hw` on the board compares all **144** gain registers with the pattern's Q2.16 codes (exact).
+
+**Self-tests (2026-09-26):**
+- `analyze`: a synthetic 8-channel 24-bit WAV (random source levels, noise) gives residuals of 0.00 dB. With one crosspoint bumped by +2 dB it FAILs and names the cell (input 6 × 401 Hz = core in 6 → out 9).
+- `compare`: good vs good PASS; good vs bumped FAIL with the same cell named. Tone level changes between runs are reported separately, not as faults.
+- `set`: against the simulator, 144 sent, 144 echoed as sent, **144 stored exactly** in the state file (checked after the 250 ms save batch).
+- `check-hw`: on a fake 12 × 12 window, 144/144; a planted wrong register → 143/144, named (`6_9`).
+
+**Procedure:** set (Pi) → check-hw (board) → record "before" (Mac) → wait a few seconds → **pull the power**, no shutdown → boot, nothing typed on the board → check-hw → record "after" → analyze both + compare. Plus by ear: 211 Hz + the analog source on JB-L, 307 Hz + the analog source on JC-L.
+
+Results: below.
+
+---
+
+## 20. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).
