@@ -399,6 +399,43 @@ Results: `test_mixer_hw` + `test_mixer_state` on the Linux VM **28/28**; `osc_mi
 
 ---
 
-## 16. Log
+## 17. Bench test S2 (link only): PASS, 2026-09-26 (image `p8-link-20260926`)
+
+| Check | Result |
+|---|---|
+| cards | `aplay -l`: card 0 `FPGAmixerLink` ("FPGAmixer link PCM snd-soc-dummy-dai-0"), card 1 `UAC2Gadget` |
+| driver | `xlnx_formatter_pcm … sound card device will use DAI link: fpgamixer-link` (tx + rx), `pcm platform device registered`; `xlnx_snd_card … platform node not found` (expected, harmless); `fpgamixer-link-card fpgamixer-link: card FPGAmixerLink on /amba_pl/audio_formatter@80100000, mclk 12288000 Hz` |
+| windows | `mixer_hw.py info`: matrix **12 in × 12 out**, Q2.16; linkstat 8 + 8 ch, FIFO 64 words, snapshots advancing |
+| link under `speaker-test -D plughw:FPGAmixerLink -c 8` (S16) | `mixer_hw.py link 5`: **frames_rx 48,019/s** (= mclk/256 = 48,016 Hz within a 5 s `sleep`'s precision), **starved 0, underruns 0, overruns 0, tid_errors 0**, frames_tx equal (S2MM running) |
+| idle | frames_rx 0, starved 48,018/s, rx_running False: zeros into the matrix, as designed |
+
+`rx_fill` reads 0 at every strobe. That's expected here and not a problem: the formatter delivers one frame per frame period on the same clock, and the assembler moves it to the stage register at once, so the FIFO is empty when the strobe samples it. **The health signals are `starved` / `underruns`**; the fill watermarks only mean something with a faster-than-real-time source (tb phase B).
+
+## 18. P8.7: the bridge. alsaloop rejected, our own written
+
+`alsaloop` (alsa-utils 1.2.11), tried on the bench, failed in three independent ways:
+
+1. **8 periods per buffer, always** (`setparams_bufsize`: buffer = 8 × period). The formatter allows **2–6** (`PERIODS_MAX`), so hw params → `EINVAL`.
+2. **`-B` / `-E` don't exist as short options:** they're missing from the `getopt_long` string in 1.2.11 (the long forms `--buffer`/`--period` work). Even then, alsaloop multiplies them (`--buffer=768` → 6144-frame buffer).
+3. **`plughw:FPGAmixerLink` with S24_3LE → S24_LE conversion refuses hw params even with a valid geometry:** `aplay -D plughw:FPGAmixerLink -f S24_3LE -c 8 … --buffer-size=768 --period-size=192` → "Unable to install hw params" (4 × 6144 B, inside every limit). The same card works through `plughw` in S16 (no conversion) and through `hw:` in S24_LE. The kernel logs no error, so the refusal is in userspace. The card also advertises the newer `MSBITS_MAX` subformat, which the plug layer's conversion path in alsa-lib 1.2.11 likely mishandles. **Not proven**, and not needed: the bridge avoids plug.
+
+`hw:FPGAmixerLink --dump-hw-params` (the real limits): S8/S16_LE/S24_LE, PERIOD_BYTES 192–51200, PERIODS 2–6, BUFFER_BYTES 192–307200. CHANNELS/RATE show the dummy DAI's wide ranges (1–384, 5512–768000); the formatter itself only accepts 2–8 channels in its `hw_params`.
+
+**`fpgamixer-usb-bridge`** (C, ~350 lines, `yocto/meta-fpgamixer/recipes-apps/fpgamixer-usb-bridge/`):
+
+- two threads, one per direction; both cards opened with **`hw:` in their native formats** (gadget S24_3LE, link S24_LE), the 3 ↔ 4 byte repack done in the bridge (sign-extended);
+- link geometry **4 periods × 192 frames (4 ms)**, the gadget's nearest; playback prefilled to the setpoint (2 periods) and started explicitly;
+- **servo**: each direction's playback queue (`snd_pcm_delay`, smoothed) is held at 384 frames by a PI loop every 100 ms (Kp 0.5 ppm/frame, Ki 0.05 ppm/frame·s, integral clamped), writing the gadget's `Capture Pitch 1000000` (A, Mac→PL, sign −) or `Playback Pitch 1000000` (B, PL→Mac, sign +). Both start at **1000324** (the measured +324 ppm) and are clamped to ±1000 ppm;
+- an idle Mac: capture waits with a 1 s timeout; xruns are recovered and counted;
+- logs to the journal every 10 s: frames/s, queue error, pitch, xruns. A refused setup dumps the device's full hw-params space;
+- `fpgamixer-usb-bridge.service`: after the gadget, `Restart=always`, 5 s back-off, enabled. **It holds both cards while running; stop it before testing a card by hand.**
+
+Build: `bitbake fpgamixer-usb-bridge`, and a forced recompile shows **0 warnings** under `-Wall -Wextra`.
+
+**Image built 2026-09-26** (bridge added): 14,821 tasks, all succeeded, 22 warnings. The rootfs has `/usr/bin/fpgamixer-usb-bridge` and the enabled unit. Copied to `build/sd/p8-bridge-20260926.wic.xz` (MD5 `4a6e35e8…`), and the binary alone to `build/sd/fpgamixer-usb-bridge`, which runs on the `p8-link` image as-is for a first test without reflashing.
+
+---
+
+## 19. Log
 
 - **2026-09-25:** research + this proposal. Branch `phase8/ps-pl-audio-link`. Decisions in §9.1–9.2. Next: P8.1 (USB device mode, no PL change).

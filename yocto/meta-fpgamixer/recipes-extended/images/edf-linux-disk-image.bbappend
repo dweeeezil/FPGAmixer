@@ -3,6 +3,7 @@
 #
 #   fpgamixer-osc            the OSC server + parameter store, started at boot
 #   fpgamixer-usb-gadget     the board as a UAC2 soundcard on the Type-C port
+#   fpgamixer-usb-bridge     gadget <-> link audio, steering the Mac's clock
 #   kernel-module-fpgamixer-link-card  ALSA card for the PS<->PL audio link
 #                            (needs a Phase 8+ bitstream; bound by the DT)
 #   alsa-utils-*             ALSA userspace: the genesys-zu3eg image ships none
@@ -12,7 +13,7 @@
 #                            tools for the gadget and the PL link cards.
 #   fpgamixer-bench-network  bench addressing (end0 = 10.0.0.2/24 + DHCP),
 #                            only with FPGAMIXER_BENCH = 1 (conf/layer.conf)
-IMAGE_INSTALL:append = " fpgamixer-osc fpgamixer-usb-gadget \
+IMAGE_INSTALL:append = " fpgamixer-osc fpgamixer-usb-gadget fpgamixer-usb-bridge \
     kernel-module-fpgamixer-link-card \
     alsa-utils-alsaloop alsa-utils-aplay alsa-utils-amixer alsa-utils-speakertest \
     ${@'fpgamixer-bench-network' if d.getVar('FPGAMIXER_BENCH') == '1' else ''}"
