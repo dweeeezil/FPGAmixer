@@ -564,6 +564,7 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 | CDC crossings | 1473 | **1715, all with exceptions**: the new window's snapshot (240 bank bits: 256 minus 16 constant zeros) + 2 toggles |
 
 - **The PPS crossing** (checked on the routed checkpoint): the synchronizer's input is a LUT1 (the inverter) straight off the PS pin, which has no PL clock, so **no timed path ends at `pps_s1_reg/D`**. The false path has nothing to cut; it's a documented safeguard. Both synchronizer stages carry ASYNC_REG.
+- **Image built 2026-09-26:** `gen-machine-conf` (exit 0) + bitbake, 14,840 tasks, all succeeded, 23 warnings (the usual). Checked: deployed bitstream MD5 = Vivado `p93` (`c6e4262e…`); rootfs has `mixer_hw.py` with `MediaClockHW` and the **fixed `fpgamixer-ptp4l.service`** (`ExecStartPre … end0 up`); the DTB has `M_AXI_MCLKSTAT@80002000`. Copied to **`build/sd/p93-mclk-20260926.wic.xz`** (MD5 `33828acc…`).
 - **SDT** (`build/sdt`, the previous one kept as `build/sdt.p9a5`): **`psu_init.tcl` / `psu_init.c` / `zynqmp.dtsi` identical**, so exporting the counter changed no PS setting. The device tree gains `M_AXI_MCLKSTAT@80002000` (which `mixer_hw`'s presence guard needs) and its address-map entries.
 
 ## 7. Bench and peers
