@@ -864,6 +864,8 @@ Not checked here: SDT, image, bench (P9.5b onward).
 
 **SDT** (`sdtgen` on `fpgamixer_p95.xsa` → `build/sdt`; the P9.4b one kept as `build/sdt.p94b`): **`psu_init.tcl`, `psu_init.c`, `zynqmp.dtsi` identical** to P9.4b's, so the second formatter changed no PS setting. `pl.dtsi` adds `link2_formatter: audio_formatter@80110000` (the same clocks as #1, IRQs **GIC SPI 91/92**, #1 has 89/90) besides the new `firmware-name`; `pcw.dtsi` adds `M_AXI_LINK2STAT@80004000` (which `mixer_hw`'s presence guard needs); `system-top.dts` only the two address-map entries.
 
+**Image built 2026-09-27** (layer synced at `d6854b7`, clean): `gen-machine-conf` exit 0, bitbake 14,859 tasks, all succeeded, 6 min 42 s, 24 warnings: the usual 23 plus "`fpgamixer-link-card` do_compile tainted from a forced run" (the compile check above; harmless). Checked: deployed bitstream MD5 = Vivado `p95` (`2e22f414…`); the DTB has `audio_formatter@80110000` and `@80100000` each with `xlnx,tx`/`xlnx,rx`, nodes `fpgamixer-link` and `fpgamixer-link2` (`fpgamixer,card-name = "FPGAmixerLink2"`), `M_AXI_LINK2STAT@80004000`; the rootfs's `mixer_hw.py` has `linkstat2`, the module has the `card-name` code, and **`fpgamixer-mediaclock` is enabled at boot** (first image with it). **`build/sd/p95-link2-20260927.wic.xz`** (MD5 `a2977a67…`, same on both ends).
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
