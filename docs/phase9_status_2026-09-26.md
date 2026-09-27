@@ -471,7 +471,20 @@ Each step is verified and committed separately; the status doc and `architecture
 
 Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 PHC) swings ±10 µs with read delays alternating ~1 µs / ~19 µs, the Pi reading its I350 over PCIe. It only affects how closely the Pi's PHC follows its wall time, not gPTP on the link. To look at later.
 
-**Bench (P9.1), procedure:** Pi as grandmaster with its PHC set from its system clock, board following from boot; check both services, the port state (SLAVE, the Pi as GM), the offset summaries over ≥ 20 min against the spike's 3–4 ns RMS / ≤ 22 ns, and the board's date.
+**Bench (P9.1), 2026-09-26: PASS** (image `p91-gptp-20260926` + the fixed `fpgamixer-ptp4l.service` copied over by hand; the next image carries it).
+
+| Check | Result |
+|---|---|
+| cold boot with the fixed unit | **SLAVE with no manual step**: `link down → FAULTY` at 9.6 s (no carrier yet), `link up → LISTENING` 13.8 s, new foreign master (the Pi) 17.7 s, **SLAVE at 20.2 s**, path delay 459 ns |
+| **failover** (the Pi's ptp4l died when its SSH session closed) | board `SLAVE to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES`, "assuming the grand master role", no configuration change: BMCA as decision 2 intends |
+| **failback** (the Pi's ptp4l restarted) | 0.4 s later: `MASTER to UNCALIBRATED`, `UNCALIBRATED to SLAVE` |
+| board time | real UTC (journal dates Sep 27 UTC, where it used to start at 2025-05-29): phc2sys `-a -r` works |
+| **offset, Pi PHC not steered** (set once, below) | windows 3–7 after the failback: **2–3 ns RMS, 6–9 ns max**, frequency **−26.64 … −26.66 ppm ± 6 ppb**, path delay 459–460 ns. The spike: 3–4 ns RMS, 22 ns worst, ≈ −26 ppm, 458 ns |
+| offset, Pi PHC steered by the Pi's `phc2sys` (the first run) | **2–3.6 µs RMS, up to 7 µs**, frequency −4 … −6 ppm ± 4–6 ppm: see the next paragraph |
+
+**Why the first run was 1000× worse: the grandmaster's clock was being yanked, not the board.** The suggested Pi step `phc2sys -s CLOCK_REALTIME -c eth4 -w` steered the grandmaster's PHC continuously from the Pi's system clock. Its log shows the Pi reads the I350's PHC over PCIe in two modes, **~19.3 µs or ~1.0 µs**. With the delay steady at 19.3 µs the offset held at −5 … +60 ns; each flip between the modes jumped it by **±9–11 µs**, with the frequency correction swinging **+12 … +30 ppm** (phc2sys assumes the read sits in the middle of its window, and a 19 µs asymmetric PCIe read breaks that). The board followed faithfully. Its average correction, −5 ppm instead of −26, is the spike's −26 ppm plus the Pi's ≈ +21 ppm trim. **Bench recipe now:** set the Pi's PHC once and leave it free: `phc_ctl eth4 freq 0 set adj 37` (TAI), then `ptp4l -f …/gPTP.cfg -i eth4 -m`. If the Pi's PHC must follow its wall time later, `phc2sys -N` (several reads per update, the shortest kept) is the thing to try.
+
+**Open:** a ≥ 20 min soak from boot (only ~1.5 min of clean windows were read); the bridge start-up log (still not read).
 
 ## 7. Bench and peers
 
@@ -523,3 +536,4 @@ Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 P
 - **2026-09-26: P9.A5 clean** (§5.6): WNS +2.300 / WHS +0.005 ns, methodology gate PASS, **1 DSP48E2** (was 144), 1 RAMB18, CDC 1473 crossings (was 4193) all with exceptions, the matrix's share 2 toggles (was 2592). Next: P9.A6, the image and the bench.
 - **2026-09-26: P9.A6 PASS** (§5.7), image `p9a6-core-20260926`: matrix window 12 × 12, link 48,018 frames/s clean, S3 by ear as before, S4 144/144 set → check-hw 144/144 → power pull → 144/144. **P9.A done.** Open: the bridge's coarse fix not yet observed at start-up. Next: the AVB decisions (§8).
 - **2026-09-26:** AVB decisions recorded (§8.1): M2a; board follows the Pi now, grandmaster later; 8 + 8 class A 48 kHz; Pi first (I350-as-switch / Mac noted, to verify); AVB at core ch 12–19. **P9.1 built** (§6.1): `fpgamixer-gptp` (ptp4l + phc2sys at boot, role by BMCA, `priority1 250`), linuxptp moved from the VM's `local.conf` into the layer; image `p91-gptp-20260926`, bench pending. §9 item 1 partly checked (the TSU counter's clock isn't exported; a PS option exists, to read in UG1085).
+- **2026-09-26: P9.1 PASS** (§6.1): first boot FAULTY (macb refuses `SIOCSHWTSTAMP` while `end0` is down; the unit now brings it up first), then SLAVE from a cold boot; failover to grandmaster and failback both automatic; **2–3 ns RMS / ≤ 9 ns** once the Pi's PHC was no longer steered by its noisy `phc2sys` (which had caused 2–3 µs). Open: 20-min soak, bridge log.
