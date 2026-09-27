@@ -528,6 +528,44 @@ Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 P
 | — | **Decided by the user, 2026-09-26: T1–T4 all as recommended.** | |
 | T4 | **For P9.4, recorded now:** retune the MMCM to the integer setting (+11 ppm, VCO 1450 MHz) with fine phase shift enabled, as P9.4's first sub-step, and use P9.3's meter to confirm the ≈ 313 ppm change end to end before any steering. The loop itself: PL phase-stepping at a rate register, Linux running the PI loop on the 1 Hz captures (to decide in P9.4). | **Yes to the plan.** The retune changes `mclk` by 313 ppm, so the USB bridge's starting pitch (1000324) changes with it. |
 
+### 6.3 P9.3: the media-clock meter (built; bench pending)
+
+| File | What |
+|---|---|
+| `src/rtl/media_clock_meter.sv` (new, platform) | generic: a 1PPS in (async), a frame strobe; 2FF + edge detect; free-running 32-bit `mclk` count; on each PPS edge captures count (and the previous one), frame count, frame phase; counts edges and implausible intervals (outside nominal ± 1000 ppm) |
+| `src/rtl/media_clock_stat_regs.sv` (new, binding) | ID `0x4D43_5001`, CONFIG = 12,288,000; 7 words at 0x100 (PPS_COUNT, CYC_AT_PPS, CYC_AT_PREV, FRAMES_AT_PPS, PHASE_AT_PPS, IMPLAUSIBLE, CYC_NOW); `coef_bank_handoff` in reverse + `axil_stat_window`, as the link's |
+| `constraints/media_clock_meter.xdc` (new, scoped) | false path into the synchronizer's first stage |
+| `src/rtl/fpgamixer_top.sv` | under `INCLUDE_MCLK`: `u_mclk_meter` (PPS = `~tsu_timer_cnt[45]`, frame = `jb_rx_valid`) + `u_mclk_stat` |
+| `scripts/create_project.tcl` | **new `phase9` variant** (= phase8 + `INCLUDE_MCLK`; phase8 still builds what it did): BD port `tsu_timer_cnt` ← `emio_enet0_enet_tsu_timer_cnt`, SmartConnect M03 → `M_AXI_MCLKSTAT` at 0x8000_2000, the scoped XDC. `current_phase = phase9` |
+| `tools/mixer_hw.py` | `MediaClockHW` (+ `mclk_ppm`, `interval`, `ref_alive`), `WINDOWS["mclk"]`, CLI `mclk [seconds]` |
+| `tools/test_mixer_hw.py` | 4 tests: words, interval across a 2³² wrap, ppm, reference not seen, wrong ID refused |
+| `scripts/sim.mk` (`mclk`), `scripts/xsim_regress.ps1` | the new TB |
+
+**`tb_media_clock_meter` (XSim): PASS.** A TSU model (250 MHz, ns counter, PPS = the inverse of its MSB, a "second" scaled to 1 ms so NOMINAL = 12,288) and two meters on one PPS, `mclk` at +296 ppm and +2.5 ppm (the ps timescale's nearest values):
+
+| | Intervals | Mean (cycles) | Expected | Every interval |
+|---|---|---|---|---|
+| meter A | 39 | 12291.641 | 12291.656 | floor or ceil of expected |
+| meter B | 39 | 12288.026 | 12288.031 | floor or ceil of expected |
+
+Also checked: frame count × 256 + frame phase advances by exactly each interval (the captures agree); 0 implausible in steady running; **exactly +1** for a PHC step (+300 µs) and **+1** for a 2-second PPS dropout; the window reads back ID, CONFIG and all seven words. Mutants, all FAIL: the PPS taken as a level instead of an edge; `cyc_prev` not updated; no plausibility check; frame phase not reset on the strobe.
+
+**Software:** `test_mixer_hw` + `test_mixer_state` on the VM: **32/32**. Mutant: `interval()` without the modulo 2³² → the wrap test fails.
+
+**Regression:** `xsim_regress.ps1` **14/14**.
+
+**Build `p93` (Vivado 2026.1, `phase9`):**
+
+| | P9.A5 (`p9a5`) | **P9.3 (`p93`)** |
+|---|---|---|
+| WNS / WHS | +2.300 / +0.005 ns | **+2.762 / +0.010 ns**, 0 failing, methodology gate PASS, 0 critical warnings |
+| DSP / RAMB18 | 1 / 1 | 1 / 1 |
+| LUTs / FFs | 6865 / 12629 | 7057 / 13418 |
+| CDC crossings | 1473 | **1715, all with exceptions**: the new window's snapshot (240 bank bits: 256 minus 16 constant zeros) + 2 toggles |
+
+- **The PPS crossing** (checked on the routed checkpoint): the synchronizer's input is a LUT1 (the inverter) straight off the PS pin, which has no PL clock, so **no timed path ends at `pps_s1_reg/D`**. The false path has nothing to cut; it's a documented safeguard. Both synchronizer stages carry ASYNC_REG.
+- **SDT** (`build/sdt`, the previous one kept as `build/sdt.p9a5`): **`psu_init.tcl` / `psu_init.c` / `zynqmp.dtsi` identical**, so exporting the counter changed no PS setting. The device tree gains `M_AXI_MCLKSTAT@80002000` (which `mixer_hw`'s presence guard needs) and its address-map entries.
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
