@@ -622,6 +622,46 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 
 **Prediction for the bench:** the meter reads **≈ +2.4 ppm** (+11.03 nominal, −8.66 for the PL crystal vs the Pi), i.e. **312.97 ppm below P9.3's +315.34**, modulo the crystal's drift. The USB path should work as before, with the bridge's pitch settling ~313 ppm lower than before (≈ 1000030 instead of ≈ 1000345).
 
+### 6.5 P9.4b proposal: steering `mclk` onto gPTP (2026-09-27, awaiting decisions S1–S5)
+
+#### Facts (checked 2026-09-27)
+
+| Fact | Source | Consequence |
+|---|---|---|
+| Fine phase shift: 1/56 VCO per step (**12.3 ps** at 1450 MHz), **12 PSCLK cycles** per step, gradual (linear) at the outputs, no maximum (wraps) | UG572 (§6.4) | A continuous stream of steps is a frequency offset: **Δf/f = steps/s × 12.3 ps**. Stepping is **glitch-free**, as the codecs need. |
+| **PSCLK: 0.01–450 MHz** in the slowest grade (up to 550); **VCO 800–1600 MHz** in every grade | DS925, "MMCM Switching Characteristics" (read 2026-09-27) | Any of the PSCLK candidates below is legal. Max slew = PSCLK / 12 × 12.3 ps. |
+| **In override mode, `USE_DYN_PHASE_SHIFT` alone adds the PS ports but selects no output**: the generated MMCM had `CLKOUT0_USE_FINE_PS("FALSE")`. Forcing `MMCM_CLKOUT0_USE_FINE_PS` → `"TRUE"`. | throwaway project, generated `*_clk_wiz.v` | **A silent trap:** the ports would exist and steering would do nothing. The build script must force it and print it; the bench proves it by the meter moving. |
+| After P9.4a, `mclk` is **+0.85 ppm** vs the bench grandmaster (drifting by tenths of a ppm per minute after power-up). | §6.4 | On this bench the loop has to take out ≈ 1 ppm. A different grandmaster can need much more: 802.1AS allows a clock **±100 ppm** off nominal (*as I recall the standard; not re-read*), and our own crystal adds its part. |
+| The meter (P9.3) gives, every gPTP second: the cycle count (frequency, ±0.08 ppm) and the **frame phase at the second** (±1 `mclk` = 81 ns). | §6.3 | The loop can lock **phase**, not just frequency. |
+
+#### What P9.4b builds
+
+```
+  Linux: fpgamixer-mediaclock (1 Hz)             PL (pl_clk0 domain)                   MMCM
+  reads the meter (frame phase + interval) ──►  rate register ──► NCO ──PSEN/PSINCDEC──► CLKOUT0 phase
+  PI on the phase error at the gPTP second      (steps per second,   one step per ≥ 12     (fine PS)
+  writes the step rate                           signed)              PSCLK, waits PSDONE
+        ▲                                                                                    │ mclk
+        └───────────────── media_clock_meter (P9.3): frame phase at each 1PPS ◄─────────────┘
+```
+
+- **`media_clock_steer`** (new, platform): a signed step-rate register drives a phase accumulator (NCO) in the PSCLK domain. On each overflow it issues one PSEN with PSINCDEC = the sign, and waits for PSDONE before the next. Positive rate = the phase increments = `mclk` slower. Rate resolution (32-bit fraction at 100 MHz) ≈ 0.02 steps/s ≈ 3·10⁻⁷ ppm: negligible. It counts steps issued and PSDONEs seen (status), and saturates at the hardware maximum.
+- **The loop in Linux** (`fpgamixer-mediaclock`, a small Python service using `mixer_hw`): once per new PPS capture, phase error = frame phase at the second − target, frequency error from the interval, a PI with a bandwidth of about 0.02 Hz (a minute-scale time constant, well above the ±81 ns measurement noise), then a new rate. It uses the meter's `implausible` counter: a PHC step or a lost PPS **freezes the rate (holdover)** and re-acquires phase. Logs one line per 10 s (phase error, rate in ppm, state), like the bridge.
+- **The lock target (S4):** every gPTP second begins at the same point of the frame grid, so 48,000 frames per gPTP second exactly and a fixed frame phase at the second. That's the AVB media-clock relationship (sample *n* ↔ gPTP time *t₀ + n/48000*). It holds in either gPTP role, since the PPS is the board's own PHC.
+- **Nothing downstream changes:** USB follows `mclk` through the bridge, the Pmods are on `mclk`, the core never sees a foreign clock. The network *disciplines* the box's one clock.
+
+#### Decisions needed
+
+| # | Question | Recommendation |
+|---|---|---|
+| S1 | **PSCLK:** `pl_clk0` (100 MHz → **±102 ppm** max slew; PS builds only, where gPTP exists anyway; the rate register is written in that same domain, so no new crossing), `mclk` (**±12 ppm**, every build, but not enough for a ±100 ppm grandmaster), or a second MMCM output at a few hundred MHz (±300 ppm, one more clock domain)? | **`pl_clk0`.** Non-PS builds tie PSEN low (no gPTP there to lock to). |
+| S2 | **Where the rate register lives:** a new generic **RW register window** (`axil_reg_window`: the common header + plain RW words used in the AXI domain, no commit, since a single word needs no bank semantics), as the steering block's own window at **0x8000_3000** (bus/DSP reservations move up again)? Or add writable words to the meter's read-only window? | **New generic RW window, own slot.** It keeps "read-only status" and "control" as two window types, each reusable. |
+| S3 | **The loop in Linux (1 Hz PI), the PL only an NCO**? The alternative is the whole loop in the PL. | **Linux.** 1 Hz data, easy to tune and log, holdover and re-acquire in plain code; the PL part stays tiny. The loop can move to the PL later if a front door ever needs it without Linux. |
+| S4 | **Lock phase** (a fixed frame phase at every gPTP second), not just frequency? | **Yes, phase.** Costs nothing extra and is what AVB needs. The target frame phase is a configurable constant (default: the frame boundary). |
+| S5 | **Loss of reference** (PPS gone, PHC stepped, ptp4l restarting): hold the last rate (holdover), re-acquire when valid again; never step `mclk`'s phase abruptly (only slew, at most the S1 limit)? | **Yes.** A phase jump would be an audible glitch; a slew isn't. |
+
+**Steps once decided:** P9.4b1 RTL (steerer + RW window + MMCM fine PS forced and printed) with a TB (an MMCM phase-shift model: steps → phase → a frequency the meter sees); P9.4b2 build + image; P9.4b3 the service and the bench: lock from boot, phase error at the second vs time, rate converging to ≈ −0.85 ppm on this bench, audio unaffected, holdover through a Pi ptp4l restart.
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
