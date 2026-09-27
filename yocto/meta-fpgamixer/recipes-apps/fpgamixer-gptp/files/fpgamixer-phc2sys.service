@@ -1,0 +1,21 @@
+[Unit]
+Description=FPGAmixer: system clock from the gPTP-disciplined PHC (when following)
+# Design: docs/phase9_status_2026-09-26.md (P9.1)
+# -a follows ptp4l's port state: while the board is a gPTP follower,
+# CLOCK_REALTIME is steered to end0's PHC (the board has no RTC, so this is
+# also how it gets real time, if the grandmaster's PHC carries it); while the
+# board is grandmaster, -r (not -rr) leaves every clock alone.
+# -f is REQUIRED: gPTP.cfg's transportSpecific 0x1 also applies to ptp4l's
+# management socket, and without it phc2sys waits for ptp4l forever
+# (docs/gptp_spike_2026-09-24.md 2.4).
+Requires=fpgamixer-ptp4l.service
+After=fpgamixer-ptp4l.service
+Before=time-sync.target
+
+[Service]
+ExecStart=/usr/sbin/phc2sys -a -r -f /etc/fpgamixer/gptp.cfg
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

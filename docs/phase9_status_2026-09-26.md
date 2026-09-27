@@ -442,6 +442,28 @@ Each step is verified and committed separately; the status doc and `architecture
 | P9.7 | **AVB bridge**: AAF ALSA devices ↔ link #2, presentation-time aware | bench: audio Pi → board → Pmods, board → Pi; with the media clock locked, no drift over an hour |
 | P9.8 | Soak: multi-hop through an AVB switch (if available), long run, power cycle | bench |
 
+### 6.1 P9.1: gPTP as a boot service (Linux only)
+
+**Checked first (VM, 2026-09-26):** linuxptp **4.4** comes from meta-xilinx (`linuxptp_4.4.bb`; meta-oe's 4.1 is shadowed). Its package ships `ptp4l@.service` / `phc2sys@.service`, **disabled**, and they don't fit: `ptp4l@` reads `/etc/linuxptp/ptp4l.conf` (= `default.cfg`, not the gPTP profile) and `phc2sys@` has no `-f`, so it would wait for ptp4l forever (the spike's §2.4 trap). `summary_interval` is a `[global]` option (default 0 = every second). ptp4l, phc2sys, pmc and ethtool install to `/usr/sbin`. Until now linuxptp reached the image only through the VM's **untracked** `local.conf` (added for the spike).
+
+| File (`yocto/meta-fpgamixer/`) | What |
+|---|---|
+| `recipes-apps/fpgamixer-gptp/files/fpgamixer-gptp.cfg` (new) → `/etc/fpgamixer/gptp.cfg` | linuxptp 4.4's `gPTP.cfg` verbatim, plus two marked changes: **`priority1 250`** (worse than the Pi's 248, so the board follows while the Pi is there) and **`summary_interval 4`** (a follower summary every 16 s: offset rms/max over the window, frequency, path delay) |
+| `.../fpgamixer-ptp4l.service` (new) | `ptp4l -f /etc/fpgamixer/gptp.cfg -i end0`, after `end0` exists, `Restart=always` |
+| `.../fpgamixer-phc2sys.service` (new) | `phc2sys -a -r -f /etc/fpgamixer/gptp.cfg`: follows ptp4l's port state; as follower steers `CLOCK_REALTIME` to the PHC, as grandmaster touches nothing |
+| `.../fpgamixer-gptp_1.0.bb` (new) | installs the three, both units enabled, `RDEPENDS = linuxptp`, config as a conffile |
+| `recipes-extended/images/edf-linux-disk-image.bbappend` | + `fpgamixer-gptp linuxptp-configs ethtool` |
+| VM `build/conf/local.conf` | its `IMAGE_INSTALL:append = " linuxptp linuxptp-configs ethtool"` commented out ("moved into meta-fpgamixer"); backup `local.conf.pre-p9.1` |
+
+**Design choices:**
+- **The role is chosen by BMCA, not forced** (`slaveOnly` was the spike's method). Decision 2 wants the board as a follower now and as grandmaster eventually. With BMCA the same image does both: grandmaster is **one value** (`priority1` below 248), or simply no better clock on the link.
+- **This is cheap only because of how the media clock is planned:** P9.3/P9.4 lock `mclk` to the **board's own PHC**. As follower the PHC carries the grandmaster's time; as grandmaster it *is* the reference. So the media clock never needs to know the gPTP role.
+- **phc2sys is included now** because, as far as I know, the alsa-plugins AAF plugin expects the system clock synchronized to the PHC (**to verify in P9.6**, §9). It also gives the RTC-less board real time whenever the grandmaster's PHC carries it (on the Pi: `phc2sys` from its system clock to `eth4`, a bench step).
+
+**Build (2026-09-26):** `bitbake fpgamixer-gptp` then the image, 14,840 tasks, all succeeded, the usual 23 warnings. Checked in the rootfs: `/etc/fpgamixer/gptp.cfg` (`priority1 250`, `summary_interval 4`, `transportSpecific 0x1`); `fpgamixer-{ptp4l,phc2sys}.service` enabled (links in `multi-user.target.wants`); linuxptp's `ptp4l@` / `phc2sys@` installed but **not** enabled; bitstream unchanged (`p9a5`, `4df4e23e…`). Image **`build/sd/p91-gptp-20260926.wic.xz`** (MD5 `2a5b89f2…`, same on both ends).
+
+**Bench (P9.1), procedure:** Pi as grandmaster with its PHC set from its system clock, board following from boot; check both services, the port state (SLAVE, the Pi as GM), the offset summaries over ≥ 20 min against the spike's 3–4 ns RMS / ≤ 22 ns, and the board's date.
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
@@ -459,9 +481,23 @@ Each step is verified and committed separately; the status doc and `architecture
 | 5 | **Peers:** Pi only for v1? Is an AVB switch available for the soak, and which? Any AVB/Milan device available to test against? | Pi first; the rest when available. |
 | 6 | **Channel map:** AVB at core channels 12–19 (appended after USB, as the Phase 8 rule says)? | **Yes.** |
 
+### 8.1 Decisions (user, 2026-09-26, after P9.A)
+
+| # | Decision |
+|---|---|
+| 1 | **M2a:** `mclk` disciplined to gPTP by MMCM fine phase shift; ASRC (M3) stays the fallback. |
+| 2 | **The board follows the Pi** on the bench **for now**; the board should **eventually act as grandmaster** too. So the media-clock design must work in both roles (as GM, `mclk` free-runs and the board's gPTP time is the reference; as follower, `mclk` locks to the GM). |
+| 3 | **8 + 8 channels, class A, 48 kHz.** |
+| 4 | Decided earlier (P9.A, done). |
+| 5 | **Pi first.** The user suggests the **I350 could act as an AVB switch**, which would also make the **Mac** a possible peer. Not a v1 dependency; to verify when it comes up (P9.8 / Phase 10): the I350 is a 4-port NIC. A Linux bridge on the Pi with linuxptp across the ports could relay gPTP for a multi-hop test, but the I350 has no hardware CBS (§7), so it would be a software stand-in rather than a conformant AVB bridge. macOS AVB (to my knowledge, unverified) connects streams through AVDECC, which is Phase 10, and needs an AVB-capable Ethernet port. |
+| 6 | **AVB at core channels 12–19**, appended after USB; core 20 × 20 (2 DSP48E2). |
+
 ## 9. Open verification items (for the implementing session)
 
 - The TSU counter's clock domain in the PL, and how to sample `emio_enet0_enet_tsu_timer_cnt` coherently (a TSU-domain clock to the PL, or a capture handshake).
+  - **Partly checked (2026-09-26, `fpgamixer_p9a5.xsa` `.hwh` and the PS IP `zynq_ultra_ps_e_v3_5`):** `emio_enet0_enet_tsu_timer_cnt[93:0]` is a PS output with **no associated clock** in the BD. It counts in the GEM TSU clock domain: `GEM_TSU_REF_CTRL` = IOPLL / 6 = **250 MHz, internal** (`PSU__GEM__TSU__IO` unset, `PSU__GEM__TSU__ENABLE = 0`). That clock is **not exported** today.
+  - The PS IP can export it: `fmio_gem_tsu_clk_to_pl_bufg` (out) / `fmio_gem_tsu_clk_from_pl` (in), enabled by `PSU__TSU__BUFG_PORT_PAIR` (0 today). The IP's BD script requires the two to be **looped back when the TSU clock source is EMIO**. **To read in UG1085 ch. 34 before designing P9.3:** does `to_pl_bufg` carry the internal 250 MHz reference when the source isn't EMIO, and does enabling the pair make the TSU depend on the PL? It must not, since the PS runs before the bitstream is loaded. It would also change `psu_init`, the first PS change since Phase 4.
+  - If exporting is unsafe, the fallbacks need no PS change: **1PPS from one counter bit** (UG1085 Table 34-16; the spike doc §6) into a 2FF synchronizer, giving ±1 `mclk` (81 ns) per edge, i.e. 0.08 ppm per second for frequency, or a multi-sample read of the slow-changing high bits. Chosen in P9.3, with the numbers.
 - MMCM fine-phase-shift step size and rate limits for `clk_wiz_audio`; whether the Clocking Wizard exposes the PS port or the MMCM must be instantiated directly.
 - The AAF plugin's timing model (talker pacing, presentation time, `SO_TXTIME`/ETF) on 6.18 + alsa-plugins 1.2.7.1, and libavtp's API level.
 - The Pi's kernel: CBS/ETF qdiscs, and whether Debian ships the AAF plugin.
@@ -477,3 +513,4 @@ Each step is verified and committed separately; the status doc and `architecture
 - **2026-09-26: P9.A4 PASS** (§5.5): time-shared `pcm_matrix` (1 lane at 12 × 12, D = 162), `mixer_core`, `axil_coef_window` on the store, `matrix_regs_axil` on `coef_bank_ram`, top switched; bit-exact at 7 sizes / lane counts, 4 matrix mutants caught; `xsim_regress.ps1` 13/13. Next: P9.A5, the Vivado build (DSP count, CDC, timing, methodology gate).
 - **2026-09-26: P9.A5 clean** (§5.6): WNS +2.300 / WHS +0.005 ns, methodology gate PASS, **1 DSP48E2** (was 144), 1 RAMB18, CDC 1473 crossings (was 4193) all with exceptions, the matrix's share 2 toggles (was 2592). Next: P9.A6, the image and the bench.
 - **2026-09-26: P9.A6 PASS** (§5.7), image `p9a6-core-20260926`: matrix window 12 × 12, link 48,018 frames/s clean, S3 by ear as before, S4 144/144 set → check-hw 144/144 → power pull → 144/144. **P9.A done.** Open: the bridge's coarse fix not yet observed at start-up. Next: the AVB decisions (§8).
+- **2026-09-26:** AVB decisions recorded (§8.1): M2a; board follows the Pi now, grandmaster later; 8 + 8 class A 48 kHz; Pi first (I350-as-switch / Mac noted, to verify); AVB at core ch 12–19. **P9.1 built** (§6.1): `fpgamixer-gptp` (ptp4l + phc2sys at boot, role by BMCA, `priority1 250`), linuxptp moved from the VM's `local.conf` into the layer; image `p91-gptp-20260926`, bench pending. §9 item 1 partly checked (the TSU counter's clock isn't exported; a PS option exists, to read in UG1085).

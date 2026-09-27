@@ -13,8 +13,12 @@
 #                            tools for the gadget and the PL link cards.
 #   fpgamixer-bench-network  bench addressing (end0 = 10.0.0.2/24 + DHCP),
 #                            only with FPGAMIXER_BENCH = 1 (conf/layer.conf)
+#   fpgamixer-gptp           ptp4l + phc2sys on end0 at boot (Phase 9, P9.1);
+#                            pulls in linuxptp
+#   linuxptp-configs ethtool the gPTP spike's bench tools (example configs,
+#                            ethtool -T); were in the VM's local.conf until P9.1
 IMAGE_INSTALL:append = " fpgamixer-osc fpgamixer-usb-gadget fpgamixer-usb-bridge \
-    kernel-module-fpgamixer-link-card \
+    kernel-module-fpgamixer-link-card fpgamixer-gptp linuxptp-configs ethtool \
     alsa-utils-alsaloop alsa-utils-aplay alsa-utils-amixer alsa-utils-speakertest \
     ${@'fpgamixer-bench-network' if d.getVar('FPGAMIXER_BENCH') == '1' else ''}"
 

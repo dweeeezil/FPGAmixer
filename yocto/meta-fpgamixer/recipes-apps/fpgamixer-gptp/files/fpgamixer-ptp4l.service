@@ -1,0 +1,15 @@
+[Unit]
+Description=FPGAmixer gPTP (802.1AS) on end0, hardware timestamping
+# Design: docs/phase9_status_2026-09-26.md (P9.1) and docs/gptp_spike_2026-09-24.md
+# linuxptp's own ptp4l@.service reads the default profile, not gPTP; this unit
+# uses the FPGAmixer config (role, logging) instead.
+Wants=sys-subsystem-net-devices-end0.device
+After=sys-subsystem-net-devices-end0.device
+
+[Service]
+ExecStart=/usr/sbin/ptp4l -f /etc/fpgamixer/gptp.cfg -i end0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

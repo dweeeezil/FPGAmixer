@@ -62,6 +62,7 @@ There are four kinds of block:
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
+| Front door (AVB, Linux half) | `yocto/meta-fpgamixer/recipes-apps/fpgamixer-gptp/` | Phase 9 (P9.1): ptp4l + phc2sys on `end0` at boot, gPTP profile, role by BMCA (`priority1 250`: follows a better clock, grandmaster by one config value). Knows nothing about audio; the media clock (P9.3/4) reads the PHC's time in the PL |
 | Platform (image) | `yocto/meta-fpgamixer/` | board DT fixes; `fpgamixer-osc` (server as a boot service); `fpgamixer-bench-network` (bench-only addressing, switchable); synced with `tools/` by `scripts/sync_buildhost.sh` |
 
 ---
