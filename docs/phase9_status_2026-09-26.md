@@ -701,6 +701,37 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 
 **Image built 2026-09-27:** 14,859 tasks, all succeeded, 23 warnings (the usual). Deployed bitstream MD5 = `p94b` (`d83bddea…`); the rootfs has `mediaclock.py` + `fpgamixer-mediaclock.service` **without an enable link** (installed, disabled), `mixer_hw.py` with `MediaClockSteerHW`; the DTB has `M_AXI_MCLKCTRL@80003000`. **`build/sd/p94b-steer-20260927.wic.xz`** (MD5 `842f6651…`).
 
+### 6.6.1 P9.4b bench (2026-09-27, image `p94b-steer-20260927`): open loop PASS, closed loop LOCKED
+
+**Open loop** (`mixer_hw.py steer`, the meter over 20 s each):
+
+| Setting | Measured | Implied baseline (measured − setting) |
+|---|---|---|
+| none | **+0.960 ppm** | +0.960 |
+| `steer 2` (+2 ppm, faster) | **+2.913 ppm** | +0.913 |
+| `steer -2` | **−1.139 ppm** | +0.861 |
+
+Against the first baseline the steps look like +1.953 / −2.099 ppm ("fairly close, not exact"). But the implied baseline falls steadily, by ≈ 0.05 ppm per window: the crystals' drift (as in P9.3/P9.4a). **Against that drift both steps are 2.00 ppm**; the full swing is 4.052 ppm for 4 commanded. Sign: `+2` issued **decrements** (4,879,904 counted), `−2` **increments** (42,779,585), **0 dropped**. The window reports `step 12.315 ps, max +/-88.0 ppm`, MMCM locked. Sign and scale are confirmed on hardware, not only in the model.
+
+**Closed loop** (`systemctl start fpgamixer-mediaclock`, started with the −2 ppm left from the test):
+
+| Time | State | Freq error | Phase error | Correction |
+|---|---|---|---|---|
+| +5 s | ACQUIRE → **LOCKED** | | | |
+| +11 s | LOCKED | +0.651 ppm | −19 cycles (−1546 ns) | −0.297 ppm |
+| +21 s | | +0.081 | +10 (+814 ns) | −0.786 |
+| +41 s | | −0.081 | +2 (+163 ns) | −0.763 |
+| +51 s | | −0.081 | **0** | −0.740 |
+| +61 s … +162 s | | 0 ± 0.081 (the meter's ±1 cycle) | **−1 … −3 cycles (−81 … −244 ns)** | −0.720 → −0.522 |
+
+- **Locked in 5 s; phase inside ±3 cycles (±244 ns) after ≈ 40 s**, held there for the 2.5 minutes read.
+- The correction walked from −0.81 to −0.52 ppm: the loop **tracking the crystals' drift** (≈ −0.1 ppm/min, the same drift the open-loop baseline showed).
+- The standing **−2 cycles** is the type-2 loop's predicted ramp error: 0.1 ppm/min × TAU (5 s) × 4 TAU (20 s) ≈ 170 ns ≈ 2 cycles (§6.7). Exactly as designed; a longer TAU would grow it.
+- With the loop running: `link 10` 48,001.9 / 48,001.9 frames/s, 0 underruns / starved / overruns / TID errors.
+- **By ear with the loop locked: not yet confirmed** (asked).
+
+Pi side: ptp4l as grandmaster with its PHC set once (`phc_ctl eth4 freq 0 set adj 37`). Its log's "selected best master clock 00183e…" (the board) followed by "assuming the grand master role" is linuxptp naming the best *foreign* record before its state decision keeps the local clock as GM, not a role change.
+
 ### 6.7 P9.4b3: the loop (`fpgamixer-mediaclock`), written; on hardware after the open-loop test
 
 | File | What |
@@ -761,7 +792,8 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 - **2026-09-26: P9.A3 PASS** (§5.4): `coef_bank_ram` + `coef_flat_reader` + scoped XDC; `tb_coef_bank_ram` at 5 × 7 / 3 lanes and 12 × 12 / 1 lane, 5 mutants caught. Corrected: a queued commit no longer picks up writes made after it (writes stall while queued). Next: P9.A4, the switch-over (window on the store interface, time-shared matrix, `mixer_core`, top).
 - **2026-09-26: P9.A4 PASS** (§5.5): time-shared `pcm_matrix` (1 lane at 12 × 12, D = 162), `mixer_core`, `axil_coef_window` on the store, `matrix_regs_axil` on `coef_bank_ram`, top switched; bit-exact at 7 sizes / lane counts, 4 matrix mutants caught; `xsim_regress.ps1` 13/13. Next: P9.A5, the Vivado build (DSP count, CDC, timing, methodology gate).
 - **2026-09-26: P9.A5 clean** (§5.6): WNS +2.300 / WHS +0.005 ns, methodology gate PASS, **1 DSP48E2** (was 144), 1 RAMB18, CDC 1473 crossings (was 4193) all with exceptions, the matrix's share 2 toggles (was 2592). Next: P9.A6, the image and the bench.
-- **2026-09-26: P9.A6 PASS** (§5.7), image `p9a6-core-20260926`: matrix window 12 × 12, link 48,018 frames/s clean, S3 by ear as before, S4 144/144 set → check-hw 144/144 → power pull → 144/144. **P9.A done.** Open: the bridge's coarse fix not yet observed at start-up. Next: the AVB decisions (§8).
+- **2026-09-26: P9.A6 PASS** (§5.7), image `p9a6-core-20260926`: matrix window 12 × 12, link 48,018 frames/s clean, S3 by ear as before, S4 144/144 set → check-hw 144/144 → power pull → 144/144. **P9.A done.** Open: the bridge's coarse fix not yet observed at start-up.
+- **2026-09-27: P9.4b on hardware** (§6.6.1): open-loop `steer ±2` moved the meter by exactly 2.00 ppm against the crystals' drift (sign confirmed by the step counters); **the loop locked in 5 s and holds the frame phase at −1 … −3 cycles (≤ 244 ns)** while tracking ≈ −0.1 ppm/min drift; link clean with the loop running. `fpgamixer-mediaclock` switched to enabled-at-boot for the next image. Pending: by ear with the loop locked, a long soak, holdover through a ptp4l restart. Next: the AVB decisions (§8).
 - **2026-09-26:** AVB decisions recorded (§8.1): M2a; board follows the Pi now, grandmaster later; 8 + 8 class A 48 kHz; Pi first (I350-as-switch / Mac noted, to verify); AVB at core ch 12–19. **P9.1 built** (§6.1): `fpgamixer-gptp` (ptp4l + phc2sys at boot, role by BMCA, `priority1 250`), linuxptp moved from the VM's `local.conf` into the layer; image `p91-gptp-20260926`, bench pending. §9 item 1 partly checked (the TSU counter's clock isn't exported; a PS option exists, to read in UG1085).
 - **2026-09-26: P9.1 PASS** (§6.1): first boot FAULTY (macb refuses `SIOCSHWTSTAMP` while `end0` is down; the unit now brings it up first), then SLAVE from a cold boot; failover to grandmaster and failback both automatic; **2–3 ns RMS / ≤ 9 ns** once the Pi's PHC was no longer steered by its noisy `phc2sys` (which had caused 2–3 µs). Open: 20-min soak, bridge log.
 - **2026-09-27: P9.3 PASS** (§6.3): the meter on hardware reads **mclk = +315.34 ppm vs gPTP** (60 s mean, ±0.08 ppm per interval), so the PL crystal is −8.66 ppm vs the Pi; `psu_init` unchanged; gPTP SLAVE from boot from the image. Next: P9.4, starting with the MMCM retune (T4), predicted to read ≈ +2.4 ppm.

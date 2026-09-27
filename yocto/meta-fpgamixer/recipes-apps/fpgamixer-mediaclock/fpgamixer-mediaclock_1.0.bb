@@ -20,10 +20,11 @@ S = "${WORKDIR}"
 inherit systemd
 
 SYSTEMD_SERVICE:${PN} = "fpgamixer-mediaclock.service"
-# Installed but NOT enabled yet: the bench first steers by hand
-# (mixer_hw.py steer) to prove sign and scale on hardware, then starts the
-# loop with systemctl. Switched to "enable" once the loop has passed the bench.
-SYSTEMD_AUTO_ENABLE:${PN} = "disable"
+# Enabled since the bench of 2026-09-27 (docs/phase9_status_2026-09-26.md
+# 6.6.1): open-loop steps confirmed sign and scale on hardware, and the loop
+# locked in 5 s and held the frame phase within +/-3 cycles (+/-244 ns). The
+# first image shipped it disabled so that the open-loop test came first.
+SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 RDEPENDS:${PN} = "fpgamixer-osc python3-core"
 
