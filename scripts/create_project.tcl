@@ -204,6 +204,28 @@ set_property -dict [list \
     CONFIG.USE_LOCKED                  {true} \
 ] [get_ips clk_wiz_audio]
 
+# Phase 9 (P9.4a, docs/phase9_status_2026-09-26.md): the dividers are FORCED.
+# Left to itself the wizard picks 25 x 40.625 / 82.625 (VCO 1015.6 MHz) =
+# 12.29198 MHz, +324 ppm: too far off for the media clock's phase-step
+# steering (18.4 M steps/s). No single-MMCM setting reaches 12.288 MHz from
+# 25 MHz; the closest all-integer one is 25 x 58 / 118 (VCO 1450 MHz) =
+# 12.28814 MHz, +11.03 ppm, with a 12.3 ps fine-phase step (VCO/56).
+# Integer dividers keep fine phase shift free of any fractional-divide
+# restriction. The wizard only takes forced values in override mode; its
+# own jitter figure then isn't recomputed, so the real jitter is read from
+# Vivado's clock analysis after implementation (report_clocks / timing).
+# (Requesting 12.288136 MHz instead gets the same ratio as 43.5 / 88.5, VCO
+# 1087.5 MHz, fractional -- not used.)
+set_property -dict [list \
+    CONFIG.OVERRIDE_MMCM               {true} \
+    CONFIG.MMCM_DIVCLK_DIVIDE          {1} \
+    CONFIG.MMCM_CLKFBOUT_MULT_F        {58.000} \
+    CONFIG.MMCM_CLKOUT0_DIVIDE_F       {118.000} \
+] [get_ips clk_wiz_audio]
+puts "INFO: clk_wiz_audio forced: D=[get_property CONFIG.MMCM_DIVCLK_DIVIDE [get_ips clk_wiz_audio]]\
+ M=[get_property CONFIG.MMCM_CLKFBOUT_MULT_F [get_ips clk_wiz_audio]]\
+ O=[get_property CONFIG.MMCM_CLKOUT0_DIVIDE_F [get_ips clk_wiz_audio]]"
+
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
 
 # ------ PS block design (phase4+) --------------------------------------------

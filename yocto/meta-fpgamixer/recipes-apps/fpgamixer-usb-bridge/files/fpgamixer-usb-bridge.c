@@ -23,7 +23,7 @@
  *
  * Servo: each direction's playback queue (snd_pcm_delay) is held at
  * TARGET frames by a PI loop updated every UPDATE_MS; the output is the pitch
- * in ppm of 1e6, starting from the board's known mclk offset (+324 ppm).
+ * in ppm of 1e6, starting from the board's nominal mclk offset (PITCH_START).
  * Signs: in A a growing queue means the Mac sends too fast, so its pitch goes
  * down; in B a growing queue means we send too slowly, so our pitch goes up.
  *
@@ -54,7 +54,9 @@
 #define TARGET        (PERIOD * 2)   /* playback queue setpoint, frames */
 #define UPDATE_MS     100
 #define PITCH_NOMINAL 1000000
-#define PITCH_START   1000324    /* measured mclk: 12.2919 MHz = +324 ppm */
+#define PITCH_START   1000011    /* mclk nominal: 25 MHz x 58/118 = +11 ppm
+                                    (Phase 9 P9.4a; was 1000324 for the
+                                    +324 ppm MMCM setting before it) */
 #define PITCH_SPAN    1000       /* clamp: +/- 1000 ppm around nominal */
 #define KP            0.5        /* ppm per frame of queue error */
 #define KI            0.05       /* ppm per frame-second */

@@ -12,8 +12,11 @@
 // the core needs no audio CDC. Front doors with a foreign clock (USB, network)
 // bridge into mclk themselves.
 //
-// The MMCM is a fractional solution: 25 MHz x 40.625 / 82.625 = 12.2919 MHz,
-// +324 ppm (Roadmap 4). The board XDC names the MMCM input net through this
+// The MMCM runs 25 MHz x 58 / 118 (VCO 1450 MHz) = 12.28814 MHz, +11.03 ppm
+// nominal, forced in scripts/create_project.tcl (Phase 9, P9.4a). Until then
+// it was 25 x 40.625 / 82.625 = 12.2919 MHz, +324 ppm (Roadmap 4); measured
+// against gPTP that read +315.3 ppm, the PL crystal being -8.7 ppm vs the
+// bench grandmaster. The board XDC names the MMCM input net through this
 // module's u_mmcm instance (CLOCK_DEDICATED_ROUTE on the HDIO sysclk pin).
 // -----------------------------------------------------------------------------
 module audio_clocking (
