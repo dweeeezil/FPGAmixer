@@ -43,6 +43,9 @@ There are four kinds of block:
 | Platform | `src/rtl/audio_clocking.sv` | MMCM → `mclk`, `rst_n`, shared `sclk`/`lrck` |
 | Platform | `src/rtl/media_clock_meter.sv` + `constraints/media_clock_meter.xdc` | Phase 9 (P9.3): measures `mclk` against a 1PPS (in the top: the inverse of the PS's `tsu_timer_cnt[45]`, the gPTP second of the board's own PHC). Captures cycle count, frame count and frame phase per edge; software computes ppm and phase. Its only crossing is the 1-bit PPS into a 2FF synchronizer (the XDC marks it false). P9.4 adds the steering |
 | Control plane (binding) | `src/rtl/media_clock_stat_regs.sv` | the meter's read-only window (ID `0x4D43_5001`, CONFIG = nominal cycles per second), same pattern as `pcm_link_stat_regs` |
+| Platform | `src/rtl/media_clock_steer.sv` + `constraints/media_clock_steer.xdc` | Phase 9 (P9.4b): a signed RATE → the MMCM's dynamic fine phase shift (12.3 ps per step, at most one per 14 PSCLK cycles = ±88 ppm at 100 MHz). Runs on `pl_clk0` (= PSCLK, decision S1); only LOCKED crosses (2FF). Positive RATE = `mclk` slower. The loop that sets RATE is in Linux (S3) |
+| Control plane (generic) | `src/rtl/axil_reg_window.sv` | the third window type: RW + RO words for a block on the AXI clock (see §4.1) |
+| Control plane (binding) | `src/rtl/media_clock_ctrl_regs.sv` | the steerer's window (ID `0x4D53_5001`, CONFIG = PSCLK Hz; RATE; steps, dropped, flags, VCO_HZ, PS_DIV) |
 | Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
 | Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding. Samples its output pair once per DAC frame, at the L load (Phase 9 fix of a one-sample L/R skew) |
@@ -61,7 +64,7 @@ There are four kinds of block:
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
 | Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
 | Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`) |
-| Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW`, `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `WINDOWS` (address map) |
+| Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW`, `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `MediaClockSteerHW` (ppm ↔ RATE, `mixer_hw.py steer`), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
 | Front door (AVB, Linux half) | `yocto/meta-fpgamixer/recipes-apps/fpgamixer-gptp/` | Phase 9 (P9.1): ptp4l + phc2sys on `end0` at boot, gPTP profile, role by BMCA (`priority1 250`: follows a better clock, grandmaster by one config value). Knows nothing about audio; the media clock (P9.3/4) reads the PHC's time in the PL |
@@ -142,6 +145,7 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 | 0x00C | COMMITS | commits applied |
 | 0x100… | coefficients | block-specific |
 
+- **Three window types, one header** (since Phase 9): `axil_coef_window` (a coefficient bank with COMMIT, delivered to the audio clock), `axil_stat_window` (read-only snapshots from another clock), and **`axil_reg_window`** (plain read/write words plus read-only words for a block that runs **on the AXI clock itself**: no commit, no crossing; 0x00C counts accepted writes). Pick by where the block's logic runs, not by convenience: a block on `mclk` never gets an `axil_reg_window`.
 - **Status windows** (since Phase 8) use the same header with the data flowing the other way: `axil_stat_window` shows read-only words that a `coef_bank_handoff` (src = the block's clock, dst = the AXI clock) delivers as one consistent snapshot per frame. CTRL reads 0 and 0x00C is a snapshot sequence number. There is no CLEAR: counters are free-running and software takes differences.
 - Writes go to a shadow bank; COMMIT hands the whole bank to `mclk`. Since Phase 9 the shadow and two active banks are in RAM (`coef_bank_ram`): COMMIT copies the shadow into the idle bank and the block's side swaps at the next frame strobe (a toggle handshake), which satisfies §3. **A COMMIT contains exactly the writes completed before it:** while one is queued (issued during BUSY), further accesses wait until it launches, at most about a frame plus a copy. (Phase 5–8's `coef_bank_handoff` took the shadow as it was when a queued commit launched; see `phase9_status_2026-09-26.md` §5.4.)
 - A block's register binding is small: it instantiates `axil_coef_window` (AXI slave, header, WSTRB by read-modify-write, requests to a store) + `coef_bank_ram` and supplies an ID, a CONFIG word and the bank geometry (see `matrix_regs_axil.sv`). `coef_bank_handoff` remains the primitive for the reverse direction (status windows).
@@ -153,7 +157,8 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 | 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`), 12 × 12 since Phase 8 | Phase 5 |
 | 0x8000_1000 | PS↔PL link status (`u_link_stat`, read-only, ID `0x4C4B_5001`) | Phase 8 |
 | 0x8000_2000 | media-clock meter (`u_mclk_stat`, read-only, ID `0x4D43_5001`): `mclk` vs the gPTP 1PPS; `phase9` builds | Phase 9 (P9.3) |
-| 0x8000_3000… | reserved: bus matrix, DSP blocks (moved up one slot in P9.3) | — |
+| 0x8000_3000 | media-clock steering (`u_mclk_ctrl`, read/write, ID `0x4D53_5001`): the rate for the MMCM's fine phase shift; `phase9` builds | Phase 9 (P9.4b) |
+| 0x8000_4000… | reserved: bus matrix, DSP blocks (moved up again in P9.4b) | — |
 | 0x8010_0000 (64K) | AMD Audio Formatter registers: **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
 
 Driver-owned devices go at 0x801x_xxxx, so the 0x8000_x000 range stays for windows with the ID/CONFIG header.
@@ -198,7 +203,7 @@ Listed honestly, so they're fixed deliberately rather than worked around. None o
 
 | Work | Seam(s) used | New blocks |
 |---|---|---|
-| Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at the next free window (0x8000_3000 since P9.3); a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
+| Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at the next free window (0x8000_4000 since P9.4b); a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
 | Phase 6 persistence | control plane only | server-side; already restores and pushes the bank at startup |
 | Phase 7 DSP | PCM contract + coefficient contract + a window per DSP block | one core block per DSP type |
 | Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux. **Proposal (2026-09-25, awaiting decisions):** `phase8_status_2026-09-25.md`: Audio Formatter → ALSA card on `mclk` time, `pcm_link` PL front door, new generic RO `axil_stat_window` |

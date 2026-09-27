@@ -258,5 +258,47 @@ class MediaClock(unittest.TestCase):
             mixer_hw.MediaClockHW(0, dev=self.path)
 
 
+class MediaClockSteer(unittest.TestCase):
+    """The Phase 9 P9.4b steering window, against a fake 4 KB file."""
+
+    def setUp(self):
+        self.path = make_window_file(ident=0x4D535001, config=100_000_000)
+        with open(self.path, "r+b") as f:
+            f.seek(mixer_hw.REG_COEF0 + 0x14)
+            f.write(struct.pack("<II", 1_450_000_000, 56))            # VCO_HZ, PS_DIV
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_geometry_and_max(self):
+        st = mixer_hw.MediaClockSteerHW(0, dev=self.path)
+        self.assertAlmostEqual(st.step_s * 1e12, 12.3153, places=3)
+        # one step per 14 PSCLK cycles at 100 MHz: 7.14 M steps/s x 12.315 ps
+        self.assertAlmostEqual(st.max_ppm, 87.97, places=1)
+
+    def test_sign_scale_roundtrip(self):
+        st = mixer_hw.MediaClockSteerHW(0, dev=self.path)
+        # +50 ppm faster = 174,37x steps-per-cycle units of DECREMENTS (negative RATE),
+        # the same magnitude tb_media_clock_steer uses for 50 ppm
+        reg = st.rate_for_ppm(50.0)
+        signed = reg - (1 << 32) if reg & 0x8000_0000 else reg
+        self.assertTrue(-174_380 < signed < -174_370)
+        self.assertLess(st.rate_for_ppm(-1.0) & 0x8000_0000, 1)       # slower: positive RATE
+        for ppm in (0.0, 0.852, -3.25, 42.0):
+            self.assertAlmostEqual(st.ppm_for_rate(st.rate_for_ppm(ppm)), ppm, places=5)
+
+    def test_clamp_and_register(self):
+        st = mixer_hw.MediaClockSteerHW(0, dev=self.path)
+        self.assertAlmostEqual(st.set_ppm(500.0), st.max_ppm, places=3)
+        self.assertEqual(reg(self.path, st.REG_RATE), st.rate_for_ppm(st.max_ppm))
+        self.assertAlmostEqual(st.set_ppm(-0.85), -0.85, places=5)
+
+    def test_wrong_id_refused(self):
+        os.unlink(self.path)
+        self.path = make_window_file(ident=0x4D435001, config=12_288_000)   # the meter
+        with self.assertRaises(RuntimeError):
+            mixer_hw.MediaClockSteerHW(0, dev=self.path)
+
+
 if __name__ == "__main__":
     unittest.main()

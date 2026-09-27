@@ -70,12 +70,22 @@ module fpgamixer_top (
 
     // ----- Clock domain -----
     logic mclk, rst_n, sclk, lrck, mmcm_locked;
+    // MMCM fine phase shift: driven by media_clock_steer in INCLUDE_MCLK
+    // builds (PSCLK = pl_clk0, decision S1), tied off otherwise.
+    logic ps_clk, ps_en, ps_incdec, ps_done;
 
     audio_clocking u_clk (
         .sysclk (sysclk),
         .mclk (mclk), .rst_n (rst_n), .sclk (sclk), .lrck (lrck),
-        .mmcm_locked (mmcm_locked)
+        .mmcm_locked (mmcm_locked),
+        .psclk (ps_clk), .psen (ps_en), .psincdec (ps_incdec), .psdone (ps_done)
     );
+
+`ifndef INCLUDE_MCLK
+    assign ps_clk    = 1'b0;
+    assign ps_en     = 1'b0;
+    assign ps_incdec = 1'b0;
+`endif
 
     // ----- Front doors -----
     logic [2*SW-1:0] jb_rx, jb_tx, jc_rx, jc_tx;
@@ -177,6 +187,14 @@ module fpgamixer_top (
     // Media-clock meter (Phase 9, P9.3): the GEM TSU counter from the PS and
     // the meter's status window (0x8000_2000)
     logic [93:0] tsu_timer_cnt;
+    // ... and the steering window (0x8000_3000, P9.4b)
+    logic [31:0] ms_awaddr, ms_araddr, ms_wdata, ms_rdata;
+    logic [2:0]  ms_awprot, ms_arprot;
+    logic [3:0]  ms_wstrb;
+    logic [1:0]  ms_bresp, ms_rresp;
+    logic        ms_awvalid, ms_awready, ms_wvalid, ms_wready;
+    logic        ms_bvalid, ms_bready, ms_arvalid, ms_arready;
+    logic        ms_rvalid, ms_rready;
     logic [31:0] mc_awaddr, mc_araddr, mc_wdata, mc_rdata;
     logic [2:0]  mc_awprot, mc_arprot;
     logic [3:0]  mc_wstrb;
@@ -189,6 +207,25 @@ module fpgamixer_top (
     ps_sys_wrapper u_ps (
 `ifdef INCLUDE_MCLK
         .tsu_timer_cnt              (tsu_timer_cnt),
+        .M_AXI_MCLKCTRL_awaddr      (ms_awaddr),
+        .M_AXI_MCLKCTRL_awprot      (ms_awprot),
+        .M_AXI_MCLKCTRL_awvalid     (ms_awvalid),
+        .M_AXI_MCLKCTRL_awready     (ms_awready),
+        .M_AXI_MCLKCTRL_wdata       (ms_wdata),
+        .M_AXI_MCLKCTRL_wstrb       (ms_wstrb),
+        .M_AXI_MCLKCTRL_wvalid      (ms_wvalid),
+        .M_AXI_MCLKCTRL_wready      (ms_wready),
+        .M_AXI_MCLKCTRL_bresp       (ms_bresp),
+        .M_AXI_MCLKCTRL_bvalid      (ms_bvalid),
+        .M_AXI_MCLKCTRL_bready      (ms_bready),
+        .M_AXI_MCLKCTRL_araddr      (ms_araddr),
+        .M_AXI_MCLKCTRL_arprot      (ms_arprot),
+        .M_AXI_MCLKCTRL_arvalid     (ms_arvalid),
+        .M_AXI_MCLKCTRL_arready     (ms_arready),
+        .M_AXI_MCLKCTRL_rdata       (ms_rdata),
+        .M_AXI_MCLKCTRL_rresp       (ms_rresp),
+        .M_AXI_MCLKCTRL_rvalid      (ms_rvalid),
+        .M_AXI_MCLKCTRL_rready      (ms_rready),
         .M_AXI_MCLKSTAT_awaddr      (mc_awaddr),
         .M_AXI_MCLKSTAT_awprot      (mc_awprot),
         .M_AXI_MCLKSTAT_awvalid     (mc_awvalid),
@@ -368,6 +405,43 @@ module fpgamixer_top (
         .pps_count (mc_pps_count), .cyc_last (mc_cyc_last), .cyc_prev (mc_cyc_prev),
         .frames_last (mc_frames_last), .phase_last (mc_phase_last),
         .implausible (mc_implausible), .cyc_now (mc_cyc_now)
+    );
+
+    // ----- Platform: media-clock steering (Phase 9, P9.4b) -----
+    // A rate from Linux (the loop, decision S3) -> MMCM fine phase steps on
+    // pl_clk0 (PSCLK, decision S1). The window and the steerer share that
+    // clock, so there is no crossing but LOCKED (synchronized inside).
+    logic [31:0] ms_rate, ms_steps_inc, ms_steps_dec, ms_dropped;
+    logic        ms_busy, ms_locked;
+
+    assign ps_clk = ctrl_aclk;
+
+    media_clock_steer u_mclk_steer (
+        .psclk (ctrl_aclk), .rst_n (ctrl_aresetn),
+        .rate (ms_rate), .mmcm_locked (mmcm_locked),
+        .psen (ps_en), .psincdec (ps_incdec), .psdone (ps_done),
+        .steps_inc (ms_steps_inc), .steps_dec (ms_steps_dec),
+        .dropped (ms_dropped), .busy (ms_busy), .locked (ms_locked)
+    );
+
+    media_clock_ctrl_regs #(
+        .PSCLK_HZ (100_000_000), .VCO_HZ (1_450_000_000), .PS_DIV (56),
+        .ADDR_WIDTH (12)
+    ) u_mclk_ctrl (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (ms_awaddr[11:0]), .s_axi_awvalid (ms_awvalid),
+        .s_axi_awready (ms_awready),
+        .s_axi_wdata   (ms_wdata),  .s_axi_wstrb  (ms_wstrb),
+        .s_axi_wvalid  (ms_wvalid), .s_axi_wready (ms_wready),
+        .s_axi_bresp   (ms_bresp),  .s_axi_bvalid (ms_bvalid),
+        .s_axi_bready  (ms_bready),
+        .s_axi_araddr  (ms_araddr[11:0]), .s_axi_arvalid (ms_arvalid),
+        .s_axi_arready (ms_arready),
+        .s_axi_rdata   (ms_rdata),  .s_axi_rresp  (ms_rresp),
+        .s_axi_rvalid  (ms_rvalid), .s_axi_rready (ms_rready),
+        .rate (ms_rate),
+        .steps_inc (ms_steps_inc), .steps_dec (ms_steps_dec),
+        .dropped (ms_dropped), .busy (ms_busy), .locked (ms_locked)
     );
 `endif
 `else

@@ -25,14 +25,26 @@ module audio_clocking (
     output logic rst_n,        // active-low, synchronous to mclk, released after lock
     output logic sclk,         // mclk / 4   (bit clock for every I2S port)
     output logic lrck,         // mclk / 256 (frame clock for every I2S port)
-    output logic mmcm_locked
+    output logic mmcm_locked,
+
+    // ----- MMCM dynamic fine phase shift (Phase 9, P9.4b) -----
+    // Drives mclk's phase: media_clock_steer turns a rate into steps here.
+    // Builds without the steerer tie psen low (psclk may then be constant).
+    input  logic psclk,
+    input  logic psen,
+    input  logic psincdec,
+    output logic psdone
 );
 
     clk_wiz_audio u_mmcm (
         .clk_in1  (sysclk),
         .reset    (1'b0),
         .clk_out1 (mclk),
-        .locked   (mmcm_locked)
+        .locked   (mmcm_locked),
+        .psclk    (psclk),
+        .psen     (psen),
+        .psincdec (psincdec),
+        .psdone   (psdone)
     );
 
     reset_sync u_rst_sync (

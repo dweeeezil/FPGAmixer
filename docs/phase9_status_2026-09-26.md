@@ -654,13 +654,48 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 
 | # | Question | Recommendation |
 |---|---|---|
-| S1 | **PSCLK:** `pl_clk0` (100 MHz → **±102 ppm** max slew; PS builds only, where gPTP exists anyway; the rate register is written in that same domain, so no new crossing), `mclk` (**±12 ppm**, every build, but not enough for a ±100 ppm grandmaster), or a second MMCM output at a few hundred MHz (±300 ppm, one more clock domain)? | **`pl_clk0`.** Non-PS builds tie PSEN low (no gPTP there to lock to). |
+| S1 | **PSCLK:** `pl_clk0` (100 MHz → ±102 ppm max slew, **corrected in P9.4b1 to ±88 ppm**: a step takes 14 PSCLK cycles, not 12, see §6.6; PS builds only, where gPTP exists anyway; the rate register is written in that same domain, so no new crossing), `mclk` (**±12 ppm**, every build, but not enough for a ±100 ppm grandmaster), or a second MMCM output at a few hundred MHz (±300 ppm, one more clock domain)? | **`pl_clk0`.** Non-PS builds tie PSEN low (no gPTP there to lock to). |
 | S2 | **Where the rate register lives:** a new generic **RW register window** (`axil_reg_window`: the common header + plain RW words used in the AXI domain, no commit, since a single word needs no bank semantics), as the steering block's own window at **0x8000_3000** (bus/DSP reservations move up again)? Or add writable words to the meter's read-only window? | **New generic RW window, own slot.** It keeps "read-only status" and "control" as two window types, each reusable. |
 | S3 | **The loop in Linux (1 Hz PI), the PL only an NCO**? The alternative is the whole loop in the PL. | **Linux.** 1 Hz data, easy to tune and log, holdover and re-acquire in plain code; the PL part stays tiny. The loop can move to the PL later if a front door ever needs it without Linux. |
 | S4 | **Lock phase** (a fixed frame phase at every gPTP second), not just frequency? | **Yes, phase.** Costs nothing extra and is what AVB needs. The target frame phase is a configurable constant (default: the frame boundary). |
 | S5 | **Loss of reference** (PPS gone, PHC stepped, ptp4l restarting): hold the last rate (holdover), re-acquire when valid again; never step `mclk`'s phase abruptly (only slew, at most the S1 limit)? | **Yes.** A phase jump would be an audible glitch; a slew isn't. |
 
-**Steps once decided:** P9.4b1 RTL (steerer + RW window + MMCM fine PS forced and printed) with a TB (an MMCM phase-shift model: steps → phase → a frequency the meter sees); P9.4b2 build + image; P9.4b3 the service and the bench: lock from boot, phase error at the second vs time, rate converging to ≈ −0.85 ppm on this bench, audio unaffected, holdover through a Pi ptp4l restart.
+**Decided by the user, 2026-09-27: S1–S5 all as recommended** (PSCLK = `pl_clk0`; a new generic RW window; the loop in Linux; phase lock; holdover, slew only).
+
+**Steps:** P9.4b1 RTL (steerer + RW window + MMCM fine PS forced and printed) with a TB (an MMCM phase-shift model: steps → phase → a frequency the meter sees); P9.4b2 build + image; P9.4b3 the service and the bench: lock from boot, phase error at the second vs time, rate converging to ≈ −0.85 ppm on this bench, audio unaffected, holdover through a Pi ptp4l restart.
+
+### 6.6 P9.4b1: the steering hardware (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/media_clock_steer.sv` (new, platform) | signed RATE (2⁻³² steps per PSCLK cycle) → a 32-bit phase accumulator → step requests into a signed backlog (opposite requests cancel, saturates at ±255, the excess counted as DROPPED) → one PSEN at a time, the next on the same edge that sees PSDONE. **RATE > 0 = increments = `mclk` slower.** Held in reset while the MMCM isn't locked (2FF on LOCKED). Counts completed increments and decrements |
+| `constraints/media_clock_steer.xdc` (new, scoped) | false path into the LOCKED synchronizer |
+| `src/rtl/axil_reg_window.sv` (new, generic) | **the third window type** (decision S2): the common header, RW words (per-byte WSTRB, reset values), RO words, 0x00C = accepted writes; AXI clock only, no commit, no crossing |
+| `src/rtl/media_clock_ctrl_regs.sv` (new, binding) | ID `0x4D53_5001`, CONFIG = PSCLK Hz; RATE (RW); STEPS_INC, STEPS_DEC, DROPPED, FLAGS (locked, busy), VCO_HZ, PS_DIV (RO), so software converts ppm with what the hardware reports |
+| `src/rtl/audio_clocking.sv`, `src/sim/clk_wiz_audio_stub.sv` | the MMCM's `psclk/psen/psincdec/psdone`. The stub answers the handshake (PSDONE 12 cycles after PSEN) with no clock effect |
+| `src/rtl/fpgamixer_top.sv` | under `INCLUDE_MCLK`: `u_mclk_steer` on `ctrl_aclk` (= PSCLK), `u_mclk_ctrl`; otherwise PSEN tied low |
+| `scripts/create_project.tcl` | `USE_DYN_PHASE_SHIFT` + **`MMCM_CLKOUT0_USE_FINE_PS` forced, printed, and checked** (the script stops if it isn't set: the override-mode trap, §6.5); SmartConnect M04 → `M_AXI_MCLKCTRL` at **0x8000_3000**; the scoped XDC |
+| `tools/mixer_hw.py` | `MediaClockSteerHW` (ppm ↔ RATE from CONFIG / VCO_HZ / PS_DIV; the user-facing sign is **+ppm = `mclk` faster**, the opposite of RATE; clamps at the maximum), `WINDOWS["mclkctl"]`, CLI `steer [ppm]` |
+| `tools/test_mixer_hw.py` | 4 tests: geometry and the maximum, sign and scale (±50 ppm = ∓174,37x, as in the TB), round trips, clamping, wrong ID |
+
+**`tb_media_clock_steer` (XSim): PASS.**
+
+| Part | Result |
+|---|---|
+| window | ID, CONFIG = 100 MHz, VCO_HZ = 1.45 GHz, PS_DIV = 56; **WSTRB** (bytes 0 and 2 → `11BB33DD`); a RO word not writable; WRITES +2 |
+| not locked | a nonzero RATE gives **no PSEN**; FLAGS.locked 0 → 1 after lock |
+| rate → steps | +1/64 per cycle: **1000** in 64,000 cycles, increments only; −1/64: **1000** decrements; the +50 ppm rate: **8120** in 200,000 cycles (computed 8120.0) |
+| saturation | RATE = +½: **10,000 steps in 140,000 cycles = one per 14**, DROPPED counting |
+| protocol (every cycle) | PSEN never longer than one cycle, never during a step in flight, never while unlocked |
+| **end to end** (an MMCM model moving its edges 12.315 ps per completed step, the real `media_clock_meter`, a TSU-model 1PPS) | rate 0: 12288.125 cycles per (scaled) second; **+50 ppm of steps: −48.8 ppm; −50 ppm: +50.9 ppm** (±4.1 ppm is the quantization of the 40-interval means). Sign and scale confirmed through the meter |
+
+**Mutants, all FAIL:** direction inverted (wrong-direction steps, 10 errors); not waiting for PSDONE (60,088 "PSEN in flight"); not gated by LOCKED (197,051 "PSEN while not locked"); the negative rate's magnitude wrong (−1/64 gave 4571 steps).
+
+**Found by this TB: the maximum slew is ±88 ppm, not ±102.** A step can't start until PSDONE has pulsed, so one step takes **14** PSCLK cycles (PSEN, 12, PSDONE, then PSEN), not 12. The first version also needed a cycle to see PSDONE (one per 15, 8667 steps where 10,000 were expected); fixed to reissue on the PSDONE edge. At 100 MHz: 7.14 M steps/s × 12.315 ps = **±87.97 ppm**. The proposal's S1 row is corrected. Consequence: a grandmaster more than ~±85 ppm from our crystal can't be followed at 100 MHz. 802.1AS's ±100 ppm is the worst case, not the typical one; if it's ever needed, a faster PSCLK (an MMCM output at a few hundred MHz, DS925 allows 450) would do it.
+
+**Regression:** `xsim_regress.ps1` **15/15** (the integration TBs with the new MMCM ports).
+
+**Not run yet:** the Python tests (the build VM, which runs them, was unreachable; they run before the image is built).
 
 ## 7. Bench and peers
 

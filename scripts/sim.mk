@@ -44,8 +44,8 @@ CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect stream coefram mclk regs link linkstat phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect stream coefram mclk regs link linkstat phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect stream coefram mclk steer regs link linkstat phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect stream coefram mclk steer regs link linkstat phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -116,6 +116,14 @@ mclk: | $(BUILD)
 		$(RTL)/media_clock_meter.sv $(RTL)/coef_bank_handoff.sv $(RTL)/axil_stat_window.sv \
 		$(RTL)/media_clock_stat_regs.sv $(SIM)/tb_media_clock_meter.sv
 	@$(VVP) $(BUILD)/tb_media_clock_meter.vvp
+
+# --- Phase 9: media-clock steering (MMCM phase-step model + the meter) ---
+steer: | $(BUILD)
+	@echo ">>> Building tb_media_clock_steer"
+	@$(IVERILOG) $(FLAGS) -s tb_media_clock_steer -o $(BUILD)/tb_media_clock_steer.vvp \
+		$(RTL)/axil_reg_window.sv $(RTL)/media_clock_ctrl_regs.sv $(RTL)/media_clock_steer.sv \
+		$(RTL)/media_clock_meter.sv $(SIM)/tb_media_clock_steer.sv
+	@$(VVP) $(BUILD)/tb_media_clock_steer.vvp
 
 # --- Phase 8: PS<->PL link front door, formatter AXIS <-> PCM on unrelated clocks ---
 link: | $(BUILD)

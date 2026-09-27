@@ -46,6 +46,8 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py mclk [seconds]        # mclk vs gPTP (Phase 9 P9.3): the
                                               # last interval, or every interval
                                               # for <seconds> and the mean, in ppm
+    python3 mixer_hw.py steer [ppm]           # mclk steering (P9.4b): show, or set
+                                              # a frequency change by hand (+ = faster)
 """
 
 import math
@@ -290,12 +292,73 @@ class MediaClockHW(RegWindow):
         return v["pps_count"] > 0 and ((v["cyc_now"] - v["cyc_at_pps"]) & U32) < 1.5 * self.nominal
 
 
+class MediaClockSteerHW(RegWindow):
+    """The media-clock steering window (src/rtl/media_clock_ctrl_regs.sv,
+    Phase 9 P9.4b): one RW word, RATE, driving the MMCM's fine phase shift,
+    plus status. CONFIG = PSCLK in Hz; VCO_HZ and PS_DIV (steps per VCO
+    period) are read-only words, so the conversion below uses what the
+    hardware reports rather than constants.
+
+    Sign convention here: ppm is the change applied to mclk's FREQUENCY,
+    + = faster. The hardware's RATE is the opposite way round (> 0 = phase
+    increments = slower), which this class hides."""
+
+    ID = 0x4D53_5001
+    REG_RATE = REG_COEF0 + 0x00
+    REG_STEPS_INC = REG_COEF0 + 0x04
+    REG_STEPS_DEC = REG_COEF0 + 0x08
+    REG_DROPPED = REG_COEF0 + 0x0C
+    REG_FLAGS = REG_COEF0 + 0x10
+    REG_VCO_HZ = REG_COEF0 + 0x14
+    REG_PS_DIV = REG_COEF0 + 0x18
+    CYCLES_PER_STEP = 14          # PSEN, PSDONE 12 cycles later, next PSEN after it
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.psclk_hz = self.config
+        self.vco_hz = self.rd(self.REG_VCO_HZ)
+        self.ps_div = self.rd(self.REG_PS_DIV)
+        self.step_s = 1.0 / (self.vco_hz * self.ps_div)       # phase per step, seconds
+        self.max_ppm = self.psclk_hz / self.CYCLES_PER_STEP * self.step_s * 1e6
+
+    def describe(self):
+        return (f"media-clock steering, PSCLK {self.psclk_hz / 1e6:g} MHz, "
+                f"step {self.step_s * 1e12:.3f} ps, max +/-{self.max_ppm:.1f} ppm")
+
+    def status(self):
+        f = self.rd(self.REG_FLAGS)
+        return {"ppm": round(self.get_ppm(), 4), "locked": bool(f & 1),
+                "steps_inc": self.rd(self.REG_STEPS_INC),
+                "steps_dec": self.rd(self.REG_STEPS_DEC),
+                "dropped": self.rd(self.REG_DROPPED)}
+
+    def rate_for_ppm(self, ppm):
+        """RATE register value (two's complement) for a frequency change of
+        ppm (+ = faster), clamped to what the MMCM can do."""
+        ppm = max(-self.max_ppm, min(self.max_ppm, ppm))
+        steps_per_cycle = ppm * 1e-6 / self.step_s / self.psclk_hz
+        rate = -int(round(steps_per_cycle * 2 ** 32))          # + ppm = decrements
+        return rate & U32
+
+    def ppm_for_rate(self, reg):
+        rate = reg - (1 << 32) if reg & 0x8000_0000 else reg
+        return -rate / 2 ** 32 * self.psclk_hz * self.step_s * 1e6
+
+    def set_ppm(self, ppm):
+        self.wr(self.REG_RATE, self.rate_for_ppm(ppm))
+        return self.get_ppm()
+
+    def get_ppm(self):
+        return self.ppm_for_rate(self.rd(self.REG_RATE))
+
+
 # name -> (physical base, class). Mirrors assign_bd_address; see ADDRESS MAP.
 # (The Audio Formatter at 0x8010_0000 is driver-owned, not listed here.)
 WINDOWS = {
     "matrix":   (0x8000_0000, MatrixHW),
     "linkstat": (0x8000_1000, LinkStatHW),     # Phase 8 bitstreams only
     "mclk":     (0x8000_2000, MediaClockHW),   # Phase 9 (phase9 bitstreams) only
+    "mclkctl":  (0x8000_3000, MediaClockSteerHW),  # Phase 9 P9.4b bitstreams only
 }
 
 COUNTERS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns", "tid_errors")
@@ -382,6 +445,17 @@ def _main(argv):
             print(f"{len(ivals)} intervals: mean {mclk_ppm(total, len(ivals), mc.nominal):+.3f} ppm "
                   f"(single intervals {mclk_ppm(lo, 1, mc.nominal):+.3f} .. "
                   f"{mclk_ppm(hi, 1, mc.nominal):+.3f})")
+        return 0
+
+    if cmd == "steer":
+        # steer          show the steering state
+        # steer <ppm>    set mclk's frequency change by hand (+ = faster), open
+        #                loop; the fpgamixer-mediaclock service overwrites it
+        st = open_window("mclkctl")
+        if len(argv) == 3:
+            applied = st.set_ppm(float(argv[2]))
+            print(f"rate set: {applied:+.4f} ppm (register 0x{st.rd(st.REG_RATE):08x})")
+        print(f"{st.describe()}: {st.status()}")
         return 0
 
     hw = open_window("matrix")

@@ -93,6 +93,7 @@ if {$current_phase in {phase8 phase9}} {
 if {$current_phase in {phase9}} {
     set include_mclk 1
     lappend scoped_xdc {constraints/media_clock_meter.xdc media_clock_meter}
+    lappend scoped_xdc {constraints/media_clock_steer.xdc media_clock_steer}
 }
 
 # ------ Verify we're at the repo root ------
@@ -216,15 +217,30 @@ set_property -dict [list \
 # Vivado's clock analysis after implementation (report_clocks / timing).
 # (Requesting 12.288136 MHz instead gets the same ratio as 43.5 / 88.5, VCO
 # 1087.5 MHz, fractional -- not used.)
+#
+# Phase 9 (P9.4b): dynamic fine phase shift on clk_out1 (mclk), driven by
+# media_clock_steer. TRAP: in override mode USE_DYN_PHASE_SHIFT only adds the
+# psclk/psen/psincdec/psdone ports -- the generated MMCM still had
+# CLKOUT0_USE_FINE_PS("FALSE") (checked 2026-09-27), so the steering would
+# silently do nothing. MMCM_CLKOUT0_USE_FINE_PS must be forced too, and is
+# printed below. Builds without the steerer tie psen low.
+set_property CONFIG.USE_DYN_PHASE_SHIFT {true} [get_ips clk_wiz_audio]
 set_property -dict [list \
     CONFIG.OVERRIDE_MMCM               {true} \
     CONFIG.MMCM_DIVCLK_DIVIDE          {1} \
     CONFIG.MMCM_CLKFBOUT_MULT_F        {58.000} \
     CONFIG.MMCM_CLKOUT0_DIVIDE_F       {118.000} \
+    CONFIG.MMCM_CLKOUT0_USE_FINE_PS    {true} \
 ] [get_ips clk_wiz_audio]
 puts "INFO: clk_wiz_audio forced: D=[get_property CONFIG.MMCM_DIVCLK_DIVIDE [get_ips clk_wiz_audio]]\
  M=[get_property CONFIG.MMCM_CLKFBOUT_MULT_F [get_ips clk_wiz_audio]]\
- O=[get_property CONFIG.MMCM_CLKOUT0_DIVIDE_F [get_ips clk_wiz_audio]]"
+ O=[get_property CONFIG.MMCM_CLKOUT0_DIVIDE_F [get_ips clk_wiz_audio]]\
+ dyn_ps=[get_property CONFIG.USE_DYN_PHASE_SHIFT [get_ips clk_wiz_audio]]\
+ clkout0_fine_ps=[get_property CONFIG.MMCM_CLKOUT0_USE_FINE_PS [get_ips clk_wiz_audio]]"
+if {[get_property CONFIG.MMCM_CLKOUT0_USE_FINE_PS [get_ips clk_wiz_audio]] ne "true"} {
+    puts "ERROR: clk_wiz_audio: CLKOUT0 fine phase shift is not enabled; the media-clock steering would do nothing"
+    return
+}
 
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
 
@@ -333,9 +349,9 @@ if {$include_ps} {
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc]
     # M00 = matrix window; with the link also M01 = link status window and
     # M02 = the Audio Formatter's own registers (below); phase9 adds
-    # M03 = the media-clock status window.
+    # M03 = the media-clock status window and M04 = its steering window.
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$include_mclk ? 4 : ($include_link ? 3 : 1)}]] $smc
+        CONFIG.NUM_MI [expr {$include_mclk ? 5 : ($include_link ? 3 : 1)}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -490,8 +506,23 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
             assign_bd_address -offset 0x80002000 -range 4K \
                 -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
                 [get_bd_addr_segs M_AXI_MCLKSTAT/Reg]
+
+            # P9.4b: the steering window (media_clock_ctrl_regs, RW)
+            set m_mctl [create_bd_intf_port -mode Master \
+                -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_MCLKCTRL]
+            set_property -dict [list \
+                CONFIG.PROTOCOL   {AXI4LITE} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.ADDR_WIDTH {32} \
+                CONFIG.FREQ_HZ    $pl_clk0_hz \
+            ] $m_mctl
+            connect_bd_intf_net [get_bd_intf_pins $smc/M04_AXI] $m_mctl
+            assign_bd_address -offset 0x80003000 -range 4K \
+                -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+                [get_bd_addr_segs M_AXI_MCLKCTRL/Reg]
+
             set_property CONFIG.ASSOCIATED_BUSIF \
-                {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXI_MCLKSTAT:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
+                {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXI_MCLKSTAT:M_AXI_MCLKCTRL:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
                 [get_bd_ports ctrl_aclk]
         }
         assign_bd_address -offset 0x80100000 -range 64K \
