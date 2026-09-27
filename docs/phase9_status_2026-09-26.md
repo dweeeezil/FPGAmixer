@@ -462,6 +462,15 @@ Each step is verified and committed separately; the status doc and `architecture
 
 **Build (2026-09-26):** `bitbake fpgamixer-gptp` then the image, 14,840 tasks, all succeeded, the usual 23 warnings. Checked in the rootfs: `/etc/fpgamixer/gptp.cfg` (`priority1 250`, `summary_interval 4`, `transportSpecific 0x1`); `fpgamixer-{ptp4l,phc2sys}.service` enabled (links in `multi-user.target.wants`); linuxptp's `ptp4l@` / `phc2sys@` installed but **not** enabled; bitstream unchanged (`p9a5`, `4df4e23e…`). Image **`build/sd/p91-gptp-20260926.wic.xz`** (MD5 `2a5b89f2…`, same on both ends).
 
+**First boot: the port stayed FAULTY. Found and fixed.**
+- Pi: ptp4l healthy, MASTER after the board's reboot link flap; it never saw a foreign master. Board: `portState FAULTY`, `peerMeanPathDelay 0`, `gmPresent false`, gmIdentity = itself, for > 8 min. The link itself was up (SSH ran over it).
+- Board journal, 12.7 s after boot: `driver rejected most general HWTSTAMP filter`, **`ioctl SIOCSHWTSTAMP failed: Invalid argument`**, then `INITIALIZING to FAULTY`.
+- Cause, from the board kernel's source: `macb_hwtstamp_set()` returns `-EINVAL` when `!netif_running(dev)` (`macb_main.c:4232`), i.e. while `end0` is not administratively up. The unit started ptp4l as soon as the `end0` *device* existed, before the bench network brought it up. ptp4l sets hardware timestamping only once at start-up, and its fault recovery doesn't retry it, so the fault is permanent. The spike never hit this: ptp4l was always started by hand after `end0` was up.
+- Confirmed: `systemctl restart fpgamixer-ptp4l` with `end0` up → **SLAVE, peerMeanPathDelay 459 ns** (the spike: 457.9 ns).
+- **Fix:** `fpgamixer-ptp4l.service` gets `ExecStartPre=/usr/sbin/ip link set dev end0 up` (idempotent, independent of whatever configures addresses; carrier changes are ptp4l's own business). To be verified from a cold boot.
+
+Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 PHC) swings ±10 µs with read delays alternating ~1 µs / ~19 µs, the Pi reading its I350 over PCIe. It only affects how closely the Pi's PHC follows its wall time, not gPTP on the link. To look at later.
+
 **Bench (P9.1), procedure:** Pi as grandmaster with its PHC set from its system clock, board following from boot; check both services, the port state (SLAVE, the Pi as GM), the offset summaries over ≥ 20 min against the spike's 3–4 ns RMS / ≤ 22 ns, and the board's date.
 
 ## 7. Bench and peers
