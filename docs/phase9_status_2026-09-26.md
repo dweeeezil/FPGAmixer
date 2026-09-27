@@ -528,7 +528,25 @@ Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 P
 | — | **Decided by the user, 2026-09-26: T1–T4 all as recommended.** | |
 | T4 | **For P9.4, recorded now:** retune the MMCM to the integer setting (+11 ppm, VCO 1450 MHz) with fine phase shift enabled, as P9.4's first sub-step, and use P9.3's meter to confirm the ≈ 313 ppm change end to end before any steering. The loop itself: PL phase-stepping at a rate register, Linux running the PI loop on the 1 Hz captures (to decide in P9.4). | **Yes to the plan.** The retune changes `mclk` by 313 ppm, so the USB bridge's starting pitch (1000324) changes with it. |
 
-### 6.3 P9.3: the media-clock meter (built; bench pending)
+### 6.3 P9.3: the media-clock meter: PASS (bench 2026-09-27)
+
+**Bench (image `p93-mclk-20260926`, Pi as grandmaster with its PHC set once, not steered):**
+
+| Check | Result |
+|---|---|
+| `mixer_hw.py info` | `mclk @ 0x80002000: media-clock meter, nominal 12288000 …` (ID `0x4d435001`, CONFIG `0x00bb8000`), next to the matrix and link windows |
+| gPTP from the image's unit | SLAVE from boot, path delay 460 ns (the P9.1 fix confirmed from an image) |
+| `mclk` | reference alive; 62 edges, **2 implausible, both at start-up** (the board's PHC stepped while ptp4l synchronized), none after |
+| **`mclk 60`** | **mean +315.336 ppm** vs gPTP over 60 intervals; single intervals +314.209 … +315.674 ppm, neighbours mostly ±1 cycle (±0.08 ppm) |
+| consistency | e.g. 12,291,879 cycles = 48,015 frames + 39 cycles: frame phase 228 → 11 and frames +48,016. The cycle, frame and phase captures agree every second |
+
+**What was learned:**
+- **The PL's 25 MHz crystal (the DP83867's) runs −8.66 ppm** against the grandmaster (the Pi's free-running I350): (1 + 315.336 ppm) / (1 + 324.0 ppm) − 1. First measurement of it; the spike's −26 ppm was the PS crystal, a different one.
+- **Prediction for P9.4's retune** (nominal +11.03 ppm): the meter should read **≈ +2.4 ppm**, a 312.97 ppm step. The steering then only has to take out a few ppm plus drift.
+- **Drift:** about **−0.5 ppm over the minute** (12,291,879 → 12,291,872 cycles), smooth, most likely warm-up of one of the crystals (the board had just been powered up).
+- **A 2-second dip** at #80–81: −1.4 ppm, then back. The PPS comes from the board's PHC, which ptp4l steers, so a servo correction on the board is the likely cause. **To correlate with the ptp4l journal in P9.4**, whose loop has to ride through such events (filtering, or the `implausible` rule).
+
+### 6.3.1 P9.3 implementation
 
 | File | What |
 |---|---|
@@ -618,3 +636,4 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 - **2026-09-26: P9.A6 PASS** (§5.7), image `p9a6-core-20260926`: matrix window 12 × 12, link 48,018 frames/s clean, S3 by ear as before, S4 144/144 set → check-hw 144/144 → power pull → 144/144. **P9.A done.** Open: the bridge's coarse fix not yet observed at start-up. Next: the AVB decisions (§8).
 - **2026-09-26:** AVB decisions recorded (§8.1): M2a; board follows the Pi now, grandmaster later; 8 + 8 class A 48 kHz; Pi first (I350-as-switch / Mac noted, to verify); AVB at core ch 12–19. **P9.1 built** (§6.1): `fpgamixer-gptp` (ptp4l + phc2sys at boot, role by BMCA, `priority1 250`), linuxptp moved from the VM's `local.conf` into the layer; image `p91-gptp-20260926`, bench pending. §9 item 1 partly checked (the TSU counter's clock isn't exported; a PS option exists, to read in UG1085).
 - **2026-09-26: P9.1 PASS** (§6.1): first boot FAULTY (macb refuses `SIOCSHWTSTAMP` while `end0` is down; the unit now brings it up first), then SLAVE from a cold boot; failover to grandmaster and failback both automatic; **2–3 ns RMS / ≤ 9 ns** once the Pi's PHC was no longer steered by its noisy `phc2sys` (which had caused 2–3 µs). Open: 20-min soak, bridge log.
+- **2026-09-27: P9.3 PASS** (§6.3): the meter on hardware reads **mclk = +315.34 ppm vs gPTP** (60 s mean, ±0.08 ppm per interval), so the PL crystal is −8.66 ppm vs the Pi; `psu_init` unchanged; gPTP SLAVE from boot from the image. Next: P9.4, starting with the MMCM retune (T4), predicted to read ≈ +2.4 ppm.
