@@ -599,6 +599,8 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 
 **Build `p94a`:** the generated MMCM has `DIVCLK_DIVIDE 1`, `CLKFBOUT_MULT_F 58.000`, `CLKOUT0_DIVIDE_F 118.000`. **WNS +2.762 / WHS +0.010 ns** (the worst path is still the codec RX-sampling check), methodology PASS, 0 critical warnings. The timing engine derives `mclk` as 81.379 ns. **Jitter, from Vivado's clock analysis** (the wizard's own figure isn't recomputed in override mode): discrete jitter **289 → 187 ps**, `mclk` clock uncertainty **149 → 100 ps**. The higher, integer-ratio VCO is cleaner. CDC 1715, all constrained (unchanged). SDT: only `firmware-name` differs from P9.3's (`psu_init` identical).
 
+**Image built 2026-09-27** (after the VM had been stopped by the user for memory; the first sync attempt timed out and was redone): 14,840 tasks, all succeeded, 23 warnings (the usual). Deployed bitstream MD5 = Vivado `p94a` (`28a94771…`); `fpgamixer-usb-bridge` recompiled in this build (`do_compile: Succeeded`, with the synced `PITCH_START 1000011`). **`build/sd/p94a-retune-20260927.wic.xz`** (MD5 `57f99068…`).
+
 **Prediction for the bench:** the meter reads **≈ +2.4 ppm** (+11.03 nominal, −8.66 for the PL crystal vs the Pi), i.e. **312.97 ppm below P9.3's +315.34**, modulo the crystal's drift. The USB path should work as before, with the bridge's pitch settling ~313 ppm lower than before (≈ 1000030 instead of ≈ 1000345).
 
 ## 7. Bench and peers
