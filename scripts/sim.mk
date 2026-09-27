@@ -44,8 +44,8 @@ CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect stream coefram regs link linkstat phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect stream coefram regs link linkstat phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect stream coefram mclk regs link linkstat phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect stream coefram mclk regs link linkstat phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -108,6 +108,14 @@ coefram: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_coef_bank_ram -o $(BUILD)/tb_coef_bank_ram.vvp \
 		$(RTL)/coef_bank_ram.sv $(RTL)/coef_flat_reader.sv $(SIM)/tb_coef_bank_ram.sv
 	@$(VVP) $(BUILD)/tb_coef_bank_ram.vvp
+
+# --- Phase 9: media-clock meter (mclk vs a 1PPS from a TSU model), unrelated clocks ---
+mclk: | $(BUILD)
+	@echo ">>> Building tb_media_clock_meter"
+	@$(IVERILOG) $(FLAGS) -s tb_media_clock_meter -o $(BUILD)/tb_media_clock_meter.vvp \
+		$(RTL)/media_clock_meter.sv $(RTL)/coef_bank_handoff.sv $(RTL)/axil_stat_window.sv \
+		$(RTL)/media_clock_stat_regs.sv $(SIM)/tb_media_clock_meter.sv
+	@$(VVP) $(BUILD)/tb_media_clock_meter.vvp
 
 # --- Phase 8: PS<->PL link front door, formatter AXIS <-> PCM on unrelated clocks ---
 link: | $(BUILD)

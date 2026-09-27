@@ -41,6 +41,8 @@ There are four kinds of block:
 |---|---|---|
 | Platform | `src/rtl/fpgamixer_top.sv` | wires everything; owns the channel map, the reset routing (`MATRIX_GAINS`) and the choice of gain source (PS or constant) |
 | Platform | `src/rtl/audio_clocking.sv` | MMCM → `mclk`, `rst_n`, shared `sclk`/`lrck` |
+| Platform | `src/rtl/media_clock_meter.sv` + `constraints/media_clock_meter.xdc` | Phase 9 (P9.3): measures `mclk` against a 1PPS (in the top: the inverse of the PS's `tsu_timer_cnt[45]`, the gPTP second of the board's own PHC). Captures cycle count, frame count and frame phase per edge; software computes ppm and phase. Its only crossing is the 1-bit PPS into a 2FF synchronizer (the XDC marks it false). P9.4 adds the steering |
+| Control plane (binding) | `src/rtl/media_clock_stat_regs.sv` | the meter's read-only window (ID `0x4D43_5001`, CONFIG = nominal cycles per second), same pattern as `pcm_link_stat_regs` |
 | Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
 | Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding. Samples its output pair once per DAC frame, at the L load (Phase 9 fix of a one-sample L/R skew) |
@@ -59,7 +61,7 @@ There are four kinds of block:
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
 | Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
 | Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`) |
-| Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `WINDOWS` (address map) |
+| Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW`, `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
 | Front door (AVB, Linux half) | `yocto/meta-fpgamixer/recipes-apps/fpgamixer-gptp/` | Phase 9 (P9.1): ptp4l + phc2sys on `end0` at boot, gPTP profile, role by BMCA (`priority1 250`: follows a better clock, grandmaster by one config value). Knows nothing about audio; the media clock (P9.3/4) reads the PHC's time in the PL |
@@ -150,7 +152,8 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 |---|---|---|
 | 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`), 12 × 12 since Phase 8 | Phase 5 |
 | 0x8000_1000 | PS↔PL link status (`u_link_stat`, read-only, ID `0x4C4B_5001`) | Phase 8 |
-| 0x8000_2000… | reserved: bus matrix, DSP blocks | — |
+| 0x8000_2000 | media-clock meter (`u_mclk_stat`, read-only, ID `0x4D43_5001`): `mclk` vs the gPTP 1PPS; `phase9` builds | Phase 9 (P9.3) |
+| 0x8000_3000… | reserved: bus matrix, DSP blocks (moved up one slot in P9.3) | — |
 | 0x8010_0000 (64K) | AMD Audio Formatter registers: **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
 
 Driver-owned devices go at 0x801x_xxxx, so the 0x8000_x000 range stays for windows with the ID/CONFIG header.
@@ -195,7 +198,7 @@ Listed honestly, so they're fixed deliberately rather than worked around. None o
 
 | Work | Seam(s) used | New blocks |
 |---|---|---|
-| Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at window 0x8000_1000; a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
+| Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at the next free window (0x8000_3000 since P9.3); a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
 | Phase 6 persistence | control plane only | server-side; already restores and pushes the bank at startup |
 | Phase 7 DSP | PCM contract + coefficient contract + a window per DSP block | one core block per DSP type |
 | Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux. **Proposal (2026-09-25, awaiting decisions):** `phase8_status_2026-09-25.md`: Audio Formatter → ALSA card on `mclk` time, `pcm_link` PL front door, new generic RO `axil_stat_window` |

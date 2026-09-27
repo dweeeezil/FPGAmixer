@@ -14,6 +14,8 @@
 //                                   -> coefficient read port -> u_core
 //                  (without the PS: coef_flat_reader u_gains, MATRIX_GAINS)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
+//   platform (INCLUDE_MCLK, phase9): PS tsu_timer_cnt[45] (1PPS) ->
+//                  media_clock_meter -> media_clock_stat_regs <- M_AXI_MCLKSTAT
 //
 // Everything this file decides:
 //   - the channel map: which front-door channel is which core channel;
@@ -171,7 +173,42 @@ module fpgamixer_top (
     logic        stat_rvalid, stat_rready;
 `endif
 
+`ifdef INCLUDE_MCLK
+    // Media-clock meter (Phase 9, P9.3): the GEM TSU counter from the PS and
+    // the meter's status window (0x8000_2000)
+    logic [93:0] tsu_timer_cnt;
+    logic [31:0] mc_awaddr, mc_araddr, mc_wdata, mc_rdata;
+    logic [2:0]  mc_awprot, mc_arprot;
+    logic [3:0]  mc_wstrb;
+    logic [1:0]  mc_bresp, mc_rresp;
+    logic        mc_awvalid, mc_awready, mc_wvalid, mc_wready;
+    logic        mc_bvalid, mc_bready, mc_arvalid, mc_arready;
+    logic        mc_rvalid, mc_rready;
+`endif
+
     ps_sys_wrapper u_ps (
+`ifdef INCLUDE_MCLK
+        .tsu_timer_cnt              (tsu_timer_cnt),
+        .M_AXI_MCLKSTAT_awaddr      (mc_awaddr),
+        .M_AXI_MCLKSTAT_awprot      (mc_awprot),
+        .M_AXI_MCLKSTAT_awvalid     (mc_awvalid),
+        .M_AXI_MCLKSTAT_awready     (mc_awready),
+        .M_AXI_MCLKSTAT_wdata       (mc_wdata),
+        .M_AXI_MCLKSTAT_wstrb       (mc_wstrb),
+        .M_AXI_MCLKSTAT_wvalid      (mc_wvalid),
+        .M_AXI_MCLKSTAT_wready      (mc_wready),
+        .M_AXI_MCLKSTAT_bresp       (mc_bresp),
+        .M_AXI_MCLKSTAT_bvalid      (mc_bvalid),
+        .M_AXI_MCLKSTAT_bready      (mc_bready),
+        .M_AXI_MCLKSTAT_araddr      (mc_araddr),
+        .M_AXI_MCLKSTAT_arprot      (mc_arprot),
+        .M_AXI_MCLKSTAT_arvalid     (mc_arvalid),
+        .M_AXI_MCLKSTAT_arready     (mc_arready),
+        .M_AXI_MCLKSTAT_rdata       (mc_rdata),
+        .M_AXI_MCLKSTAT_rresp       (mc_rresp),
+        .M_AXI_MCLKSTAT_rvalid      (mc_rvalid),
+        .M_AXI_MCLKSTAT_rready      (mc_rready),
+`endif
 `ifdef INCLUDE_LINK
         .link_mclk                  (mclk),
         .link_mreset                (!rst_n),
@@ -295,6 +332,43 @@ module fpgamixer_top (
     );
 `else
     assign link_rx = '0;
+`endif
+
+`ifdef INCLUDE_MCLK
+    // ----- Platform: media-clock meter (Phase 9, P9.3) -----
+    // 1PPS on the gPTP second = the inverse of tsu_timer_cnt[45], the ns
+    // field's MSB (UG1085 v2.5 p. 1061). It comes from the board's own PHC,
+    // so it is the gPTP second whichever gPTP role the board has.
+    logic [31:0] mc_pps_count, mc_cyc_last, mc_cyc_prev, mc_frames_last;
+    logic [31:0] mc_implausible, mc_cyc_now;
+    logic [15:0] mc_phase_last;
+
+    media_clock_meter #(.NOMINAL (12_288_000)) u_mclk_meter (
+        .mclk (mclk), .rst_n (rst_n),
+        .pps_async (~tsu_timer_cnt[45]),
+        .frame_i (jb_rx_valid),
+        .pps_count (mc_pps_count), .cyc_last (mc_cyc_last), .cyc_prev (mc_cyc_prev),
+        .frames_last (mc_frames_last), .phase_last (mc_phase_last),
+        .implausible (mc_implausible), .cyc_now (mc_cyc_now)
+    );
+
+    media_clock_stat_regs #(.NOMINAL (12_288_000), .ADDR_WIDTH (12)) u_mclk_stat (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (mc_awaddr[11:0]), .s_axi_awvalid (mc_awvalid),
+        .s_axi_awready (mc_awready),
+        .s_axi_wdata   (mc_wdata),  .s_axi_wstrb  (mc_wstrb),
+        .s_axi_wvalid  (mc_wvalid), .s_axi_wready (mc_wready),
+        .s_axi_bresp   (mc_bresp),  .s_axi_bvalid (mc_bvalid),
+        .s_axi_bready  (mc_bready),
+        .s_axi_araddr  (mc_araddr[11:0]), .s_axi_arvalid (mc_arvalid),
+        .s_axi_arready (mc_arready),
+        .s_axi_rdata   (mc_rdata),  .s_axi_rresp  (mc_rresp),
+        .s_axi_rvalid  (mc_rvalid), .s_axi_rready (mc_rready),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (jb_rx_valid),
+        .pps_count (mc_pps_count), .cyc_last (mc_cyc_last), .cyc_prev (mc_cyc_prev),
+        .frames_last (mc_frames_last), .phase_last (mc_phase_last),
+        .implausible (mc_implausible), .cyc_now (mc_cyc_now)
+    );
 `endif
 `else
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N), .LANES (LANES)) u_gains (

@@ -38,7 +38,7 @@ if {[file isdirectory $xhub_boards]} {
 # ------ Phase selection -------------------------------------------------------
 # current_phase drives the synthesis top module, which XDC is used, and (phase4
 # onwards) whether the PS block design is built.
-set current_phase "phase8"
+set current_phase "phase9"
 set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
@@ -55,6 +55,11 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 #                   fpgamixer_top, and the matrix grown to 12 x 12
 #                   (docs/phase8_status_2026-09-25.md). The phase5 build (4 x 4,
 #                   no link) is in git history before this change.
+# phase9          : phase8 + the media-clock meter (INCLUDE_MCLK): the GEM
+#                   TSU counter exported from the PS (tsu_timer_cnt, no PS
+#                   setting changed) and a status window at 0x8000_2000
+#                   (docs/phase9_status_2026-09-26.md, P9.3). phase8 stays
+#                   selectable and builds exactly what it did.
 #
 # The top-level XDC names a few instances by path (u_clk/u_mmcm and
 # u_jb|u_jc/u_fwd_*/u_oddr). Adding hierarchy ABOVE fpgamixer_top, or renaming
@@ -68,21 +73,26 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 # naming instance paths in the top-level XDC (docs/architecture_modules.md).
 set include_ps   0
 set include_link 0
+set include_mclk 0
 set scoped_xdc {}
-if {$current_phase in {phase3 phase4 phase5 phase8}} {
+if {$current_phase in {phase3 phase4 phase5 phase8 phase9}} {
     set synth_top "fpgamixer_top"
     set xdc_file  "constraints/fpgamixer_genesys_zu.xdc"
 }
-if {$current_phase in {phase4 phase5 phase8}} {
+if {$current_phase in {phase4 phase5 phase8 phase9}} {
     set include_ps 1
     lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
     # Phase 9: the matrix's gains live in coef_bank_ram (the handoff above
     # stays for the reverse-direction status windows).
     lappend scoped_xdc {constraints/coef_bank_ram.xdc coef_bank_ram}
 }
-if {$current_phase in {phase8}} {
+if {$current_phase in {phase8 phase9}} {
     set include_link 1
     lappend scoped_xdc {constraints/async_fifo.xdc async_fifo}
+}
+if {$current_phase in {phase9}} {
+    set include_mclk 1
+    lappend scoped_xdc {constraints/media_clock_meter.xdc media_clock_meter}
 }
 
 # ------ Verify we're at the repo root ------
@@ -300,9 +310,10 @@ if {$include_ps} {
     set smc [create_bd_cell -type ip \
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc]
     # M00 = matrix window; with the link also M01 = link status window and
-    # M02 = the Audio Formatter's own registers (below).
+    # M02 = the Audio Formatter's own registers (below); phase9 adds
+    # M03 = the media-clock status window.
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$include_link ? 3 : 1}]] $smc
+        CONFIG.NUM_MI [expr {$include_mclk ? 4 : ($include_link ? 3 : 1)}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -426,6 +437,7 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
         ] $m_stat
         connect_bd_intf_net [get_bd_intf_pins $smc/M01_AXI] $m_stat
 
+        # (phase9 appends M_AXI_MCLKSTAT below, once that port exists.)
         set_property CONFIG.ASSOCIATED_BUSIF \
             {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
             [get_bd_ports ctrl_aclk]
@@ -433,6 +445,33 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
         assign_bd_address -offset 0x80001000 -range 4K \
             -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
             [get_bd_addr_segs M_AXI_LINKSTAT/Reg]
+
+        # ----- Phase 9 (P9.3): media-clock meter -----
+        # The GEM0 TSU counter is already a PS output (it appeared when the
+        # TSU was enabled in Phase 4); exporting it to the RTL changes no PS
+        # setting. The RTL uses the inverse of bit 45 as a 1PPS (UG1085 v2.5
+        # p. 1061). Its status window is plain RTL (media_clock_stat_regs),
+        # like the other windows.
+        if {$include_mclk} {
+            set tsu_cnt [create_bd_port -dir O -from 93 -to 0 tsu_timer_cnt]
+            connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/emio_enet0_enet_tsu_timer_cnt] $tsu_cnt
+
+            set m_mclk [create_bd_intf_port -mode Master \
+                -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_MCLKSTAT]
+            set_property -dict [list \
+                CONFIG.PROTOCOL   {AXI4LITE} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.ADDR_WIDTH {32} \
+                CONFIG.FREQ_HZ    $pl_clk0_hz \
+            ] $m_mclk
+            connect_bd_intf_net [get_bd_intf_pins $smc/M03_AXI] $m_mclk
+            assign_bd_address -offset 0x80002000 -range 4K \
+                -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+                [get_bd_addr_segs M_AXI_MCLKSTAT/Reg]
+            set_property CONFIG.ASSOCIATED_BUSIF \
+                {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXI_MCLKSTAT:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
+                [get_bd_ports ctrl_aclk]
+        }
         assign_bd_address -offset 0x80100000 -range 64K \
             -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
             [get_bd_addr_segs $fmt/s_axi_lite/reg0]
@@ -469,7 +508,10 @@ dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
     add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
 
     # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in fpgamixer_top.
-    if {$include_link} {
+    if {$include_mclk} {
+        set_property verilog_define {INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK} [get_filesets sources_1]
+        puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK -- + media-clock meter"
+    } elseif {$include_link} {
         set_property verilog_define {INCLUDE_PS INCLUDE_LINK} [get_filesets sources_1]
         puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK -- PS + PS<->PL audio link"
     } else {

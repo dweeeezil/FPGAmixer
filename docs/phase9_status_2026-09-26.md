@@ -525,6 +525,7 @@ Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 P
 | T1 | Timing source: **1PPS from `tsu_timer_cnt` bit 45** into a 2FF synchronizer (no PS change, ±81 ns per edge), rather than exporting the TSU clock (undocumented, PS change) or the compare output (needs software)? | **1PPS.** A finer capture (the PPS timed with a faster PL clock) can come later if P9.4's numbers ask for it. |
 | T2 | The PL only captures (cycle count, frame phase, counters); **frequency and phase are computed in software** from the status window? | **Yes.** 1 Hz data is easy in Linux, and nothing is lost. |
 | T3 | New RO status window **`media_clock` at 0x8000_2000**, bus/DSP reservations moved up one slot? | **Yes.** |
+| — | **Decided by the user, 2026-09-26: T1–T4 all as recommended.** | |
 | T4 | **For P9.4, recorded now:** retune the MMCM to the integer setting (+11 ppm, VCO 1450 MHz) with fine phase shift enabled, as P9.4's first sub-step, and use P9.3's meter to confirm the ≈ 313 ppm change end to end before any steering. The loop itself: PL phase-stepping at a rate register, Linux running the PI loop on the 1 Hz captures (to decide in P9.4). | **Yes to the plan.** The retune changes `mclk` by 313 ppm, so the USB bridge's starting pitch (1000324) changes with it. |
 
 ## 7. Bench and peers

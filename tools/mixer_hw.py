@@ -43,6 +43,9 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py identity              # unity diagonal, rest off
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
+    python3 mixer_hw.py mclk [seconds]        # mclk vs gPTP (Phase 9 P9.3): the
+                                              # last interval, or every interval
+                                              # for <seconds> and the mean, in ppm
 """
 
 import math
@@ -237,11 +240,62 @@ class LinkStatHW(RegWindow):
         return vals
 
 
+U32 = 0xFFFF_FFFF
+
+
+def mclk_ppm(cycles, seconds, nominal):
+    """Frequency offset of mclk against the reference, in ppm, from a cycle
+    count over a whole number of reference seconds."""
+    return (cycles / (seconds * nominal) - 1.0) * 1e6
+
+
+class MediaClockHW(RegWindow):
+    """The media-clock meter's window (src/rtl/media_clock_stat_regs.sv,
+    Phase 9 P9.3): mclk measured against a 1PPS on the gPTP second (the GEM
+    TSU counter's bit 45, inverted). Read-only, same header, 0x00C = snapshot
+    sequence; CONFIG = nominal mclk cycles per second (12,288,000). The PL
+    only captures; frequency and phase are computed here (decision T2).
+    Counts wrap at 32 bits (CYC_* every ~349 s): take differences mod 2^32."""
+
+    ID = 0x4D43_5001
+    WORDS = ("pps_count", "cyc_at_pps", "cyc_at_prev", "frames_at_pps",
+             "phase_at_pps", "implausible", "cyc_now")
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.nominal = self.config
+
+    def describe(self):
+        return f"media-clock meter, nominal {self.nominal} mclk cycles per reference second"
+
+    def status(self):
+        return {"snapshots": self.rd(REG_COMMITS)}
+
+    def read_all(self):
+        """All words from one snapshot (re-read if a new one landed)."""
+        for _ in range(5):
+            seq = self.rd(REG_COMMITS)
+            vals = {n: self.rd(REG_COEF0 + 4 * k) for k, n in enumerate(self.WORDS)}
+            if self.rd(REG_COMMITS) == seq:
+                break
+        vals["snapshots"] = seq
+        return vals
+
+    def interval(self, v):
+        """mclk cycles between the last two reference edges."""
+        return (v["cyc_at_pps"] - v["cyc_at_prev"]) & U32
+
+    def ref_alive(self, v):
+        """True if a reference edge came within the last 1.5 s of mclk."""
+        return v["pps_count"] > 0 and ((v["cyc_now"] - v["cyc_at_pps"]) & U32) < 1.5 * self.nominal
+
+
 # name -> (physical base, class). Mirrors assign_bd_address; see ADDRESS MAP.
 # (The Audio Formatter at 0x8010_0000 is driver-owned, not listed here.)
 WINDOWS = {
     "matrix":   (0x8000_0000, MatrixHW),
     "linkstat": (0x8000_1000, LinkStatHW),     # Phase 8 bitstreams only
+    "mclk":     (0x8000_2000, MediaClockHW),   # Phase 9 (phase9 bitstreams) only
 }
 
 COUNTERS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns", "tid_errors")
@@ -288,6 +342,46 @@ def _main(argv):
         print(f"rx_fill      {a['rx_fill']} words (low {a['rx_fill_low']}, "
               f"high {a['rx_fill_high']} since the stream started; 65535 = never ran)")
         print(f"rx_running   {a['rx_running']}   snapshots {a['snapshots']}")
+        return 0
+
+    if cmd == "mclk":
+        # mclk           one reading: the last interval
+        # mclk <sec>     watch for <sec> seconds: every interval, then the mean
+        import time
+        mc = open_window("mclk")
+        v = mc.read_all()
+        alive = mc.ref_alive(v)
+        print(f"reference {'alive' if alive else 'NOT SEEN (no 1PPS in the last 1.5 s)'}, "
+              f"{v['pps_count']} edges, {v['implausible']} implausible intervals")
+        if len(argv) != 3:
+            if v["pps_count"] >= 2:
+                n = mc.interval(v)
+                print(f"last interval {n} cycles = {mclk_ppm(n, 1, mc.nominal):+.3f} ppm vs gPTP, "
+                      f"frame phase {v['phase_at_pps']} cycles at the second")
+            return 0
+        end = time.monotonic() + float(argv[2])
+        ivals, last = [], v
+        while time.monotonic() < end:
+            time.sleep(0.25)
+            v = mc.read_all()
+            new = (v["pps_count"] - last["pps_count"]) & U32
+            if new == 0:
+                continue
+            if new == 1 and v["implausible"] == last["implausible"]:
+                n = mc.interval(v)
+                ivals.append(n)
+                print(f"#{v['pps_count']:<6} {n} cycles  {mclk_ppm(n, 1, mc.nominal):+9.3f} ppm  "
+                      f"phase {v['phase_at_pps']:3}  frames {v['frames_at_pps']}")
+            else:
+                print(f"#{v['pps_count']:<6} skipped: {new} edges since the last read, "
+                      f"implausible +{(v['implausible'] - last['implausible']) & U32}")
+            last = v
+        if ivals:
+            total = sum(ivals)
+            lo, hi = min(ivals), max(ivals)
+            print(f"{len(ivals)} intervals: mean {mclk_ppm(total, len(ivals), mc.nominal):+.3f} ppm "
+                  f"(single intervals {mclk_ppm(lo, 1, mc.nominal):+.3f} .. "
+                  f"{mclk_ppm(hi, 1, mc.nominal):+.3f})")
         return 0
 
     hw = open_window("matrix")

@@ -205,5 +205,58 @@ class LinkStat(unittest.TestCase):
             mixer_hw.LinkStatHW(0, dev=self.path)
 
 
+class MediaClock(unittest.TestCase):
+    """The Phase 9 media-clock meter window, against a fake 4 KB file."""
+
+    NOMINAL = 12_288_000
+
+    def write_words(self, words, seq=77):
+        with open(self.path, "r+b") as f:
+            f.seek(mixer_hw.REG_COMMITS)
+            f.write(struct.pack("<I", seq))
+            f.seek(mixer_hw.REG_COEF0)
+            f.write(struct.pack(f"<{len(words)}I", *words))
+
+    def setUp(self):
+        self.path = make_window_file(ident=0x4D435001, config=self.NOMINAL)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_header_words_interval(self):
+        # +324 ppm: 12,291,981 cycles per second; the counter wrapped between
+        # the two edges, so the interval must come out modulo 2^32
+        prev = 0xFFFF_0000
+        last = (prev + 12_291_981) & 0xFFFF_FFFF
+        now = (last + 100_000) & 0xFFFF_FFFF
+        self.write_words([42, last, prev, 48_000 * 42, 131, 1, now])     # see WORDS
+        mc = mixer_hw.MediaClockHW(0, dev=self.path)
+        self.assertEqual(mc.nominal, self.NOMINAL)
+        v = mc.read_all()
+        self.assertEqual((v["pps_count"], v["phase_at_pps"], v["implausible"]), (42, 131, 1))
+        self.assertEqual(v["snapshots"], 77)
+        self.assertEqual(mc.interval(v), 12_291_981)
+        self.assertAlmostEqual(mixer_hw.mclk_ppm(12_291_981, 1, self.NOMINAL), 323.975, places=3)
+        self.assertTrue(mc.ref_alive(v))
+
+    def test_reference_not_seen(self):
+        self.write_words([5, 1000, 0, 0, 0, 0, 1000 + 2 * self.NOMINAL])
+        mc = mixer_hw.MediaClockHW(0, dev=self.path)
+        self.assertFalse(mc.ref_alive(mc.read_all()))
+        self.write_words([0, 0, 0, 0, 0, 0, 5])                         # never an edge
+        self.assertFalse(mc.ref_alive(mc.read_all()))
+
+    def test_mean_over_seconds(self):
+        self.assertAlmostEqual(mixer_hw.mclk_ppm(10 * self.NOMINAL, 10, self.NOMINAL), 0.0)
+        self.assertAlmostEqual(mixer_hw.mclk_ppm(10 * self.NOMINAL + 1, 10, self.NOMINAL),
+                               1e6 / (10 * self.NOMINAL), places=6)
+
+    def test_link_id_refused(self):
+        os.unlink(self.path)
+        self.path = make_window_file(ident=0x4C4B5001, config=0x08080040)
+        with self.assertRaises(RuntimeError):
+            mixer_hw.MediaClockHW(0, dev=self.path)
+
+
 if __name__ == "__main__":
     unittest.main()
