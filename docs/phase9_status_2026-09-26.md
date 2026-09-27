@@ -595,7 +595,7 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 | `src/rtl/audio_clocking.sv` | header: the new setting and the measured history |
 | `fpgamixer-usb-bridge.c` | `PITCH_START` 1000324 → **1000011** (the new nominal), so the Mac doesn't start 313 ppm off |
 
-**Deviation from T4, recorded:** fine phase shift is **not enabled yet**. Enabling it adds the PSCLK/PSEN/PSINCDEC/PSDONE ports, and which clock drives PSCLK is a design choice for the steering step: `pl_clk0` exists only in PS builds, `mclk` itself can't clock its own shifter usefully. So it moves to P9.4b, with the loop.
+**Deviation from T4, recorded:** fine phase shift is **not enabled yet**. Enabling it adds the PSCLK/PSEN/PSINCDEC/PSDONE ports, and which clock drives PSCLK is a design choice for the steering step: `pl_clk0` (100 MHz, up to ≈ 100 ppm of correction, PS builds only) or `mclk` itself (one step per 12 cycles ≈ 1 M steps/s × 12.3 ps ≈ **12 ppm** of correction, enough now that only a few ppm are left, and present in every build). So it moves to P9.4b, with the loop.
 
 **Build `p94a`:** the generated MMCM has `DIVCLK_DIVIDE 1`, `CLKFBOUT_MULT_F 58.000`, `CLKOUT0_DIVIDE_F 118.000`. **WNS +2.762 / WHS +0.010 ns** (the worst path is still the codec RX-sampling check), methodology PASS, 0 critical warnings. The timing engine derives `mclk` as 81.379 ns. **Jitter, from Vivado's clock analysis** (the wizard's own figure isn't recomputed in override mode): discrete jitter **289 → 187 ps**, `mclk` clock uncertainty **149 → 100 ps**. The higher, integer-ratio VCO is cleaner. CDC 1715, all constrained (unchanged). SDT: only `firmware-name` differs from P9.3's (`psu_init` identical).
 
