@@ -486,6 +486,47 @@ Side observation, not a board issue: the Pi's `phc2sys` (system clock → I350 P
 
 **Open:** a ≥ 20 min soak from boot (only ~1.5 min of clean windows were read); the bridge start-up log (still not read).
 
+### 6.2 P9.3 proposal: measuring `mclk` against gPTP time (2026-09-26, awaiting decisions T1–T4)
+
+#### Facts (checked 2026-09-26)
+
+| Fact | Source | Consequence |
+|---|---|---|
+| `tsu_timer_cnt[93:0]` is "synchronized to tsu_clk"; ours is the **internal** IOPLL / 6 = 250 MHz reference. Upper 48 bits seconds, lower 46 ns / sub-ns. | UG1085 v2.5 (local copy; docs.amd.com was down), pp. 1059–1060; `.hwh` | Any PL use of the counter is a clock crossing from a 250 MHz clock the PL doesn't have. |
+| **1PPS "can be obtained from the inverse of bit 45 … with any TSU clock source."** Bit 45 is the ns field's MSB (2²⁹ ns): the inverse rises exactly when the ns count wraps, i.e. **on every gPTP second**. | UG1085 p. 1061 | One wire carries the gPTP second boundary into the PL. It works in either gPTP role, since it comes from the board's own PHC. |
+| Exporting the TSU clock (`fmio_gem_tsu_clk_to_pl_bufg` / `_from_pl`): the manual only says the loop is "recommended … whenever exposed". It **does not say** what `to_pl_bufg` carries with the internal-PLL source, or whether the TSU then depends on the PL. The internal source "required no additional signal connections". | UG1085 p. 1060; PS IP `bd.tcl` | Undocumented, a PS change (`psu_init`), and a possible boot-order dependency (the PS runs before the bitstream is loaded). **Not proposed.** |
+| `tsu_timer_cmp_val`: high while the upper 70 bits equal a programmed value (≈ 256 ns granularity). | UG1085 p. 1060 | A second possible timing source, needs software to program the compare. Not needed now. |
+| **The MMCM today:** 25 MHz × 40.625 / 82.625, VCO 1015.6 MHz → 12.2920 MHz = **+324.0 ppm**; fine phase shift **off**. One fine-phase step = VCO/56 = 17.6 ps. | `clk_wiz_audio_clk_wiz.v`; arithmetic | **M2a can't remove +324 ppm:** that needs **18.4 M steps/s**, more than the MMCM's phase-shift interface can do (a step takes ≈ 12 PSCLK cycles, so ≈ 8 M/s at a 100 MHz PSCLK; UG572, *from the documentation, to re-read*). |
+| **Closest single-MMCM settings** from 25 MHz (search over D 1–106, M and O0 in ⅛ steps, VCO 800–1600 MHz): no setting within 5 ppm. **All-integer D = 1, M = 58, O = 118: VCO 1450 MHz, +11.03 ppm**; fractional D = 2, M = 123.125, O = 125.25: −6.17 ppm. | search script (this session) | With the integer setting, steering must cover +11 ppm plus the crystals' error (board vs Pi measured 26 ppm), about **±60 ppm = ~5 M steps/s** at 12.3 ps per step: feasible. Integer dividers also avoid any fine-PS restriction on fractional dividers (to verify in UG572). |
+
+#### What P9.3 builds (measurement only; `mclk` is not touched)
+
+```
+ PS: tsu_timer_cnt[45] ──(inverted: 1PPS, rises on each gPTP second)──► PL
+                                                                        │ 2FF (ASYNC_REG) into mclk
+ mclk ─► free-running 32-bit cycle counter ─► captured on each PPS rise ─┤
+         frame phase (LRCK counter, 0..255) ─► captured with it          │
+                                                                         ▼
+                   media_clock_meter (platform) ─► status window 0x8000_2000 ─► Linux
+```
+
+- **`media_clock_meter`** (new, platform layer: it measures the platform's clock and knows nothing about audio data): on each PPS rising edge it captures the free-running `mclk` cycle count and the frame phase (the 8-bit LRCK divider count), and counts PPS edges and "implausible intervals" (Δ outside ±1000 ppm, e.g. when ptp4l steps the PHC). Resolution: **±1 `mclk` (81 ns) per edge**, i.e. **±0.08 ppm per 1-second interval**, averaging down over longer windows.
+- **Status window** (the generic `axil_stat_window` + reverse `coef_bank_handoff`, like the link's): ID `0x4D43_5001` ("MC"), CONFIG = the nominal cycles per second (12,288,000); words: PPS count, last capture, the capture before it, frame phase, implausible count. At **0x8000_2000**, the next free slot (the bus/DSP reservations move up one).
+- **BD:** export `emio_enet0_enet_tsu_timer_cnt` (already a PS output) to the RTL. **No PS setting changes**, so `psu_init` stays identical (to be checked as in P9.A6). An XDC entry for the one-bit async input (the synchronizer's ASYNC_REG pair; the PS pin has no PL clock).
+- **Software:** `mixer_hw.py mclk [seconds]`: frequency offset vs gPTP in ppm (per interval, and averaged), the frame phase at each second, implausible count.
+- **Bench:** expected ≈ **+324 ppm vs the Pi's gPTP time, plus the PL crystal's own error** (unknown so far: the 26 ppm measured in the spike was the PS crystal); stable to ≪ 1 ppm over minutes; the frame phase at the PPS advancing by that offset × 1 s each second (324 µs ≈ 15.6 frames/s), a consistency check between the two captured values.
+
+**Why this also serves P9.4 and the grandmaster role.** 48,000 frames per second is an integer, so the lock target is simple: `mclk` locked means **exactly 12,288,000 cycles per PPS and a fixed frame phase at the PPS**, so every gPTP second starts on a frame boundary. That is the AVB media-clock phase reference. It's the board's own PHC's PPS in either gPTP role.
+
+#### Decisions needed (T1–T4)
+
+| # | Question | Recommendation |
+|---|---|---|
+| T1 | Timing source: **1PPS from `tsu_timer_cnt` bit 45** into a 2FF synchronizer (no PS change, ±81 ns per edge), rather than exporting the TSU clock (undocumented, PS change) or the compare output (needs software)? | **1PPS.** A finer capture (the PPS timed with a faster PL clock) can come later if P9.4's numbers ask for it. |
+| T2 | The PL only captures (cycle count, frame phase, counters); **frequency and phase are computed in software** from the status window? | **Yes.** 1 Hz data is easy in Linux, and nothing is lost. |
+| T3 | New RO status window **`media_clock` at 0x8000_2000**, bus/DSP reservations moved up one slot? | **Yes.** |
+| T4 | **For P9.4, recorded now:** retune the MMCM to the integer setting (+11 ppm, VCO 1450 MHz) with fine phase shift enabled, as P9.4's first sub-step, and use P9.3's meter to confirm the ≈ 313 ppm change end to end before any steering. The loop itself: PL phase-stepping at a rate register, Linux running the PI loop on the 1 Hz captures (to decide in P9.4). | **Yes to the plan.** The retune changes `mclk` by 313 ppm, so the USB bridge's starting pitch (1000324) changes with it. |
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
