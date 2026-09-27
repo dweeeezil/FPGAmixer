@@ -6,14 +6,16 @@
 //
 //   sysclk -> audio_clocking -> mclk, rst_n, sclk, lrck  (shared by everything)
 //
-//   Pmod JB pins <-> i2s_port u_jb <-> PCM ch0 (L), ch1 (R) -.
-//   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) --+-> mixer_core
-//   PS (Audio Formatter) <-> pcm_link u_link <-> PCM ch4..11 -'   u_core
-//                                                   (time-shared 12 x 12 matrix)
+//   Pmod JB pins <-> i2s_port u_jb <-> PCM ch0 (L), ch1 (R) ----.
+//   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) -----+-> mixer_core
+//   PS (Audio Formatter #1) <-> pcm_link u_link  <-> ch4..11 ---+   u_core
+//   PS (Audio Formatter #2) <-> pcm_link u_link2 <-> ch12..19 --'
+//                                                   (time-shared 20 x 20 matrix)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
 //                                   -> coefficient read port -> u_core
 //                  (without the PS: coef_flat_reader u_gains, MATRIX_GAINS)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
+//                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
 //   platform (INCLUDE_MCLK, phase9): PS tsu_timer_cnt[45] (1PPS) ->
 //                  media_clock_meter -> media_clock_stat_regs <- M_AXI_MCLKSTAT
 //
@@ -22,8 +24,9 @@
 //   - MATRIX_GAINS: the routing the matrix resets to (identity);
 //   - where the gains come from: the PS (INCLUDE_PS builds), or MATRIX_GAINS
 //     tied on directly (non-PS projects and the Icarus/XSim integration TBs);
-//   - whether the PS<->PL link exists (INCLUDE_LINK, phase8 builds). Without
-//     it the link channels read as silence, so the core is 12 x 12 in every
+//   - whether the PS<->PL links exist (INCLUDE_LINK, phase8 builds; link #2,
+//     INCLUDE_LINK2, phase9 builds: the AVB front door's PL half). Without a
+//     link its channels read as silence, so the core is 20 x 20 in every
 //     build and the non-PS TBs see the same Pmod routing as before.
 //
 // NOTE (ZU-3EG): the JB/JC names match the board's silkscreen -- module #1 is on
@@ -62,8 +65,9 @@ module fpgamixer_top (
 );
 
     localparam int N_PMOD = 4;              // 2 per Pmod
-    localparam int N_LINK = 8;              // PS<->PL link, each way
-    localparam int N  = N_PMOD + N_LINK;    // core channels in = out
+    localparam int N_LINK  = 8;             // PS<->PL link #1 (USB), each way
+    localparam int N_LINK2 = 8;             // PS<->PL link #2 (AVB), each way
+    localparam int N  = N_PMOD + N_LINK + N_LINK2;  // core channels in = out
     localparam int SW = 24;
     localparam int GW = 18;    // gain width,  Q2.16
     localparam int GF = 16;    // gain fraction bits
@@ -109,26 +113,29 @@ module fpgamixer_top (
         .rx_flat (jc_rx), .rx_valid (jc_rx_valid), .tx_flat (jc_tx)
     );
 
-    // ----- PS<->PL link front door (PCM side) -----
-    logic [N_LINK*SW-1:0] link_rx, link_tx;   // rx = into the core, from the PS
+    // ----- PS<->PL link front doors (PCM side) -----
+    logic [N_LINK*SW-1:0]  link_rx,  link_tx;   // rx = into the core, from the PS
+    logic [N_LINK2*SW-1:0] link2_rx, link2_tx;
 
     // ----- Channel map (core ch0 at the LSB) -----
     //   ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R   (inputs and outputs)
-    //   ch4..ch11 = link channels 0..7: inputs = what the PS plays (USB: the
+    //   ch4..ch11 = link #1 channels 0..7: inputs = what the PS plays (USB: the
     //   Mac's outputs 1-8), outputs = what the PS records (the Mac's inputs 1-8)
+    //   ch12..ch19 = link #2 channels 0..7 (Phase 9, P9.5: the AVB front door's
+    //   ALSA card FPGAmixerLink2; inputs = what the PS plays into it)
     // New channels are appended, never interleaved, so saved crosspoint
     // indices keep their meaning when the core grows.
     logic [N*SW-1:0] core_in, core_out;
-    assign core_in = { link_rx, jc_rx, jb_rx };
-    assign { link_tx, jc_tx, jb_tx } = core_out;
+    assign core_in = { link2_rx, link_rx, jc_rx, jb_rx };
+    assign { link2_tx, link_tx, jc_tx, jb_tx } = core_out;
 
     // ----- Reset routing (Q2.16 gains; gain k = o*N + i, output o, input i) -----
     localparam logic signed [GW-1:0] G_UNITY = 18'sh10000;
 
     // IDENTITY: each output = its own input at unity. For the Pmods that is
     // each ADC passed to its own DAC (the minimal datapath test: noise here
-    // points at clocking or the ports, not the routing); for the link it is the
-    // PS's playback returned to its capture. Runtime control (INCLUDE_PS)
+    // points at clocking or the ports, not the routing); for each link it is
+    // the PS's playback returned to its capture. Runtime control (INCLUDE_PS)
     // starts from this bank, and the OSC server seeds missing crosspoints with
     // the same rule. Other routings for a non-PS build: git history before
     // Phase 8 has a worked 4 x 4 DEMO bank.
@@ -181,6 +188,21 @@ module fpgamixer_top (
     logic        stat_awvalid, stat_awready, stat_wvalid, stat_wready;
     logic        stat_bvalid, stat_bready, stat_arvalid, stat_arready;
     logic        stat_rvalid, stat_rready;
+`endif
+
+`ifdef INCLUDE_LINK2
+    // Link #2 (Phase 9, P9.5): the same set of ports as link #1
+    logic [31:0] mm2s2_tdata, s2mm2_tdata;
+    logic [7:0]  mm2s2_tid,   s2mm2_tid;
+    logic        mm2s2_tvalid, mm2s2_tready, s2mm2_tvalid, s2mm2_tready;
+
+    logic [31:0] stat2_awaddr, stat2_araddr, stat2_wdata, stat2_rdata;
+    logic [2:0]  stat2_awprot, stat2_arprot;
+    logic [3:0]  stat2_wstrb;
+    logic [1:0]  stat2_bresp, stat2_rresp;
+    logic        stat2_awvalid, stat2_awready, stat2_wvalid, stat2_wready;
+    logic        stat2_bvalid, stat2_bready, stat2_arvalid, stat2_arready;
+    logic        stat2_rvalid, stat2_rready;
 `endif
 
 `ifdef INCLUDE_MCLK
@@ -277,6 +299,35 @@ module fpgamixer_top (
         .M_AXI_LINKSTAT_rvalid      (stat_rvalid),
         .M_AXI_LINKSTAT_rready      (stat_rready),
 `endif
+`ifdef INCLUDE_LINK2
+        .M_AXIS_LINK2_MM2S_tdata    (mm2s2_tdata),
+        .M_AXIS_LINK2_MM2S_tid      (mm2s2_tid),
+        .M_AXIS_LINK2_MM2S_tvalid   (mm2s2_tvalid),
+        .M_AXIS_LINK2_MM2S_tready   (mm2s2_tready),
+        .S_AXIS_LINK2_S2MM_tdata    (s2mm2_tdata),
+        .S_AXIS_LINK2_S2MM_tid      (s2mm2_tid),
+        .S_AXIS_LINK2_S2MM_tvalid   (s2mm2_tvalid),
+        .S_AXIS_LINK2_S2MM_tready   (s2mm2_tready),
+        .M_AXI_LINK2STAT_awaddr     (stat2_awaddr),
+        .M_AXI_LINK2STAT_awprot     (stat2_awprot),
+        .M_AXI_LINK2STAT_awvalid    (stat2_awvalid),
+        .M_AXI_LINK2STAT_awready    (stat2_awready),
+        .M_AXI_LINK2STAT_wdata      (stat2_wdata),
+        .M_AXI_LINK2STAT_wstrb      (stat2_wstrb),
+        .M_AXI_LINK2STAT_wvalid     (stat2_wvalid),
+        .M_AXI_LINK2STAT_wready     (stat2_wready),
+        .M_AXI_LINK2STAT_bresp      (stat2_bresp),
+        .M_AXI_LINK2STAT_bvalid     (stat2_bvalid),
+        .M_AXI_LINK2STAT_bready     (stat2_bready),
+        .M_AXI_LINK2STAT_araddr     (stat2_araddr),
+        .M_AXI_LINK2STAT_arprot     (stat2_arprot),
+        .M_AXI_LINK2STAT_arvalid    (stat2_arvalid),
+        .M_AXI_LINK2STAT_arready    (stat2_arready),
+        .M_AXI_LINK2STAT_rdata      (stat2_rdata),
+        .M_AXI_LINK2STAT_rresp      (stat2_rresp),
+        .M_AXI_LINK2STAT_rvalid     (stat2_rvalid),
+        .M_AXI_LINK2STAT_rready     (stat2_rready),
+`endif
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -371,6 +422,57 @@ module fpgamixer_top (
     assign link_rx = '0;
 `endif
 
+`ifdef INCLUDE_LINK2
+    // ----- Front door: PS<->PL link #2 (Phase 9, P9.5, decision L1) -----
+    // A second instance of link #1, nothing changed: its own formatter in the
+    // BD (0x8011_0000, driver-owned; ALSA card FPGAmixerLink2), the same
+    // frame strobe, and its own status window at 0x8000_4000. Nothing in it
+    // is AVB-specific: the AVB half lives in Linux (P9.6/P9.7).
+    logic [31:0] lk2_frames_rx, lk2_frames_tx, lk2_underruns, lk2_starved;
+    logic [31:0] lk2_overruns, lk2_tid_errors;
+    logic [15:0] lk2_rx_fill;
+    logic        lk2_rx_running;
+
+    pcm_link #(.N_CH (N_LINK2), .SW (SW), .FIFO_FRAMES (LINK_FIFO_FRAMES)) u_link2 (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axis_tdata (mm2s2_tdata), .s_axis_tid (mm2s2_tid),
+        .s_axis_tvalid (mm2s2_tvalid), .s_axis_tready (mm2s2_tready),
+        .m_axis_tdata (s2mm2_tdata), .m_axis_tid (s2mm2_tid),
+        .m_axis_tvalid (s2mm2_tvalid), .m_axis_tready (s2mm2_tready),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (jb_rx_valid),
+        .rx_flat (link2_rx), .rx_valid (), .tx_flat (link2_tx),
+        .frames_rx (lk2_frames_rx), .frames_tx (lk2_frames_tx),
+        .underruns (lk2_underruns), .starved (lk2_starved),
+        .overruns (lk2_overruns), .tid_errors (lk2_tid_errors),
+        .rx_fill (lk2_rx_fill), .rx_running (lk2_rx_running)
+    );
+
+    // ----- Control plane: link #2's status window (0x8000_4000) -----
+    pcm_link_stat_regs #(
+        .N_CH_RX (N_LINK2), .N_CH_TX (N_LINK2),
+        .FIFO_WORDS (LINK_FIFO_FRAMES * 8), .ADDR_WIDTH (12)
+    ) u_link2_stat (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (stat2_awaddr[11:0]), .s_axi_awvalid (stat2_awvalid),
+        .s_axi_awready (stat2_awready),
+        .s_axi_wdata   (stat2_wdata),  .s_axi_wstrb  (stat2_wstrb),
+        .s_axi_wvalid  (stat2_wvalid), .s_axi_wready (stat2_wready),
+        .s_axi_bresp   (stat2_bresp),  .s_axi_bvalid (stat2_bvalid),
+        .s_axi_bready  (stat2_bready),
+        .s_axi_araddr  (stat2_araddr[11:0]), .s_axi_arvalid (stat2_arvalid),
+        .s_axi_arready (stat2_arready),
+        .s_axi_rdata   (stat2_rdata),  .s_axi_rresp  (stat2_rresp),
+        .s_axi_rvalid  (stat2_rvalid), .s_axi_rready (stat2_rready),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (jb_rx_valid),
+        .frames_rx (lk2_frames_rx), .frames_tx (lk2_frames_tx),
+        .underruns (lk2_underruns), .starved (lk2_starved),
+        .overruns (lk2_overruns), .tid_errors (lk2_tid_errors),
+        .rx_fill (lk2_rx_fill), .rx_running (lk2_rx_running)
+    );
+`else
+    assign link2_rx = '0;
+`endif
+
 `ifdef INCLUDE_MCLK
     // ----- Platform: media-clock meter (Phase 9, P9.3) -----
     // 1PPS on the gPTP second = the inverse of tsu_timer_cnt[45], the ns
@@ -449,12 +551,14 @@ module fpgamixer_top (
         .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (MATRIX_GAINS),
         .rd_addr (coef_addr), .rd_data (coef_data)
     );
-    assign link_rx = '0;
+    assign link_rx  = '0;
+    assign link2_rx = '0;
 `endif
 
     // ----- PCM core -----
     // mixer_core: pack -> stream -> time-shared pcm_matrix -> stream -> pack.
-    // core_out updates D cycles after the strobe (162 at 12 x 12), before
+    // core_out updates D cycles after the strobe (227 at 20 x 20 on 2 lanes;
+    // it was 162 at 12 x 12 on 1), before
     // i2s_port samples its pair (edge 254) and the link its frame (the next
     // strobe): the same latency as the parallel matrix had.
     mixer_core #(

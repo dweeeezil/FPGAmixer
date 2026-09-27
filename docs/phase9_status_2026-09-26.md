@@ -814,6 +814,34 @@ The AVB front door's PL half is a **second PS↔PL link**: the same Audio Format
 
 **Decided by the user, 2026-09-27: L1–L5 all as recommended.** Implementation moves to a fresh session (opening prompt: `docs/prompt_phase9_p95.md`).
 
+### 6.9 P9.5a: link #2 in the RTL and the BD, core 20 × 20 (simulation + Vivado): clean
+
+Seams used: **front door** (a second `pcm_link`, unchanged), **control plane** (a second `pcm_link_stat_regs` window, unchanged), **platform** (the channel map and the BD). No new RTL module; the core's interface didn't change, only its size.
+
+| File | What |
+|---|---|
+| `src/rtl/fpgamixer_top.sv` | `N_LINK2 = 8`, **N = 4 + 8 + 8 = 20**; channel map `{link2, link, jc, jb}`; under the new define **`INCLUDE_LINK2`**: `u_link2` (`pcm_link`, same parameters and frame strobe as `u_link`) and `u_link2_stat` (`pcm_link_stat_regs`), the BD ports `M_AXIS_LINK2_MM2S`, `S_AXIS_LINK2_S2MM`, `M_AXI_LINK2STAT`. Without it (non-PS builds, `phase8`) `link2_rx = 0`, so the core is 20 × 20 in every build. The identity reset bank, `LANES` (= 2) and the coefficient store's size all follow from N through the existing functions |
+| `scripts/create_project.tcl` | `phase9` gains `include_link2` (decision L5). The formatter's BD code moved into a proc, **`add_link_formatter`**, called for link #1 (same cell, ports, SmartConnect port and address as before) and for `link2_formatter`: M05 at **0x8011_0000**; DMA on `link_dma_smc` slaves S02/S03 (4 slaves); IRQs on `link_irqs` In2/In3 (4 inputs) into `pl_ps_irq0`; the **same `link_mclk` / `link_mreset`**. `M_AXI_LINK2STAT` on M06 at **0x8000_4000** (decision L3). Control SmartConnect 5 → 7 masters. Define set `INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2` |
+
+**Simulation.** `xsim_regress.ps1`: **ALL PASS, 15/15**. The two integration TBs (`tb_phase3_datapath`, `tb_phase3_dynamic`: the whole non-PS top) now run the 20 × 20 core: a probe compiled against the same files printed **`N=20 LANES=2 D=227`** for the elaborated top (not a stale 12 × 12), and `tb_phase3_dynamic` prints the same `locked: JB_L=100005 JB_R=200005 JC_L=300005 JC_R=400005` as before, so the Pmod path's latency is unchanged at D = 227 (≤ 250, §2.1). `tb_pcm_matrix_rect` already covered 20 × 20 bit-exact (§5.5). **What simulation can't see:** link #2's channels are silent in every simulated build (it needs the BD), so the `{link2, link}` order is checked only on the bench; `pcm_link` itself is unchanged and covered by `tb_pcm_link`.
+
+**Build `p95`** (Vivado 2026.1, `phase9`; logs `build/p95_{create,build}.log`, reports `build/p95_*.rpt`, XSA `build/fpgamixer_p95.xsa`):
+
+| | P9.4b (`p94b`) | **P9.5 (`p95`)** |
+|---|---|---|
+| WNS / WHS | +2.717 / +0.010 ns | **+2.505 / +0.004 ns**, 0 failing endpoints; methodology gate **PASS**, 0 critical warnings |
+| worst setup path | the codec RX-sampling check | the same (`fwd_sclk_jb_ad` → `mclk`, the razor since Phase 3.5); `pl_clk0` alone +5.048 ns, `mclk` alone +76.2 ns |
+| **DSP48E2** | 1 | **2** (both `pcm_matrix` lanes: dynamic OPMODE, MREG + PREG, 48-bit P, as planned) |
+| RAMB18 | 1 | **3**: the two lane banks (512 × 18 each, written on `pl_clk0`, read on `mclk`) and the shadow (400 × 18; at 144 words it had been LUTRAM) |
+| LUTs / FFs | 7505 / 13707 | **12,633 / 22,877** (17.9 % / 16.2 %): formatter #2, the extra SmartConnect ports, link #2 and its window (not broken down by hierarchy) |
+| **CDC crossings** | 1715 | **3186, every one with an exception** (max-delay or false path) |
+
+**CDC by structure:** link #2 is an exact copy of link #1: `u_link/` **1220** and `u_link2/` **1220** (FIFO LUTRAM read paths + Gray pointers), `u_link_stat/` **249** and `u_link2_stat/` **249**, formatter-internal `xpm_cdc` 2 each; `u_mclk_stat/` 242 and the matrix's `u_regs/u_bank` 2 toggles unchanged. 1715 + 1220 + 249 + 2 = 3186.
+
+**BD warnings:** the same accepted set as Phase 8 (BD 41-3281 "connected on both sides by SmartConnects", now also for `link2_formatter`; BD 41-237 AxUSER 4 → 1 into HPC0), plus the pre-existing "No files matched '*'" (also in `p8_create.log`). The BD address report: `SEG_M_AXI_LINK2STAT_Reg 0x80004000 4K`, `SEG_link2_formatter_reg0 0x80110000 64K`, and both of formatter #2's DMA masters see HPC0 DDR_LOW / DDR_HIGH as #1's do.
+
+Not checked here: SDT, image, bench (P9.5b onward).
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
@@ -869,3 +897,4 @@ The AVB front door's PL half is a **second PS↔PL link**: the same Audio Format
 - **2026-09-27: P9.4a PASS on the meter** (§6.4): MMCM 25 × 58/118; **mclk now +0.85 ppm vs gPTP** (from +315.34), 48,000 frames per gPTP second; link clean; jitter 289 → 187 ps. Audio by ear: heard, after re-routing (the reflash had reset it). **P9.4a done.** New open items: `phc2sys` follows a bogus grandmaster time (board clock went to 1970 after the Pi rebooted), USB bridge direction B still swings at start-up and its coarse fix spins while the Mac is idle.
 - **2026-09-27: P9.4b on hardware** (§6.6.1): open-loop `steer ±2` moved the meter by exactly 2.00 ppm against the crystals' drift (sign confirmed by the step counters); **the loop locked in 5 s and holds the frame phase at −1 … −3 cycles (≤ 244 ns)** while tracking ≈ −0.1 ppm/min drift; link clean with the loop running; **by ear with the loop locked: clean** (user). `fpgamixer-mediaclock` switched to enabled-at-boot for the next image. Then (§6.6.2) **holdover PASS** (grandmaster loss: no state change; a reference step: HOLDOVER 6 s, re-LOCKED 15 s later, phase back to 0 in ~100 s, no audible glitch) and **a 60-min soak PASS** (phase ±1 cycle steady, gPTP 2–4 ns RMS). **P9.4 done.** Next: P9.5 (link #2, core 20 × 20). (This entry was first spliced into the middle of the P9.A6 line by an edit anchored on a phrase inside it; moved here.)
 - **2026-09-27: P9.5 planned** (§6.8); decisions **L1–L5 all as recommended**. Found: the ALSA card driver hard-codes its card name (not multi-instance, contrary to the Phase 8 doc). Implementation handed to a fresh session: `docs/prompt_phase9_p95.md`.
+- **2026-09-27: P9.5a clean** (§6.9): link #2 (`u_link2` + `u_link2_stat`, `INCLUDE_LINK2`) and `link2_formatter` (0x8011_0000; status 0x8000_4000) in the `phase9` variant, formatter BD code shared through `add_link_formatter`; core **20 × 20** in every build (probe: N 20, 2 lanes, D 227). `xsim_regress` 15/15; build `p95` WNS +2.505 / WHS +0.004 ns, methodology PASS, **2 DSP48E2**, 3 RAMB18, CDC 3186 all constrained (link #2 = a copy of link #1's structures). Next: P9.5b (card driver + DT + tools), SDT, image, bench.

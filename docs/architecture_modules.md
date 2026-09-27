@@ -49,7 +49,8 @@ There are four kinds of block:
 | Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
 | Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding. Samples its output pair once per DAC frame, at the L load (Phase 9 fix of a one-sample L/R skew) |
-| Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8, in progress: `phase8_status_2026-09-25.md`) |
+| Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8: `phase8_status_2026-09-25.md`). **Two instances since P9.5:** `u_link` (link #1, used by USB) and `u_link2` (link #2, `INCLUDE_LINK2`, for AVB), identical, each with its own formatter and status window |
+| Front door (Linux half of a link) | `yocto/meta-fpgamixer/recipes-kernel/fpgamixer-link-card/` + the card nodes in `recipes-bsp/device-tree/files/system-user.dtsi` | the ASoC machine driver that makes a formatter an ALSA card; **one DT node per link**, the card name from `fpgamixer,card-name` (default `FPGAmixerLink` = link #1; link #2 = `FPGAmixerLink2`, P9.5) |
 | Generic | `src/rtl/async_fifo.sv` + `constraints/async_fifo.xdc` | dual-clock FIFO; XDC scoped to the module like `coef_bank_handoff.xdc` |
 | Platform (image) | `yocto/meta-fpgamixer/recipes-kernel/`, `recipes-apps/fpgamixer-usb-gadget` | kernel fragment for USB device mode; the UAC2 gadget (USB front door, Linux half) |
 | PCM core | `src/rtl/mixer_core.sv` | the whole core as one block, packed contract on both sides: `pcm_pack2stream` → `pcm_matrix` → `pcm_stream2pack`, plus the matrix's coefficient read port. Phase 9 (C4); the bus layer and DSP blocks go inside it |
@@ -63,8 +64,8 @@ There are four kinds of block:
 | Generic | `src/rtl/coef_flat_reader.sv` | the same read port over a flat vector (non-PS builds, TBs) |
 | Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
 | Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
-| Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`) |
-| Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW`, `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `MediaClockSteerHW` (ppm ↔ RATE, `mixer_hw.py steer`), `WINDOWS` (address map) |
+| Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`); one instance per link (`u_link_stat`, `u_link2_stat`) |
+| Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW` (windows `linkstat` and `linkstat2`; `mixer_hw.py link` / `link2`), `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `MediaClockSteerHW` (ppm ↔ RATE, `mixer_hw.py steer`), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
 | Front door (AVB, Linux half) | `yocto/meta-fpgamixer/recipes-apps/fpgamixer-gptp/` | Phase 9 (P9.1): ptp4l + phc2sys on `end0` at boot, gPTP profile, role by BMCA (`priority1 250`: follows a better clock, grandmaster by one config value). Knows nothing about audio; the media clock (P9.3/4) reads the PHC's time in the PL |
@@ -78,7 +79,7 @@ Every audio connection between blocks uses this, and only this:
 
 | Signal | Definition |
 |---|---|
-| `clk` | the core audio clock, `mclk` (12.288 MHz nominal, 12.2919 MHz actual, from `clk_wiz_audio`) |
+| `clk` | the core audio clock, `mclk` (12.288 MHz, from `clk_wiz_audio`: +11 ppm nominal since P9.4a, and in `phase9` builds steered onto gPTP by `media_clock_steer` + `fpgamixer-mediaclock`, P9.4b) |
 | `rst_n` | active-low, synchronous to `mclk` (`reset_sync`) |
 | `valid` | one-`mclk` pulse per audio frame (48 kHz nominal) |
 | `data` | flat packed vector, channel *c* at `[c*24 +: 24]`, signed two's-complement, 24-bit |
@@ -112,7 +113,7 @@ Rules:
 
 Boundary converters (generic, P9.A2): **`pcm_pack2stream`** captures the packed vector on the strobe and emits channels 0 … N−1 on cycles 1 … N. **`pcm_stream2pack`** collects beats by `s_ch` and moves all channels to its packed output together, one cycle after the beat for N−1; `err_o` pulses on an out-of-order beat or an incomplete frame.
 
-Today's channel map (platform layer, `fpgamixer_top`, since Phase 8): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, **ch4–ch11 = PS↔PL link channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records). Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is the concatenation `{link, jc, jb}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without the link (non-PS builds) ch4–11 read as silence; the core is 12 × 12 in every build.
+Today's channel map (platform layer, `fpgamixer_top`, since Phase 8; grown in P9.5): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, **ch4–ch11 = PS↔PL link #1 channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records), **ch12–ch19 = link #2 channels 0–7** (card `FPGAmixerLink2`, the AVB front door's; P9.5). Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is the concatenation `{link2, link, jc, jb}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without a link (non-PS builds; link #2 also in `phase8` builds) its channels read as silence; the core is **20 × 20 in every build** (2 DSP48E2 lanes, D = 227).
 
 ---
 
@@ -154,12 +155,14 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 
 | Window | Block | Since |
 |---|---|---|
-| 0x8000_0000 | input → output matrix (`u_regs` / `u_matrix`), 12 × 12 since Phase 8 | Phase 5 |
+| 0x8000_0000 | input → output matrix (`u_regs` / `u_core`), 12 × 12 since Phase 8, **20 × 20 since P9.5** | Phase 5 |
 | 0x8000_1000 | PS↔PL link status (`u_link_stat`, read-only, ID `0x4C4B_5001`) | Phase 8 |
 | 0x8000_2000 | media-clock meter (`u_mclk_stat`, read-only, ID `0x4D43_5001`): `mclk` vs the gPTP 1PPS; `phase9` builds | Phase 9 (P9.3) |
 | 0x8000_3000 | media-clock steering (`u_mclk_ctrl`, read/write, ID `0x4D53_5001`): the rate for the MMCM's fine phase shift; `phase9` builds | Phase 9 (P9.4b) |
-| 0x8000_4000… | reserved: bus matrix, DSP blocks (moved up again in P9.4b) | — |
-| 0x8010_0000 (64K) | AMD Audio Formatter registers: **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
+| 0x8000_4000 | PS↔PL **link #2** status (`u_link2_stat`, read-only, ID `0x4C4B_5001`, the same binding as link #1); `phase9` builds | Phase 9 (P9.5) |
+| 0x8000_5000… | reserved: bus matrix, DSP blocks (moved up again in P9.5) | — |
+| 0x8010_0000 (64K) | AMD Audio Formatter #1 registers (`link_formatter`, card `FPGAmixerLink`): **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
+| 0x8011_0000 (64K) | AMD Audio Formatter #2 registers (`link2_formatter`, card `FPGAmixerLink2`): driver-owned, as #1; `phase9` builds | Phase 9 (P9.5) |
 
 Driver-owned devices go at 0x801x_xxxx, so the 0x8000_x000 range stays for windows with the ID/CONFIG header.
 
@@ -203,12 +206,12 @@ Listed honestly, so they're fixed deliberately rather than worked around. None o
 
 | Work | Seam(s) used | New blocks |
 |---|---|---|
-| Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at the next free window (0x8000_4000 since P9.4b); a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
+| Bus layer (later; user decision 2026-09-25: not yet) | PCM contract between matrices; a new register window; zones `inputMatrix` / `busMatrix` | a `mixer_core` holding two `pcm_matrix` instances (N_IN × N_BUS, then N_BUS × N_OUT); a second `matrix_regs_axil` at the next free window (0x8000_5000 since P9.5); a `busMatrix` entry in `WINDOWS` and `BACKENDS`. All the needed seams exist since D1–D4. |
 | Phase 6 persistence | control plane only | server-side; already restores and pushes the bank at startup |
 | Phase 7 DSP | PCM contract + coefficient contract + a window per DSP block | one core block per DSP type |
 | Phase 8/11 USB audio, Phase 9 AVB | **front door** | a generic **PS ↔ PL PCM stream bridge** (DMA or AXI-Stream FIFO into an elastic buffer that presents the PCM contract on `mclk`), shared by USB and AVB; the protocol side (ALSA/`f_uac2`, 1722) stays in Linux. **Proposal (2026-09-25, awaiting decisions):** `phase8_status_2026-09-25.md`: Audio Formatter → ALSA card on `mclk` time, `pcm_link` PL front door, new generic RO `axil_stat_window` |
 
-**Phase 9 (AVB), proposed 2026-09-26** (`phase9_status_2026-09-26.md`): a **second link instance** (formatter + `pcm_link`, core channels 12–19 appended) with an AVB front door whose Linux half is gPTP + CBS shaping + the alsa-plugins AAF talker/listener + a bridge. One new **platform** piece: `mclk` disciplined to gPTP, so the network disciplines the core's own clock and the core still never sees a foreign one. One **core** change with an unchanged interface: a time-multiplexed `pcm_matrix`.
+**Phase 9 (AVB), proposed 2026-09-26** (`phase9_status_2026-09-26.md`): a **second link instance** (formatter + `pcm_link`, core channels 12–19 appended; **built in P9.5**, no new RTL, the card driver named per DT node) with an AVB front door whose Linux half is gPTP + CBS shaping + the alsa-plugins AAF talker/listener + a bridge. One new **platform** piece: `mclk` disciplined to gPTP (**done, P9.3/P9.4**), so the network disciplines the core's own clock and the core still never sees a foreign one. One **core** change with an unchanged interface: a time-multiplexed `pcm_matrix` (**done, P9.A**).
 
 ### Why there is no "quick USB" path (asked 2026-09-25)
 
