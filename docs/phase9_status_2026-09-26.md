@@ -585,6 +585,22 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 - **Image built 2026-09-26:** `gen-machine-conf` (exit 0) + bitbake, 14,840 tasks, all succeeded, 23 warnings (the usual). Checked: deployed bitstream MD5 = Vivado `p93` (`c6e4262e…`); rootfs has `mixer_hw.py` with `MediaClockHW` and the **fixed `fpgamixer-ptp4l.service`** (`ExecStartPre … end0 up`); the DTB has `M_AXI_MCLKSTAT@80002000`. Copied to **`build/sd/p93-mclk-20260926.wic.xz`** (MD5 `33828acc…`).
 - **SDT** (`build/sdt`, the previous one kept as `build/sdt.p9a5`): **`psu_init.tcl` / `psu_init.c` / `zynqmp.dtsi` identical**, so exporting the counter changed no PS setting. The device tree gains `M_AXI_MCLKSTAT@80002000` (which `mixer_hw`'s presence guard needs) and its address-map entries.
 
+### 6.4 P9.4a: the MMCM retune (built; bench pending)
+
+**UG572 checked first** (docs.amd.com, "Dynamic Phase Shift Interface in the MMCM", read 2026-09-27): each PSEN pulse shifts the selected outputs by **1/56 of the VCO period**; a shift takes **exactly 12 PSCLK cycles** (PSDONE); the outputs "gradually drift … in a linear fashion" (no step at the pins); **no maximum** shift (it wraps). So one step every 12 PSCLK cycles is the rate limit (≈ 8.3 M steps/s at 100 MHz). The fractional-divide page wasn't reachable (the site was partly down); it doesn't matter, since the dividers are now integers.
+
+| Change | What |
+|---|---|
+| `scripts/create_project.tcl` | `clk_wiz_audio` **forced to D = 1, M = 58, O = 118** (VCO 1450 MHz, 12.28814 MHz, **+11.03 ppm** nominal; fine-phase step 12.3 ps). The wizard ignores direct divider values ("disabled parameter"), and asking for 12.288136 MHz gets the same ratio as fractional 43.5 / 88.5 (VCO 1087.5 MHz), so it's set in **override mode** (`OVERRIDE_MMCM`). Both tried in a throwaway project first |
+| `src/rtl/audio_clocking.sv` | header: the new setting and the measured history |
+| `fpgamixer-usb-bridge.c` | `PITCH_START` 1000324 → **1000011** (the new nominal), so the Mac doesn't start 313 ppm off |
+
+**Deviation from T4, recorded:** fine phase shift is **not enabled yet**. Enabling it adds the PSCLK/PSEN/PSINCDEC/PSDONE ports, and which clock drives PSCLK is a design choice for the steering step: `pl_clk0` exists only in PS builds, `mclk` itself can't clock its own shifter usefully. So it moves to P9.4b, with the loop.
+
+**Build `p94a`:** the generated MMCM has `DIVCLK_DIVIDE 1`, `CLKFBOUT_MULT_F 58.000`, `CLKOUT0_DIVIDE_F 118.000`. **WNS +2.762 / WHS +0.010 ns** (the worst path is still the codec RX-sampling check), methodology PASS, 0 critical warnings. The timing engine derives `mclk` as 81.379 ns. **Jitter, from Vivado's clock analysis** (the wizard's own figure isn't recomputed in override mode): discrete jitter **289 → 187 ps**, `mclk` clock uncertainty **149 → 100 ps**. The higher, integer-ratio VCO is cleaner. CDC 1715, all constrained (unchanged). SDT: only `firmware-name` differs from P9.3's (`psu_init` identical).
+
+**Prediction for the bench:** the meter reads **≈ +2.4 ppm** (+11.03 nominal, −8.66 for the PL crystal vs the Pi), i.e. **312.97 ppm below P9.3's +315.34**, modulo the crystal's drift. The USB path should work as before, with the bridge's pitch settling ~313 ppm lower than before (≈ 1000030 instead of ≈ 1000345).
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
