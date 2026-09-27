@@ -585,7 +585,24 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 - **Image built 2026-09-26:** `gen-machine-conf` (exit 0) + bitbake, 14,840 tasks, all succeeded, 23 warnings (the usual). Checked: deployed bitstream MD5 = Vivado `p93` (`c6e4262e…`); rootfs has `mixer_hw.py` with `MediaClockHW` and the **fixed `fpgamixer-ptp4l.service`** (`ExecStartPre … end0 up`); the DTB has `M_AXI_MCLKSTAT@80002000`. Copied to **`build/sd/p93-mclk-20260926.wic.xz`** (MD5 `33828acc…`).
 - **SDT** (`build/sdt`, the previous one kept as `build/sdt.p9a5`): **`psu_init.tcl` / `psu_init.c` / `zynqmp.dtsi` identical**, so exporting the counter changed no PS setting. The device tree gains `M_AXI_MCLKSTAT@80002000` (which `mixer_hw`'s presence guard needs) and its address-map entries.
 
-### 6.4 P9.4a: the MMCM retune (built; bench pending)
+### 6.4 P9.4a: the MMCM retune: PASS on the meter (bench 2026-09-27; audio check pending re-routing)
+
+**Bench (image `p94a-retune-20260927`):**
+
+| Check | Result |
+|---|---|
+| **`mixer_hw.py mclk 60`** | **mean +0.852 ppm** vs gPTP; single intervals +0.814 … +0.895 ppm (12,288,010–011 cycles); **48,000 frames per gPTP second** |
+| vs P9.3 | +315.336 → +0.852: a step of **−314.49 ppm**, predicted −312.97 from the dividers. The −1.5 ppm left over is drift of the two crystals: P9.3's reading was still falling after power-up, and the Pi (the reference) had been rebooted, so its I350 was cold again. Not separable here, and it is the few-ppm range the loop absorbs |
+| `link 10` (the Mac streaming) | 48,001.9 / 48,001.8 frames/s, 0 underruns, 0 starved, 0 overruns, 0 TID errors |
+| audio on the Pmods | silent: **the reflash reset the saved routing** (`mixer_state.json`), so the board seeded identity (no USB → Pmod routes). Re-route and listen: pending |
+| bridge start-up | both pitches start at **1000011** (the new `PITCH_START`). A settles smoothly (1000011 → 1000039 in a minute) |
+
+**Findings along the way (none caused by the retune):**
+- **The board's system clock went back to 1970.** The Pi had been rebooted and its ptp4l restarted **without** `phc_ctl … set`, so its PHC counted from 0, and the board's `phc2sys -a -r` set `CLOCK_REALTIME` from it (the bridge journal jumps from "Sep 27 20:10" to "Jan 01 00:10"). Harmless for audio. But **`phc2sys` trusts whatever time the grandmaster carries**: an open design item (a plausibility guard, e.g. never step the system clock to before the image's build date). Bench rule: after the Pi reboots, `phc_ctl eth4 freq 0 set adj 37` before ptp4l.
+- **The Pi's ptp4l faulted repeatedly before its reboot:** `timed out while polling for tx timestamp` / `send peer delay response failed` / `rogue peer delay response` (the I350/igb TX-timestamp timeout, a known Linux issue). If it recurs, raise `tx_timestamp_timeout` in the Pi's config. Pi-side only.
+- **USB bridge, direction B at start-up (open, a bridge issue, not P9.4):** while the Mac isn't reading yet (5 frames/s), the **coarse fix fires 30,052 times in 10 s**, i.e. it spins. After the Mac starts, B's pitch still swings (1000207 → 1000240 → 1000013 over a minute, queue +188 → −139 frames). The Phase 8 coarse-fix + hold change doesn't prevent the start-up swing. Needs its own look: detect an idle Mac and don't correct then; re-check the PI gains against a 1-period coarse band.
+
+#### Build and changes
 
 **UG572 checked first** (docs.amd.com, "Dynamic Phase Shift Interface in the MMCM", read 2026-09-27): each PSEN pulse shifts the selected outputs by **1/56 of the VCO period**; a shift takes **exactly 12 PSCLK cycles** (PSDONE); the outputs "gradually drift … in a linear fashion" (no step at the pins); **no maximum** shift (it wraps). So one step every 12 PSCLK cycles is the rate limit (≈ 8.3 M steps/s at 100 MHz). The fractional-divide page wasn't reachable (the site was partly down); it doesn't matter, since the dividers are now integers.
 
@@ -655,3 +672,4 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 - **2026-09-26:** AVB decisions recorded (§8.1): M2a; board follows the Pi now, grandmaster later; 8 + 8 class A 48 kHz; Pi first (I350-as-switch / Mac noted, to verify); AVB at core ch 12–19. **P9.1 built** (§6.1): `fpgamixer-gptp` (ptp4l + phc2sys at boot, role by BMCA, `priority1 250`), linuxptp moved from the VM's `local.conf` into the layer; image `p91-gptp-20260926`, bench pending. §9 item 1 partly checked (the TSU counter's clock isn't exported; a PS option exists, to read in UG1085).
 - **2026-09-26: P9.1 PASS** (§6.1): first boot FAULTY (macb refuses `SIOCSHWTSTAMP` while `end0` is down; the unit now brings it up first), then SLAVE from a cold boot; failover to grandmaster and failback both automatic; **2–3 ns RMS / ≤ 9 ns** once the Pi's PHC was no longer steered by its noisy `phc2sys` (which had caused 2–3 µs). Open: 20-min soak, bridge log.
 - **2026-09-27: P9.3 PASS** (§6.3): the meter on hardware reads **mclk = +315.34 ppm vs gPTP** (60 s mean, ±0.08 ppm per interval), so the PL crystal is −8.66 ppm vs the Pi; `psu_init` unchanged; gPTP SLAVE from boot from the image. Next: P9.4, starting with the MMCM retune (T4), predicted to read ≈ +2.4 ppm.
+- **2026-09-27: P9.4a PASS on the meter** (§6.4): MMCM 25 × 58/118; **mclk now +0.85 ppm vs gPTP** (from +315.34), 48,000 frames per gPTP second; link clean; jitter 289 → 187 ps. Pending: audio by ear (routing was reset by the reflash). New open items: `phc2sys` follows a bogus grandmaster time (board clock went to 1970 after the Pi rebooted), USB bridge direction B still swings at start-up and its coarse fix spins while the Mac is idle.
