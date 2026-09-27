@@ -278,11 +278,12 @@ class MediaClockSteer(unittest.TestCase):
 
     def test_sign_scale_roundtrip(self):
         st = mixer_hw.MediaClockSteerHW(0, dev=self.path)
-        # +50 ppm faster = 174,37x steps-per-cycle units of DECREMENTS (negative RATE),
-        # the same magnitude tb_media_clock_steer uses for 50 ppm
+        # +50 ppm faster = 4.06 M decrements/s = 0.0406 steps per 100 MHz cycle
+        # = 174,375,672 units of 2^-32, negative (decrements); the magnitude
+        # tb_media_clock_steer's rate_for_ppm(50.0) gives
         reg = st.rate_for_ppm(50.0)
         signed = reg - (1 << 32) if reg & 0x8000_0000 else reg
-        self.assertTrue(-174_380 < signed < -174_370)
+        self.assertTrue(-174_376_000 < signed < -174_375_000)
         self.assertLess(st.rate_for_ppm(-1.0) & 0x8000_0000, 1)       # slower: positive RATE
         for ppm in (0.0, 0.852, -3.25, 42.0):
             self.assertAlmostEqual(st.ppm_for_rate(st.rate_for_ppm(ppm)), ppm, places=5)

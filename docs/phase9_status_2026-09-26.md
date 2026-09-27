@@ -676,7 +676,7 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 | `src/rtl/fpgamixer_top.sv` | under `INCLUDE_MCLK`: `u_mclk_steer` on `ctrl_aclk` (= PSCLK), `u_mclk_ctrl`; otherwise PSEN tied low |
 | `scripts/create_project.tcl` | `USE_DYN_PHASE_SHIFT` + **`MMCM_CLKOUT0_USE_FINE_PS` forced, printed, and checked** (the script stops if it isn't set: the override-mode trap, §6.5); SmartConnect M04 → `M_AXI_MCLKCTRL` at **0x8000_3000**; the scoped XDC |
 | `tools/mixer_hw.py` | `MediaClockSteerHW` (ppm ↔ RATE from CONFIG / VCO_HZ / PS_DIV; the user-facing sign is **+ppm = `mclk` faster**, the opposite of RATE; clamps at the maximum), `WINDOWS["mclkctl"]`, CLI `steer [ppm]` |
-| `tools/test_mixer_hw.py` | 4 tests: geometry and the maximum, sign and scale (±50 ppm = ∓174,37x, as in the TB), round trips, clamping, wrong ID |
+| `tools/test_mixer_hw.py` | 4 tests: geometry and the maximum, sign and scale (±50 ppm = RATE ∓174,375,672, as in the TB; the first version of this test expected ∓174,37x, off by 1000, and failed on the VM: the test was wrong, the code right), round trips, clamping, wrong ID |
 
 **`tb_media_clock_steer` (XSim): PASS.**
 
