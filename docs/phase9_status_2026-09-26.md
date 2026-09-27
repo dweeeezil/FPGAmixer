@@ -695,7 +695,21 @@ Also checked: frame count × 256 + frame phase advances by exactly each interval
 
 **Regression:** `xsim_regress.ps1` **15/15** (the integration TBs with the new MMCM ports).
 
-**Not run yet:** the Python tests (the build VM, which runs them, was unreachable; they run before the image is built).
+**Not run yet:** the Python tests of `mixer_hw` (they need Linux; the build VM was off; they run before the image is built).
+
+**Build `p94b` (`phase9`):** `clk_wiz_audio forced: D=1 M=58.000 O=118.000 dyn_ps=true clkout0_fine_ps=true`. **WNS +2.717 / WHS +0.010 ns**, methodology PASS, 0 critical warnings; 1 DSP, 1 RAMB18, 7505 LUTs; CDC 1715, all constrained (LOCKED into the steerer has no PL clock: not in the report, like the PPS). **Checked on the routed checkpoint:** the implemented MMCME4 has `CLKOUT0_USE_FINE_PS=TRUE`, M 58, O 118; PSCLK = `clk_pl_0`; PSEN (slack 8.185 ns), PSINCDEC (8.109 ns) and PSDONE (7.117 ns) are **timed** on `pl_clk0`. SDT: `psu_init` identical; the DT gains `M_AXI_MCLKCTRL@80003000`.
+
+### 6.7 P9.4b3: the loop (`fpgamixer-mediaclock`), written; on hardware after the open-loop test
+
+| File | What |
+|---|---|
+| `tools/mediaclock.py` (new) | `MediaClockLoop`, the control law **with no I/O** (fed one reference second at a time), and the service around it (`mixer_hw` windows `mclk` + `mclkctl`, 5 Hz poll, one update per new PPS capture, a log line every 10 s). States **ACQUIRE** (remove 80 % of the measured frequency error per second until < 0.2 ppm for 3 s) → **LOCKED** (a type-2 PI on the phase error: `u = u_int − e/TAU`, `u_int −= e/(TAU·4TAU)`) ↔ **HOLDOVER** (an implausible interval or no PPS for 1.5 s: the correction is frozen, S5; back to ACQUIRE when valid). Clamped at 95 % of the hardware maximum. `--tau`, `--target`, `--dry-run`, `-v` |
+| `tools/test_mediaclock.py` (new) | against a simulated `mclk` whose meter captures carry the real ±1-cycle quantization, the correction applied one second late as on the board; runs anywhere (no mmap) |
+| `recipes-apps/fpgamixer-mediaclock/` (new) | the script (from `tools/`, like `fpgamixer-osc`) + a unit, **installed but not enabled** until the loop has passed the bench |
+
+**`test_mediaclock`: 8/8 on this PC.** From this bench's +0.852 ppm with the frame grid anywhere: LOCKED in < 30 s, correction → −0.852 ppm (±0.01), phase within **±2 cycles (±163 ns)** over the last 100 s; no overshoot beyond 1.3× the initial error; a +50 ppm offset locks at −50 ppm; −0.5 ppm/min drift held within 12 cycles (< 1 µs); holdover freezes the correction bit-exactly for the 10 invalid seconds and re-locks; +200 ppm clamps at 80 ppm without claiming lock; a target phase of 100 is held. **Mutants, all FAIL:** phase sign flipped (4 failures), holdover zeroing the correction (1), no phase wrap (3), acquisition sign flipped (4 + 2 errors). (A first mutation run was invalid, since Python reused a cached bytecode of the previous mutant, betrayed by the baseline failing too. Rerun with `PYTHONDONTWRITEBYTECODE=1` and a fresh directory per mutant.)
+
+**Found while testing: TAU had to come down from 20 s to 5 s.** A type-2 loop follows a frequency *ramp* only with a standing phase error of ramp × TAU × 4 TAU. The crystals drift about −0.5 ppm/min after power-up (P9.3), which at TAU = 20 s needs 13 µs, more than half a frame, so the loop slipped (max error 127 cycles). At TAU = 5 s: 11 cycles (0.9 µs) under that drift, and still ±1 cycle (the meter's floor) when steady; 10 s gives 41 cycles.
 
 ## 7. Bench and peers
 

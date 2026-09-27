@@ -1,0 +1,20 @@
+[Unit]
+Description=FPGAmixer media clock: lock mclk to gPTP time (Phase 9 P9.4b)
+# Design: docs/phase9_status_2026-09-26.md (P9.4b) in the FPGAmixer repo.
+# Reads the media-clock meter (0x8000_2000) once per gPTP second and steers
+# mclk through the MMCM fine phase shift (0x8000_3000). Needs a phase9
+# bitstream; on an older one mixer_hw refuses (no device-tree node) and the
+# unit retries slowly. It runs in any gPTP role: the PPS is the board's PHC.
+After=fpgamixer-ptp4l.service
+
+[Service]
+Type=simple
+# Root: the windows are mapped through /dev/mem.
+ExecStart=/usr/bin/python3 /usr/lib/fpgamixer/mediaclock.py
+WorkingDirectory=/usr/lib/fpgamixer
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

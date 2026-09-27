@@ -17,8 +17,11 @@
 #                            pulls in linuxptp
 #   linuxptp-configs ethtool the gPTP spike's bench tools (example configs,
 #                            ethtool -T); were in the VM's local.conf until P9.1
+#   fpgamixer-mediaclock     the loop locking mclk to gPTP (Phase 9, P9.4b);
+#                            installed, not yet enabled
 IMAGE_INSTALL:append = " fpgamixer-osc fpgamixer-usb-gadget fpgamixer-usb-bridge \
     kernel-module-fpgamixer-link-card fpgamixer-gptp linuxptp-configs ethtool \
+    fpgamixer-mediaclock \
     alsa-utils-alsaloop alsa-utils-aplay alsa-utils-amixer alsa-utils-speakertest \
     ${@'fpgamixer-bench-network' if d.getVar('FPGAMIXER_BENCH') == '1' else ''}"
 
