@@ -43,6 +43,8 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py identity              # unity diagonal, rest off
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
+    python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
+                                              # P9.5, card FPGAmixerLink2)
     python3 mixer_hw.py mclk [seconds]        # mclk vs gPTP (Phase 9 P9.3): the
                                               # last interval, or every interval
                                               # for <seconds> and the mean, in ppm
@@ -359,6 +361,7 @@ WINDOWS = {
     "linkstat": (0x8000_1000, LinkStatHW),     # Phase 8 bitstreams only
     "mclk":     (0x8000_2000, MediaClockHW),   # Phase 9 (phase9 bitstreams) only
     "mclkctl":  (0x8000_3000, MediaClockSteerHW),  # Phase 9 P9.4b bitstreams only
+    "linkstat2": (0x8000_4000, LinkStatHW),    # link #2, Phase 9 P9.5 bitstreams only
 }
 
 COUNTERS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns", "tid_errors")
@@ -379,16 +382,16 @@ def _main(argv):
             try:
                 w = open_window(name)
             except RuntimeError as e:    # absent from this bitstream: say so, go on
-                print(f"{name:8} @ 0x{WINDOWS[name][0]:08x}: not available ({e})")
+                print(f"{name:9} @ 0x{WINDOWS[name][0]:08x}: not available ({e})")
                 continue
-            print(f"{name:8} @ 0x{w.base:08x}: {w.describe()}  ({RegWindow.describe(w)}), "
+            print(f"{name:9} @ 0x{w.base:08x}: {w.describe()}  ({RegWindow.describe(w)}), "
                   f"{w.status()}")
         return 0
 
-    if cmd == "link":
-        # link           one reading
+    if cmd in ("link", "link2"):
+        # link           one reading (link2: the same for link #2)
         # link <sec>     two readings <sec> apart: counter deltas and rates
-        ls = open_window("linkstat")
+        ls = open_window("linkstat" if cmd == "link" else "linkstat2")
         a = ls.read_all()
         if len(argv) == 3:
             import time

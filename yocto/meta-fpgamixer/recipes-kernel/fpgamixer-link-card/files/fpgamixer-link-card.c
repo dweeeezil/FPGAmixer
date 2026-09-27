@@ -15,20 +15,27 @@
  * sysclk / rate and paces the stream at aud_mclk / multiplier. aud_mclk is
  * the PL's mclk, so with "mclk-frequency" = 12288000 at 48 kHz the multiplier
  * is 256: exactly one frame per core frame, and the card runs on mclk time.
- * (The real mclk is 12.2919 MHz, so the true rate is ~48.016 kHz; bridging
- * that to any other clock is the job of whatever feeds the card.)
+ * (Since Phase 9 mclk is locked to gPTP, so the rate is 48 kHz on the
+ * network's time; bridging it to any other clock is the job of whatever
+ * feeds the card.)
  *
  * Device tree (see system-user.dtsi in meta-fpgamixer):
  *   fpgamixer_link: fpgamixer-link {
  *       compatible = "fpgamixer,pcm-link-card";
  *       audio-formatter = <&...>;          the xlnx,audio-formatter-1.0 node
  *       mclk-frequency = <12288000>;       nominal aud_mclk, Hz
+ *       fpgamixer,card-name = "...";       optional, default "FPGAmixerLink"
  *   };
+ * One card per link, one node per card. fpgamixer,card-name names the ALSA
+ * card (its id, e.g. hw:FPGAmixerLink2) and the DAI link, so every card keeps
+ * its name whatever the probe order (Phase 9, P9.5: link #2 is
+ * "FPGAmixerLink2"). ALSA card ids are at most 15 characters.
  * The formatter node itself must carry xlnx,tx / xlnx,rx phandles (pointed
  * at this node): its driver dereferences the capture one's node name on
  * every AES->PCM capture hw_params and would oops without it.
  *
- * Docs: docs/phase8_status_2026-09-25.md in the FPGAmixer repo.
+ * Docs: docs/phase8_status_2026-09-25.md, docs/phase9_status_2026-09-26.md
+ * (sec. 6.8) in the FPGAmixer repo.
  */
 
 #include <linux/module.h>
@@ -38,6 +45,7 @@
 #include <sound/soc.h>
 
 #define FORMATTER_COMPONENT "xlnx_formatter_pcm"
+#define DEFAULT_CARD_NAME   "FPGAmixerLink"
 
 struct fpgamixer_link {
 	struct snd_soc_card card;
@@ -85,6 +93,7 @@ static int fpgamixer_link_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct fpgamixer_link *priv;
 	struct device_node *fmt_np;
+	const char *name = NULL;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -108,8 +117,29 @@ static int fpgamixer_link_probe(struct platform_device *pdev)
 
 	priv->platform.of_node = fmt_np;
 
-	priv->link.name          = "FPGAmixer link";
-	priv->link.stream_name   = "FPGAmixer link PCM";
+	/*
+	 * Names. Without fpgamixer,card-name: exactly Phase 8's (card
+	 * FPGAmixerLink, DAI link "FPGAmixer link"), which the USB bridge opens.
+	 * With it: that string for the card and the DAI link. It must fit the
+	 * 15-character ALSA id, or ALSA would shorten it and two cards could
+	 * end up with ids that don't say which link they are.
+	 */
+	of_property_read_string(dev->of_node, "fpgamixer,card-name", &name);
+	if (name) {
+		if (!*name || strlen(name) > 15) {
+			dev_err(dev, "fpgamixer,card-name \"%s\": 1-15 characters\n", name);
+			return -EINVAL;
+		}
+		priv->link.name        = name;
+		priv->link.stream_name = devm_kasprintf(dev, GFP_KERNEL, "%s PCM", name);
+		if (!priv->link.stream_name)
+			return -ENOMEM;
+	} else {
+		name                   = DEFAULT_CARD_NAME;
+		priv->link.name        = "FPGAmixer link";
+		priv->link.stream_name = "FPGAmixer link PCM";
+	}
+
 	priv->link.cpus          = &snd_soc_dummy_dlc;
 	priv->link.num_cpus      = 1;
 	priv->link.codecs        = &snd_soc_dummy_dlc;
@@ -118,7 +148,7 @@ static int fpgamixer_link_probe(struct platform_device *pdev)
 	priv->link.num_platforms = 1;
 	priv->link.ops           = &fpgamixer_link_ops;
 
-	priv->card.name       = "FPGAmixerLink";
+	priv->card.name       = name;
 	priv->card.owner      = THIS_MODULE;
 	priv->card.dev        = dev;
 	priv->card.dai_link   = &priv->link;

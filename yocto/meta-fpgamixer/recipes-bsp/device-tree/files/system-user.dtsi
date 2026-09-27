@@ -62,8 +62,10 @@
  * makes it the ALSA card "FPGAmixerLink".
  *
  * mclk-frequency is the NOMINAL audio master clock: it sets the formatter's
- * MM2S Fs multiplier to 12288000 / 48000 = 256, one frame per core frame. The
- * real mclk is 12.2919 MHz.
+ * MM2S Fs multiplier to 12288000 / 48000 = 256, one frame per core frame.
+ * Since Phase 9 (P9.4) the real mclk is locked to gPTP (the MMCM runs at
+ * +11 ppm nominal and fpgamixer-mediaclock steers it), so it is 12.288 MHz on
+ * the network's time.
  *
  * xlnx,tx / xlnx,rx are REQUIRED on the formatter node although they point
  * back at our own card node: on AES->PCM capture the driver reads
@@ -84,6 +86,29 @@
 &link_formatter {
 	xlnx,tx = <&fpgamixer_link>;
 	xlnx,rx = <&fpgamixer_link>;
+};
+
+/*
+ * PS <-> PL link #2 (Phase 9, P9.5, docs/phase9_status_2026-09-26.md sec. 6.8):
+ * the AVB front door's PL half, core channels 12-19. The same driver, one more
+ * card node; fpgamixer,card-name gives it a fixed name whatever the probe
+ * order (link #1 above keeps the driver's default, FPGAmixerLink, which the
+ * USB bridge opens). link2_formatter needs a P9.5+ (phase9) bitstream/XSA.
+ * The same rules as above: xlnx,tx / xlnx,rx required, and no "hdmi", "sdi"
+ * or "dp" in the node name.
+ */
+/ {
+	fpgamixer_link2: fpgamixer-link2 {
+		compatible = "fpgamixer,pcm-link-card";
+		audio-formatter = <&link2_formatter>;
+		mclk-frequency = <12288000>;
+		fpgamixer,card-name = "FPGAmixerLink2";
+	};
+};
+
+&link2_formatter {
+	xlnx,tx = <&fpgamixer_link2>;
+	xlnx,rx = <&fpgamixer_link2>;
 };
 
 /*

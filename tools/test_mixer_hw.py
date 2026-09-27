@@ -170,6 +170,64 @@ class Registers(unittest.TestCase):
         self.assertEqual(state.get("inputMatrix/5_3/level"), -90.0)
         self.assertEqual(reg(self.path, mixer_hw.REG_CTRL) & 1, 1)     # committed
 
+    def test_state_from_12x12_migrates_onto_20x20(self):
+        """Phase 9 (P9.5): a state file saved on the 12x12 matrix (bench-like:
+        every crosspoint stored, two USB -> Pmod routes), restored on the
+        20x20 one (link #2 = channels 12-19, appended). All 144 old values
+        keep their meaning at k = out*20 + in; the 256 new crosspoints are
+        seeded with the identity rule (decision L4: AVB k -> AVB k on, the
+        rest off); the store keeps the old values; one COMMIT."""
+        import osc_mixer_server as srv
+        from mixer_state import MixerState
+        srv.log = lambda m: None
+        os.unlink(self.path)
+        self.path = make_window_file(config=0x14141210)          # 20 out, 20 in, Q2.16
+        real_open = mixer_hw.open_window
+        mixer_hw.open_window = lambda name, dev=self.path: mixer_hw.MatrixHW(0, dev)
+        try:
+            state = MixerState("mixer", None)
+            for i in range(12):                                   # a full old 12x12 file
+                for o in range(12):
+                    state.set(f"inputMatrix/{i}_{o}/level", 0.0 if i == o else -90.0)
+            state.set("inputMatrix/4_0/level", -6.0206)           # USB 1 -> JB_L
+            state.set("inputMatrix/5_2/level", -6.0206)           # USB 2 -> JC_L
+            state.set("inputMatrix/11_11/level", -90.0)           # an old diagonal off
+            backends = srv.build_backends(True, 12)
+        finally:
+            mixer_hw.open_window = real_open
+        b = backends["inputMatrix"]
+        self.assertEqual((b.n_in, b.n_out), (20, 20))
+        b.seed_and_push(state)
+        k = lambda i, o: 0x100 + 4 * (o * 20 + i)
+        self.assertEqual(reg(self.path, k(4, 0)), 0x8000)         # old values, new positions
+        self.assertEqual(reg(self.path, k(5, 2)), 0x8000)
+        self.assertEqual(reg(self.path, k(11, 11)), 0)
+        self.assertEqual(reg(self.path, k(4, 4)), 0x10000)
+        self.assertEqual(reg(self.path, k(0, 4)), 0)
+        for c in range(12, 20):                                   # new: AVB identity
+            self.assertEqual(reg(self.path, k(c, c)), 0x10000)
+        self.assertEqual(reg(self.path, k(12, 13)), 0)            # new: off
+        self.assertEqual(reg(self.path, k(12, 4)), 0)             # AVB 1 -> USB 1: off
+        self.assertEqual(reg(self.path, k(4, 12)), 0)             # USB 1 -> AVB 1: off
+        self.assertEqual(reg(self.path, k(12, 0)), 0)             # AVB 1 -> JB_L: off
+        on = [kk for kk in range(400) if reg(self.path, 0x100 + 4 * kk)]
+        self.assertEqual(len(on), 11 + 2 + 8)                     # 11 old diagonal + 2 routes + 8 AVB
+        self.assertEqual(state.get("inputMatrix/4_0/level"), -6.0206)  # store untouched
+        self.assertEqual(state.get("inputMatrix/11_11/level"), -90.0)
+        self.assertEqual(state.get("inputMatrix/19_19/level"), 0.0)    # and seeded
+        self.assertEqual(state.get("inputMatrix/19_4/level"), -90.0)
+        self.assertEqual(reg(self.path, mixer_hw.REG_CTRL) & 1, 1)     # committed
+
+    def test_windows_map(self):
+        """The address map mirrors assign_bd_address (create_project.tcl):
+        link #2's status window at 0x8000_4000 is a LinkStatHW, and no two
+        windows share a base."""
+        self.assertEqual(mixer_hw.WINDOWS["linkstat2"], (0x8000_4000, mixer_hw.LinkStatHW))
+        bases = [b for b, _cls in mixer_hw.WINDOWS.values()]
+        self.assertEqual(len(bases), len(set(bases)))
+        self.assertTrue(all(b % mixer_hw.WINDOW_SIZE == 0 and 0x8000_0000 <= b < 0x8010_0000
+                            for b in bases))
+
 
 @unittest.skipIf(os.name == "nt", "mmap with Linux flags")
 class LinkStat(unittest.TestCase):

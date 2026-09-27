@@ -4,16 +4,21 @@ Phase 8 bench test S4 (the Phase 6 follow-up): the power-cycle restore test
 with real audio on every crosspoint. Standard library only, so the same file
 runs on the Pi, the board and the Mac.
 
-The idea: every one of the 144 crosspoints gets its own level (PATTERN). The
-Mac plays one tone per USB input (TONES_HZ, FPGAmixer outputs 1-8 = core
-inputs 4-11) and records FPGAmixer inputs 1-8 (core outputs 4-11). Each
-recording is then a mix of the 8 tones at 8 known levels, so measuring every
-tone's amplitude in every recording recovers the gain of all 64 USB -> USB
-crosspoints. The 80 crosspoints that touch the Pmods (whose input signals are
-unknown) are checked through the gain registers, and JB_L/JC_L by ear.
+The idea: every one of the 400 crosspoints of the 20 x 20 core (Phase 9,
+P9.5: 4 Pmod + 8 USB (link #1) + 8 AVB (link #2) channels) gets its own
+level (PATTERN). The Mac plays one tone per USB input (TONES_HZ, FPGAmixer
+outputs 1-8 = core inputs 4-11) and records FPGAmixer inputs 1-8 (core
+outputs 4-11). Each recording is then a mix of the 8 tones at 8 known levels,
+so measuring every tone's amplitude in every recording recovers the gain of
+all 64 USB -> USB crosspoints. The other 336 (those that touch the Pmods,
+whose input signals are unknown, and the AVB channels, which have no source
+on this bench yet) are checked through the gain registers, and JB_L/JC_L by
+ear. The 144 levels of the Phase 8 (12 x 12) test are unchanged; the 256 AVB
+crosspoints use level ranges of their own (build_pattern), so a bank written
+to the wrong place can't match by accident.
 
-    set      (Pi)     send all 144 levels over OSC, check each echo
-    check-hw (board)  read all 144 gain registers, compare with PATTERN
+    set      (Pi)     send all 400 levels over OSC, check each echo
+    check-hw (board)  read all 400 gain registers, compare with PATTERN
     analyze  (Mac)    measure the 64 USB crosspoints from a recording
     compare  (any)    two analyze results (before / after the power pull)
     pattern  (any)    print the table
@@ -43,9 +48,10 @@ import struct
 import sys
 import wave
 
-N = 12
+N = 20
 PMOD = range(0, 4)          # core channels 0-3: JB_L, JB_R, JC_L, JC_R
-USB = range(4, 12)          # core channels 4-11: link / USB 1-8
+USB = range(4, 12)          # core channels 4-11: link #1 / USB 1-8
+AVB = range(12, 20)         # core channels 12-19: link #2 / AVB 1-8 (P9.5)
 TONES_HZ = [211, 307, 401, 503, 601, 701, 809, 907]   # USB in 1..8 (primes)
 OFF_DB = -90.0
 PASS_DB = 0.5
@@ -81,6 +87,40 @@ def build_pattern():
     for o in USB:
         for i in PMOD:
             p[(i, o)] = -70.0 - 0.25 * k
+            k += 1
+    # --- P9.5: the AVB channels (link #2). Ranges disjoint from the above
+    # and from each other; the finest steps are below the Q2.16 resolution
+    # at the lowest levels, so not every code is unique there, only every
+    # range.
+    # AVB -> AVB: like USB -> USB, on the quarter dB (-6.25 .. -37.75).
+    for o in AVB:
+        for i in AVB:
+            k = (o - 12) * 8 + (i - 12)
+            p[(i, o)] = -6.25 - 0.5 * ((k * 29) % 64)
+    # USB -> AVB: -38.0 .. -45.875
+    k = 0
+    for o in AVB:
+        for i in USB:
+            p[(i, o)] = -38.0 - 0.125 * k
+            k += 1
+    # AVB -> Pmod: -46.0 .. -49.875
+    k = 0
+    for o in PMOD:
+        for i in AVB:
+            p[(i, o)] = -46.0 - 0.125 * k
+            k += 1
+    # Pmod -> AVB: -64.0 .. -67.875
+    k = 0
+    for o in AVB:
+        for i in PMOD:
+            p[(i, o)] = -64.0 - 0.125 * k
+            k += 1
+    # AVB -> USB: the lowest (-78.0 .. -85.875), so an AVB source, once there
+    # is one, barely touches the USB tone measurement.
+    k = 0
+    for o in USB:
+        for i in AVB:
+            p[(i, o)] = -78.0 - 0.125 * k
             k += 1
     assert len(p) == N * N
     return p
@@ -152,7 +192,8 @@ def cmd_set(a):
             print(f"  {i}_{o}: sent {db}, echoed {got}")
             bad += 1
     sock.close()
-    print(f"set: 144 crosspoints sent, {144 - bad} echoed as sent, {bad} differ")
+    print(f"set: {len(PATTERN)} crosspoints sent, {len(PATTERN) - bad} echoed as sent, "
+          f"{bad} differ")
     return 1 if bad else 0
 
 
@@ -171,7 +212,7 @@ def cmd_check_hw(a):
         if got != want:
             print(f"  {i}_{o}: register {got:#x}, expected {want:#x} ({db} dB)")
             bad += 1
-    print(f"check-hw: {144 - bad}/144 gain registers match the pattern")
+    print(f"check-hw: {len(PATTERN) - bad}/{len(PATTERN)} gain registers match the pattern")
     return 1 if bad else 0
 
 
