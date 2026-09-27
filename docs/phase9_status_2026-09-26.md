@@ -775,6 +775,43 @@ Same image; the loop service started by hand (not yet enabled at boot in this im
 
 **Found while testing: TAU had to come down from 20 s to 5 s.** A type-2 loop follows a frequency *ramp* only with a standing phase error of ramp × TAU × 4 TAU. The crystals drift about −0.5 ppm/min after power-up (P9.3), which at TAU = 20 s needs 13 µs, more than half a frame, so the loop slipped (max error 127 cycles). At TAU = 5 s: 11 cycles (0.9 µs) under that drift, and still ±1 cycle (the meter's floor) when steady; 10 s gives 41 cycles.
 
+### 6.8 P9.5 plan: link #2 and a 20 × 20 core (2026-09-27, awaiting decisions L1–L5)
+
+The AVB front door's PL half is a **second PS↔PL link**: the same Audio Formatter + `pcm_link` + status window as Phase 8's, giving a second ALSA card for the AAF talker/listener and the AVB bridge (P9.6/P9.7). Nothing in it is AVB-specific. Its channels are appended as core channels **12–19** (decision 6), so the core grows to **20 × 20**, which the time-shared matrix does on **2 DSP48E2s** (D = 227 cycles, `tb_pcm_matrix_rect` already covers 20 × 20, §5.5).
+
+#### Checked in the tree (2026-09-27)
+
+| Fact | Where | Consequence |
+|---|---|---|
+| **The ALSA machine driver hard-codes the card name** (`card.name = "FPGAmixerLink"`, DAI link "FPGAmixer link"). A second instance would register a second card with the same name, and ALSA would rename one (`…_1`) in probe order. | `recipes-kernel/fpgamixer-link-card/files/fpgamixer-link-card.c` | **Phase 8's note that the driver was "written for N instances from the start" is wrong** (§9.2 of the Phase 8 doc). A small driver change is needed: the name from the device tree (L2). |
+| The formatter's two IRQs go through a 2-port `xlconcat` into `pl_ps_irq0` (8 bits wide); its DMA masters through a 2-slave SmartConnect into `S_AXI_HPC0_FPD`; `aud_mclk` / `aud_mreset` come from the RTL's `link_mclk` / `link_mreset` ports. | `create_project.tcl` | Link #2: `xlconcat` → 4 ports, DMA SmartConnect → 4 slaves, **the same `link_mclk`** (the formatter runs on `mclk`, now gPTP-locked, so card #2 runs at the network's media rate, as AAF needs). **No PS setting changes** (`pl_ps_irq0` and HPC0 are already enabled); `psu_init` should stay identical (to verify). |
+| `system-user.dtsi` says "the real mclk is 12.2919 MHz" | the card node's comment | stale since P9.4a: fix in passing |
+| `crosspoint_restore_test.py`: `N = 12`, 144 levels; `osc_mixer_server.py` simulator `--matrix-size` default 12 | `tools/` | grow to 20 / 400; the hardware path already reads the size from the matrix window's CONFIG |
+| `MatrixBackend.seed_and_push` fills only missing crosspoints and reads N from CONFIG | `tools/osc_mixer_server.py` (Phase 8 migration test) | a saved 12 × 12 state keeps all 144 values at their indices on a 20 × 20 core; the 256 new ones are seeded |
+
+#### What P9.5 builds
+
+| Piece | Change |
+|---|---|
+| `create_project.tcl` (`phase9`) | `link2_formatter` (8 + 8, as #1) on control SmartConnect **M05** at **0x8011_0000** (driver-owned range); its DMA on the shared SmartConnect (4 slaves); IRQs on the concat (4 ports); ports `M_AXIS_LINK2_MM2S`, `S_AXIS_LINK2_S2MM`, `M_AXI_LINK2STAT` (M06, **0x8000_4000**) |
+| `fpgamixer_top.sv` | `u_link2` (`pcm_link`, generic, unchanged) + `u_link2_stat` (`pcm_link_stat_regs`, unchanged); **N = 20**, channel map `{link2, link, jc, jb}`; identity reset bank 20 × 20; `matrix_lanes(20,20)` = 2 |
+| `fpgamixer-link-card.c` | card and DAI-link names from an optional DT property (L2); default unchanged, so link #1 stays `FPGAmixerLink` (the USB bridge opens it by name) |
+| `system-user.dtsi` | a second card node (`fpgamixer_link2`, name `FPGAmixerLink2`) + `xlnx,tx/rx` on `&link2_formatter` |
+| `tools/` | `mixer_hw.WINDOWS["linkstat2"]` + `mixer_hw.py link [2] [s]`; restore test at 20 × 20 (400 levels; the audio analysis stays the 64 USB → USB); simulator default 20 |
+| docs | `architecture_modules.md` (address map, channel map, file map), this doc |
+
+**Verification:** `xsim_regress` (the integration TBs at 20 × 20); Vivado (2 DSP, timing, CDC = Phase 8's link structures ×2, methodology gate), SDT (`psu_init` identical; the DT gains the second formatter); image; **bench**: two cards (`aplay -l`), `speaker-test -D plughw:FPGAmixerLink2 -c 8` routed to the Pmods by ear, link #2 counters clean, **link #1 / USB unchanged**, the media-clock loop still locked, the restore test at 400 crosspoints across a power pull.
+
+#### Decisions needed
+
+| # | Question | Recommendation |
+|---|---|---|
+| L1 | Link #2 = a second instance of Phase 8's link (formatter + `pcm_link` + status window), no new RTL? | **Yes.** |
+| L2 | Card naming: a DT property on the card node (e.g. `fpgamixer,card-name`) giving the ALSA card and DAI-link names, default `FPGAmixerLink`; link #2 = **`FPGAmixerLink2`**? | **Yes.** Names are stable whatever the probe order, and link #1 keeps its name. |
+| L3 | Addresses: formatter #2 at **0x8011_0000**, link #2 status at **0x8000_4000**, reservations moved to 0x8000_5000? | **Yes.** |
+| L4 | Seeding the 256 new crosspoints: **identity** (AVB in *k* → AVB out *k*, a network loopback for bench tests, the same rule as USB), or all off? | **Identity**: one rule for the whole matrix; a saved state overrides it. |
+| L5 | The `phase9` build variant grows to include link #2 (rather than a new `phase9b`)? | **Yes.** `phase9` is the branch's working variant; `phase8` stays as it was. |
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
