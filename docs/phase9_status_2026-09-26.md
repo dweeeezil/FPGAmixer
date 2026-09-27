@@ -732,6 +732,37 @@ Against the first baseline the steps look like +1.953 / −2.099 ppm ("fairly cl
 
 Pi side: ptp4l as grandmaster with its PHC set once (`phc_ctl eth4 freq 0 set adj 37`). Its log's "selected best master clock 00183e…" (the board) followed by "assuming the grand master role" is linuxptp naming the best *foreign* record before its state decision keeps the local clock as GM, not a role change.
 
+### 6.6.2 P9.4b holdover and soak (2026-09-27): PASS. **P9.4 done.**
+
+Same image; the loop service started by hand (not yet enabled at boot in this image); audio from the Mac on the Pmods throughout.
+
+**Holdover, part 1: the grandmaster lost for ~1 min, then back.** No loop state change at all (as designed: the 1PPS keeps coming from the board's own PHC, which ptp4l leaves running at its last rate when the board takes over as grandmaster, and slews when it follows again).
+
+**Holdover, part 2: a reference step.** The Pi's ptp4l stopped, its PHC re-set (a jump of milliseconds, since it had been running free), ptp4l restarted. The board's ptp4l **stepped** its PHC on re-syncing:
+
+| Time | Event |
+|---|---|
+| 21:55:43 | LOCKED, phase −1 cycle, correction −0.205 ppm |
+| **21:55:48.15** | **LOCKED → HOLDOVER** (an implausible interval); correction **frozen at −0.1836 ppm** (the last good second's value) |
+| **21:55:54.17** | **HOLDOVER → ACQUIRE** after **6 s** |
+| 21:56:03 | ACQUIRE: frequency error −1.628 ppm, phase +53 cycles (+4.3 µs), correction +1.276 ppm |
+| **21:56:09** | **ACQUIRE → LOCKED**, 15 s after holdover ended |
+| 21:56:13 → 21:57:04 | phase +37 → −9 → −10 → −6 → −4 → −2 cycles |
+| 21:57:34 | phase **0**, about 100 s after the step; ±1 cycle from then on |
+
+- **By ear (user): no glitches** throughout, as S5 intends: `mclk` was only slewed (the largest correction was +1.28 ppm).
+- `link 10` afterwards: 48,001.5 frames/s each way, 0 underruns / starved / overruns / TID errors.
+- **Observation, not a fault:** during ACQUIRE the frequency error read −1.6 ppm. That wasn't `mclk` drifting: straight after a step, ptp4l's servo on the board is still settling the PHC's frequency, so the reference itself moved for a few seconds and the loop followed it. **Possible refinement:** enter ACQUIRE only after a few consecutive plausible and *consistent* intervals. Not needed now.
+
+**Soak: 60 minutes** (after the holdover test):
+
+| | Result |
+|---|---|
+| loop state | LOCKED all hour, apart from the one part-2 sequence (HOLDOVER → ACQUIRE → LOCKED); 358 ten-second samples |
+| phase | **−1 … +1 cycles (±81 ns) in steady state**, the meter's own floor; −10 … +53 over the whole hour including the re-acquisition |
+| correction | settled at **+0.02 … +0.07 ppm** (it had been −0.5 ppm an hour earlier: the crystals had finished warming up); −0.94 … +1.28 over the hour including the re-acquisition |
+| gPTP | 16-s summaries **2–4 ns RMS, 7–10 ns max**, path delay 458–459 ns, frequency ≈ −26.86 ppm: the spike's numbers. (A one-line awk over the hour reported "worst 4.99 ms RMS / 30.9 ms max": the one window straight after the Pi's PHC reset, before the step. Expected; the command didn't exclude it.) |
+
 ### 6.7 P9.4b3: the loop (`fpgamixer-mediaclock`), written; on hardware after the open-loop test
 
 | File | What |
@@ -797,4 +828,4 @@ Pi side: ptp4l as grandmaster with its PHC set once (`phc_ctl eth4 freq 0 set ad
 - **2026-09-26: P9.1 PASS** (§6.1): first boot FAULTY (macb refuses `SIOCSHWTSTAMP` while `end0` is down; the unit now brings it up first), then SLAVE from a cold boot; failover to grandmaster and failback both automatic; **2–3 ns RMS / ≤ 9 ns** once the Pi's PHC was no longer steered by its noisy `phc2sys` (which had caused 2–3 µs). Open: 20-min soak, bridge log.
 - **2026-09-27: P9.3 PASS** (§6.3): the meter on hardware reads **mclk = +315.34 ppm vs gPTP** (60 s mean, ±0.08 ppm per interval), so the PL crystal is −8.66 ppm vs the Pi; `psu_init` unchanged; gPTP SLAVE from boot from the image. Next: P9.4, starting with the MMCM retune (T4), predicted to read ≈ +2.4 ppm.
 - **2026-09-27: P9.4a PASS on the meter** (§6.4): MMCM 25 × 58/118; **mclk now +0.85 ppm vs gPTP** (from +315.34), 48,000 frames per gPTP second; link clean; jitter 289 → 187 ps. Audio by ear: heard, after re-routing (the reflash had reset it). **P9.4a done.** New open items: `phc2sys` follows a bogus grandmaster time (board clock went to 1970 after the Pi rebooted), USB bridge direction B still swings at start-up and its coarse fix spins while the Mac is idle.
-- **2026-09-27: P9.4b on hardware** (§6.6.1): open-loop `steer ±2` moved the meter by exactly 2.00 ppm against the crystals' drift (sign confirmed by the step counters); **the loop locked in 5 s and holds the frame phase at −1 … −3 cycles (≤ 244 ns)** while tracking ≈ −0.1 ppm/min drift; link clean with the loop running; **by ear with the loop locked: clean** (user). `fpgamixer-mediaclock` switched to enabled-at-boot for the next image. Pending: a long soak, holdover through a ptp4l restart. (This entry was first spliced into the middle of the P9.A6 line by an edit anchored on a phrase inside it; moved here.)
+- **2026-09-27: P9.4b on hardware** (§6.6.1): open-loop `steer ±2` moved the meter by exactly 2.00 ppm against the crystals' drift (sign confirmed by the step counters); **the loop locked in 5 s and holds the frame phase at −1 … −3 cycles (≤ 244 ns)** while tracking ≈ −0.1 ppm/min drift; link clean with the loop running; **by ear with the loop locked: clean** (user). `fpgamixer-mediaclock` switched to enabled-at-boot for the next image. Then (§6.6.2) **holdover PASS** (grandmaster loss: no state change; a reference step: HOLDOVER 6 s, re-LOCKED 15 s later, phase back to 0 in ~100 s, no audible glitch) and **a 60-min soak PASS** (phase ±1 cycle steady, gPTP 2–4 ns RMS). **P9.4 done.** Next: P9.5 (link #2, core 20 × 20). (This entry was first spliced into the middle of the P9.A6 line by an edit anchored on a phrase inside it; moved here.)
