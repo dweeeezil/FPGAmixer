@@ -866,6 +866,26 @@ Not checked here: SDT, image, bench (P9.5b onward).
 
 **Image built 2026-09-27** (layer synced at `d6854b7`, clean): `gen-machine-conf` exit 0, bitbake 14,859 tasks, all succeeded, 6 min 42 s, 24 warnings: the usual 23 plus "`fpgamixer-link-card` do_compile tainted from a forced run" (the compile check above; harmless). Checked: deployed bitstream MD5 = Vivado `p95` (`2e22f414…`); the DTB has `audio_formatter@80110000` and `@80100000` each with `xlnx,tx`/`xlnx,rx`, nodes `fpgamixer-link` and `fpgamixer-link2` (`fpgamixer,card-name = "FPGAmixerLink2"`), `M_AXI_LINK2STAT@80004000`; the rootfs's `mixer_hw.py` has `linkstat2`, the module has the `card-name` code, and **`fpgamixer-mediaclock` is enabled at boot** (first image with it). **`build/sd/p95-link2-20260927.wic.xz`** (MD5 `a2977a67…`, same on both ends).
 
+### 6.11 P9.5 bench (2026-09-28 UTC, image `p95-link2-20260927`)
+
+| Check | Result (read from the terminal) |
+|---|---|
+| cards (`aplay -l`) | card 0 **`FPGAmixerLink`** ("FPGAmixer link PCM", the driver's default names: no property), card 1 **`FPGAmixerLink2`** ("FPGAmixerLink2 PCM", from `fpgamixer,card-name`), card 2 `UAC2Gadget`. Cards 0 and 2 held by the USB bridge (subdevices 0/1), card 1 free |
+| windows (`mixer_hw.py info`) | matrix **20 in × 20 out** (CONFIG `0x14141210`, COMMITS 1 = the server's start-up push); `linkstat2 @ 0x80004000` ID `0x4c4b5001`, 8 + 8 ch, FIFO 64 words, snapshots advancing; `linkstat`, `mclk`, `mclkctl` as before |
+| media-clock loop from boot (first image with the unit enabled) | active since boot; **LOCKED**, phase −2 … 0 cycles (≤ 163 ns), correction ≈ −0.3 ppm; the steerer `locked`, 0 dropped |
+| link #2 → Pmods | `set 0 12 0`, `set 2 13 0` (hardware only; COMMITS 2, 3); `speaker-test -D plughw:FPGAmixerLink2 -c 8 -t sine -f 440`: **heard (user): 440 Hz routed to the Pmods**, so core inputs 12/13 are link #2's channels 1/2 (the `{link2, link, jc, jb}` order, which simulation couldn't see) |
+| `mixer_hw.py link2 10` during it | **48,001.5 frames/s** each way; underruns 0, starved 0, overruns 0, tid_errors 0; `rx_running` True. (`rx_fill` 0 as for link #1: the formatter delivers at the frame rate, Phase 8 §16) |
+| **link #1 / USB unchanged** | the Mac playing through the bridge: `mixer_hw.py link 10` **48,001.6 / 48,001.5 frames/s** (once while link #2 was also streaming, once after), all error counters 0; **by ear (user): USB heard on the Pmods, "everything just fine"** |
+| restore test `set` (Pi → board over OSC) | **400 sent, 400 echoed as sent, 0 differ** |
+| `check-hw` before the power pull | **400/400** gain registers match the pattern |
+| power pulled (no shutdown), rebooted, nothing typed on the board but the login (the first `ssh board` hit "No route to host" while it booted) | |
+| `check-hw` after | **400/400**: all 400 levels, the 256 AVB crosspoints included, restored from the saved state |
+| audio after the pull (user) | **restores by itself a few seconds after boot**, USB 1/2 on JB-L / JC-L at the pattern's −6 dB |
+
+**Not done this time, recorded:** the Mac-recorded audio analysis of the 64 USB → USB crosspoints (`analyze` / `compare`). Its pattern and code are unchanged from Phase 8 (S4, passed), and `check-hw` covers every register; the AVB → AVB crosspoints get an audio check once there is an AVB source (P9.7).
+
+**P9.5 done.** Link #2 is a second, unchanged instance of Phase 8's link, `FPGAmixerLink2` has a fixed name, the core is 20 × 20 on 2 DSP48E2s, and link #1, USB and the media-clock loop behave as before.
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
@@ -923,3 +943,4 @@ Not checked here: SDT, image, bench (P9.5b onward).
 - **2026-09-27: P9.5 planned** (§6.8); decisions **L1–L5 all as recommended**. Found: the ALSA card driver hard-codes its card name (not multi-instance, contrary to the Phase 8 doc). Implementation handed to a fresh session: `docs/prompt_phase9_p95.md`.
 - **2026-09-27: P9.5a clean** (§6.9): link #2 (`u_link2` + `u_link2_stat`, `INCLUDE_LINK2`) and `link2_formatter` (0x8011_0000; status 0x8000_4000) in the `phase9` variant, formatter BD code shared through `add_link_formatter`; core **20 × 20** in every build (probe: N 20, 2 lanes, D 227). `xsim_regress` 15/15; build `p95` WNS +2.505 / WHS +0.004 ns, methodology PASS, **2 DSP48E2**, 3 RAMB18, CDC 3186 all constrained (link #2 = a copy of link #1's structures). Next: P9.5b (card driver + DT + tools), SDT, image, bench.
 - **2026-09-27: P9.5b** (§6.10): card driver named by `fpgamixer,card-name` (default unchanged), DT node `FPGAmixerLink2`, `mixer_hw` `linkstat2` / `link2`, restore test at 400 levels (the 144 old ones unchanged), simulator default 20; Python 46/46, 3 mutants caught, check-hw self-test 400/400 and 399/400 planted; driver 0 warnings. SDT: `psu_init` identical, `link2_formatter@80110000` (SPI 91/92) and `M_AXI_LINK2STAT@80004000` present. Next: the image, then the bench.
+- **2026-09-28 (UTC): P9.5 PASS on the bench** (§6.11, image `p95-link2-20260927`): cards `FPGAmixerLink` + `FPGAmixerLink2` by name; matrix 20 × 20; the media-clock loop LOCKED from boot (first image with it enabled); **440 Hz into `FPGAmixerLink2` heard on the Pmods** via core inputs 12/13; link #2 48,001.5 frames/s clean; **link #1 / USB unchanged** (48,001.5 frames/s clean, heard); restore test **400 set / 400 echoed, check-hw 400/400 → power pull → 400/400**, audio back by itself. **P9.5 done.** Next: the P9.6 proposal (shaping + AAF).
