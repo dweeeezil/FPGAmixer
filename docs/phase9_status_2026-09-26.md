@@ -999,6 +999,50 @@ P9.6 makes the board an AVB talker and listener at the Linux level: two AAF ALSA
 - On the Pi, `tcpdump -w` needs `-Z root` (it drops to its own user after opening the interface and then couldn't write the file); `tcpdump` wasn't installed on the Pi (installed with apt).
 - **`aaf_check.py` doesn't run on the board** (its Python has no `statistics` module); it's a Pi/PC tool.
 
+### 6.15 P9.7 proposal: the AVB bridge (2026-09-28, awaiting decisions V1–V6)
+
+P9.7 connects the AVB front door's two halves: the AAF devices (`avb_rx`, `avb_tx`, P9.6) and link #2 (`FPGAmixerLink2`, P9.5), 8 channels each way, so a network stream reaches core inputs 12–19 and core outputs 12–19 go onto the network. It's the AVB counterpart of the USB bridge (Phase 8 §17). Seam: **the front door's Linux half**; the core, link #2 and the network setup don't change.
+
+```
+  Pi ──AAF──► end0.2 ─► avb_rx ──(S24_3BE → S24_LE)──► FPGAmixerLink2 playback ─► core in 12–19
+  Pi ◄─AAF─── end0.2 ◄─ avb_tx ◄─(S24_LE → S24_3BE)─── FPGAmixerLink2 capture ◄── core out 12–19
+```
+
+#### Facts (checked 2026-09-28)
+
+| Fact | Source | Consequence |
+|---|---|---|
+| **Both ends of the bridge run on the PHC's time:** the AAF plugin's timer is on `CLOCK_REALTIME` (P9.6), which `phc2sys` locks to the PHC in both gPTP roles (A8), and `FPGAmixerLink2` runs on `mclk`, which `fpgamixer-mediaclock` phase-locks to the same PHC (P9.4, ±1 cycle) | §6.12, §6.6 | **No rate adaptation**: unlike USB (the Mac's own clock, steered by feedback), the two sides can't drift apart. The bridge needs a fixed queue, nothing else |
+| The plugin does all its work in the application's poll (`poll_revents`): the **talker sends one ALSA period per timer tick** and returns `-EPIPE` if the app hasn't queued a full period; the **listener** copies each PDU into the buffer when it arrives but makes one period *available* per tick, its timer starting at the first PDU's presentation time + one period | `pcm_aaf.c` (`aaf_tx_frames`, `aaf_present_frames`, `aaf_mclk_start_capture`) | A blocking read/write loop (like the USB bridge's) drives it correctly. Board-as-listener latency ≈ the talker's `mtt` + `time_uncertainty` (2.125 ms) + one period + the link playback queue |
+| **When the talker stops, the listener doesn't stall; it overruns:** its timer keeps presenting periods, and once the presented position overtakes the received data it returns `-EPIPE` | `aaf_present_frames` | The bridge recovers (restart, wait for the first PDU) exactly like the USB bridge's idle-Mac path; link #2 meanwhile plays silence (`pcm_link` outputs zeros when starved and counts it) |
+| **A reference step moves them differently:** after a PHC step `phc2sys` *steps* `CLOCK_REALTIME`, while `mclk` only slews (holdover, then re-acquire, S5) | P9.4 §6.6.2 | The AAF timer jumps and the link doesn't: an xrun or a queue step on such an event. The same coarse fix / xrun recovery as the USB bridge covers it; a rare event (a grandmaster change), logged |
+| Formats: AAF devices **S24_3BE** (A4); `FPGAmixerLink2` **S24_LE** (24 bits in 32, native, `hw:` only: `plughw` conversion onto the formatter fails in alsa-lib 1.2.11, Phase 8 §17) | P9.6, Phase 8 | The bridge repacks, like the USB bridge (which does S24_3**LE** ↔ S24_LE) |
+| Periods: the plugin needs a multiple of `frames_per_pdu` (6); the link card takes 192–51,200 B per period (6–1600 frames at 8 ch × 4 B) and 2–6 periods | `aaf_hw_params`, Phase 8 §17 | Any multiple of 6 frames up to 1600 works on both. The talker sends a period's PDUs per tick (ETF spaces them) |
+| The AAF devices need **root** (`AF_PACKET`) | §6.14 | A root service, like the USB bridge |
+| The USB bridge (`fpgamixer-usb-bridge.c`, 412 lines) is one file: PCM open with geometry and a full hw-params dump on refusal, the 3 ↔ 4 byte repack, prefill, xrun recovery, coarse fix (drop or pad whole periods), a 10 s log line, plus the **USB-only** part: the pitch servo on the gadget's controls | Phase 8 §17 | About two thirds of it is exactly what the AVB bridge needs; the servo isn't |
+
+#### What P9.7 builds
+
+| Piece | What |
+|---|---|
+| `fpgamixer-avb-bridge` (C, new) | two threads: **A (network → core)** `avb_rx` capture → S24_3BE → S24_LE → `hw:FPGAmixerLink2` playback, held at a fixed queue; **B (core → network)** `hw:FPGAmixerLink2` capture → S24_LE → S24_3BE → `avb_tx` playback, held at a fixed queue. No servo; coarse fix + xrun recovery as safety, **counted and logged** every 10 s (frames/s, queue, xruns, coarse fixes). Geometry from `/etc/fpgamixer/avb.conf` (a new `[bridge]` section) |
+| shared bridge core (V1) | the common part of both bridges in one C file used by both programs; the USB bridge keeps its servo, behaviour unchanged |
+| `fpgamixer-avb-bridge.service` | root, after `fpgamixer-avb-net` and `fpgamixer-phc2sys`, `Restart=always`; the recipe `fpgamixer-avb` gains it |
+| docs | `architecture_modules.md` (the AVB front door's Linux half), this doc |
+
+**Latency, estimated (to measure):** network → Pmod ≈ 2.125 ms (the talker's `mtt` + uncertainty) + 2 ms (one period) + 4 ms (link queue, 2 periods) + < 1 frame (core) ≈ **8 ms** at a 2 ms period; core → network about the same.
+
+#### Decisions needed (V1–V6)
+
+| # | Question | Recommendation |
+|---|---|---|
+| V1 | **Structure:** a new program `fpgamixer-avb-bridge`, sharing **one common C file** with the USB bridge (open/geometry/dump, repack, prefill, xrun + coarse handling, logging), the USB bridge refactored onto it with its servo and behaviour unchanged; or a standalone copy now and a shared file later? | **Shared file now.** Two copies of the xrun/coarse logic would drift apart (the USB bridge's has been changed twice already). The refactor's risk is covered by the bench (USB audio + its log unchanged) |
+| V2 | **No rate servo**: a fixed queue per direction; coarse fix and xrun recovery stay as safety nets; in steady state both must read 0, and a nonzero count is logged as a fault to investigate, not tuned away | **Yes.** Both sides are locked to the PHC; a servo would only hide a bug |
+| V3 | **Geometry:** period **96 frames (2 ms, 16 PDUs)**, 4 periods per buffer, queue target 2 periods, in `avb.conf` `[bridge]` | **Yes**, as the starting point; 2 ms keeps class A's latency spirit at ~1000 wake-ups/s per direction. The bench reports CPU load and xruns; a larger period is one config value |
+| V4 | **Presentation time:** v1 gives a **constant, measured latency**, not samples placed at their AVTP presentation time (the plugin doesn't expose presentation times to the application: only its timer start uses them). Exact presentation is a Phase 10 / Milan item, probably with our own AVTP code instead of the plugin | **Yes, constant latency now.** Recorded as a known limit |
+| V5 | **The board always streams** (`avb_tx` runs whenever the bridge does, silence included: 13.4 Mbit/s reserved, static stream per decision 1); **the listener waits** for a stream and recovers when it stops | **Yes.** Static streams, no AVDECC (Phase 10) |
+| V6 | **Bench, by ear, no analysis scripts:** (1) Pi → board: `speaker-test` on the Pi's `avb_tx` cycling 8 channels, routes AVB 1 → JB_L and AVB 2 → JC_L: heard in that order; (2) **round trip** Mac (USB 1) → core → AVB out 1 → Pi (`alsaloop avb_rx → avb_tx`) → AVB in 1 → JC_L, next to the dry USB 1 → JB_L: heard on both, with the AVB → AVB diagonal **muted** for the test (the identity seeding would otherwise close a feedback loop through the Pi); (3) `link2` counters and the bridge log clean; (4) **60 minutes** of the bridge log: queue steady, 0 coarse fixes, 0 xruns (the "no drift" check; no user action beyond waiting) | **Yes** |
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
@@ -1059,3 +1103,4 @@ P9.6 makes the board an AVB talker and listener at the Linux level: two AAF ALSA
 - **2026-09-28 (UTC): P9.5 PASS on the bench** (§6.11, image `p95-link2-20260927`): cards `FPGAmixerLink` + `FPGAmixerLink2` by name; matrix 20 × 20; the media-clock loop LOCKED from boot (first image with it enabled); **440 Hz into `FPGAmixerLink2` heard on the Pmods** via core inputs 12/13; link #2 48,001.5 frames/s clean; **link #1 / USB unchanged** (48,001.5 frames/s clean, heard); restore test **400 set / 400 echoed, check-hw 400/400 → power pull → 400/400**, audio back by itself. **P9.5 done.** Next: the P9.6 proposal (shaping + AAF).
 - **2026-09-28: P9.6 proposal** (§6.12): found that the ZynqMP GEM has **no TC offload** in `macb` (only Versal; §2 corrected) and 2 TX queues; our kernel has mqprio but not CBS/ETF; the AAF plugin runs on `CLOCK_REALTIME` with a hard-coded 37 s TAI offset, and **the board's kernel TAI offset is 0 today**; the Pi can't shape (no CBS/ETF modules) and needs `phc2sys` for its system clock. Awaiting decisions A1–A8.
 - **2026-09-28: P9.6 PASS** (§6.12–6.14, decisions A1–A8 as recommended; image `p96-avb-20260928`): CBS + ETF in the kernel, alsa-plugins `aaf`, `fpgamixer-avb` (TAI offset 37 s, VLAN 2 / PCP 3, mqprio + CBS + ETF in software, `avb_tx` / `avb_rx`), `phc2sys -a -rr`; the Pi's AAF plugin built from 1.2.12 (identical AAF source). **Board → Pi: 8000 PDU/s, 0 gaps, ETF-paced at 125 µs, VLAN 2 / PCP 3, 440 Hz on ch 1, 0 late; Pi → board: the board's `avb_rx` recorded 5 s complete.** Content and level left to P9.7 by ear (user decision). Findings: the AAF devices need root; the Pi's `phc2sys` swings its system clock ±10 µs (PCIe read). Next: P9.7 proposal (the AVB bridge: AAF ↔ `FPGAmixerLink2`).
+- **2026-09-28: P9.7 proposal** (§6.15): a fixed-queue bridge (both sides locked to the PHC, so no servo), sharing a common core with the USB bridge; 2 ms periods; constant latency (~8 ms estimated), not presentation-time placement; bench by ear including a Mac → board → Pi → board round trip. Awaiting decisions V1–V6.
