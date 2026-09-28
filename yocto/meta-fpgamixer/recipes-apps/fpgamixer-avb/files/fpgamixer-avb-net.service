@@ -1,0 +1,17 @@
+[Unit]
+Description=FPGAmixer AVB network: TAI offset, stream VLAN, class A shaping, AAF ALSA devices
+# Design: docs/phase9_status_2026-09-26.md sec. 6.12 (P9.6, decisions A1-A8).
+# Everything comes from /etc/fpgamixer/avb.conf; avb_net.py prints what it does.
+# Runs BEFORE ptp4l: replacing end0's root qdisc resets its TX queues, which
+# is harmless before ptp4l has started and a glitch in its timestamps after.
+Wants=sys-subsystem-net-devices-end0.device
+After=sys-subsystem-net-devices-end0.device
+Before=fpgamixer-ptp4l.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/lib/fpgamixer/avb_net.py
+
+[Install]
+WantedBy=multi-user.target

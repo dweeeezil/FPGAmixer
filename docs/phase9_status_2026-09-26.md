@@ -932,11 +932,33 @@ P9.6 makes the board an AVB talker and listener at the Linux level: two AAF ALSA
 | A6 | **VLAN 2, PCP 3** (the AVB default for class A) on a VLAN interface (`end0.2`, egress priority 3 → PCP 3), from the start, rather than untagged frames on the point-to-point cable? gPTP stays untagged on `end0`. The Pi needs `eth4.2` too | **Yes, VLAN 2 now.** Cheap here, and what a switch (P9.8) and Milan (Phase 10) expect |
 | A7 | Device names **`avb_tx`** / **`avb_rx`** in `/etc/asound.conf`, installed by `fpgamixer-avb`; the image gains the aaf plugin, libavtp and `tcpdump`? | **Yes.** |
 | A8 | `fpgamixer-phc2sys`: **`-a -r` → `-a -rr`**, so the system clock (the plugin's) and the PHC (`mclk`'s) stay locked in the grandmaster role too? The follower role is unchanged | **Yes.** Without it, board-as-GM + AAF drifts |
+| — | **Decided by the user, 2026-09-28: A1–A8 all as recommended.** | |
 
 **Steps and verification:**
 - **P9.6a** (image): the fragment, the aaf plugin, `fpgamixer-avb`, the `phc2sys` change. Checked: the kernel `.config` of **our** machine's build (not another tree), the rootfs contents, `tc -s qdisc` on the board, `CLOCK_TAI − CLOCK_REALTIME` = 37 s from boot.
 - **P9.6b** (bench): the Pi set up as above. **Board → Pi:** `speaker-test -D avb_tx` on the board, `tcpdump` on the Pi: 8000 PDUs/s, VLAN 2 / PCP 3, contiguous sequence numbers, presentation times ≈ capture time + `mtt`, PDUs spaced ~125 µs (ETF) rather than in bursts; `arecord -D avb_rx` on the Pi receives the tone. **Pi → board:** the reverse, `arecord -D avb_rx` on the board. **Nothing else disturbed:** gPTP offsets (the summaries), the media-clock loop LOCKED, USB and link #2 as in P9.5.
 - Not in P9.6: audio into the matrix (P9.7), long runs (P9.8).
+
+### 6.13 P9.6a: the board's AVB network side, and the Pi's plugin
+
+**A5's address range, checked:** IEEE 1722-2016's MAAP **dynamic allocation pool is `91:E0:F0:00:00:00` – `91:E0:F0:00:FD:FF`** (Table B.9; OpenAvnu's `maap.h`: base `0x91E0F0000000`, size `0xFE00`) and **`91:E0:F0:00:FF:00` is MAAP's own protocol address** (Table B.10). So `FE:00` / `FE:01` can never be claimed by a MAAP device. That `FE:xx` is *the locally administered block* is still from memory (a 2010 P1722 draft comment shows the table's layout being filled in); Table B.9 itself wasn't read.
+
+| File | What |
+|---|---|
+| `tools/avb_net.py` (new) | the boot-time setup, from **one config file**: (1) the kernel TAI offset via `adjtimex(ADJ_TAI)` (A3; `struct timex` in ctypes, checked against the C header on the VM: size 208, `constant` at 48, `tai` at 160); (2) `end0.2`, VLAN 2, `egress-qos-map 3:3` (A6); (3) `mqprio` (2 classes, only priority 3 → TC 1 → queue 1) + `cbs` on class `100:2` + `etf` (`CLOCK_TAI`, delta 500 µs), all software (A2); (4) the AAF devices `avb_tx` / `avb_rx` **written to `/etc/alsa/conf.d/50-fpgamixer-avb.conf`** (A7). CBS credits and the ALSA text are *derived* from the config: frame 190 B, 8000 PDU/s, **13,440 kbit/s on the wire**; idleslope 16,000, sendslope −984,000, hicredit 25, locredit −187. Refuses: an idleslope below the stream's rate, an unknown format, a malformed address or stream ID (the plugin's listener drops PDUs with another stream ID **silently**, a debug print only). `--dry-run` prints everything and changes nothing |
+| `tools/test_avb_net.py` (new) | 12 tests, run anywhere: the repo's `avb.conf` as decided, the refusals, the numbers above, the qdisc chain (parents, map, `hw 0`, no ETF offload), the VLAN command, the ALSA text of both devices |
+| `recipes-apps/fpgamixer-avb/` (new) | `avb.conf` → `/etc/fpgamixer/avb.conf` (conffile); `fpgamixer-avb-net.service` (oneshot, after `end0` exists, **before `fpgamixer-ptp4l`**: replacing the root qdisc resets the TX queues); RDEPENDS the AAF plugin package (`libasound-module-pcm-aaf`), `iproute2-tc` (**the image had `ip` but no `tc`**), `python3-ctypes` |
+| `recipes-kernel/linux-xlnx/files/fpgamixer-avb.cfg` (new) | `NET_SCH_CBS=y`, `NET_SCH_ETF=y` (A1), in the bbappend next to the USB fragment |
+| `recipes-multimedia/alsa/alsa-plugins_%.bbappend` (new) | `PACKAGECONFIG:append = " aaf"` (pulls libavtp) |
+| image bbappend | + `fpgamixer-avb tcpdump` |
+| `fpgamixer-phc2sys.service` | `-a -r` → **`-a -rr`** (A8). **Checked in linuxptp 4.4's source** (`reconfigure()` / `compare_domains()`): the PTP domain has source priority 1, `CLOCK_REALTIME`'s domain 0, so while the port is SLAVE the PHC is the source exactly as before; only when no port is SLAVE (grandmaster) does the system clock become the source and the PHC follow it |
+| `tools/pi_avb_asound.conf` (new) | the Pi's mirror of the two devices (bench only; kept in step by hand) |
+
+**Why the ALSA file is generated and not static:** a static file in `conf.d` that `include`s a generated one would make *every* ALSA program on the board fail (the USB bridge too) whenever the generated file is missing; a generated file is simply absent until the service has run.
+
+**The Pi (bench, steps run by the user, 2026-09-28):** `eth4` MAC **`50:7c:6f:8e:40:5b`** (now in `avb.conf` as the Pi's stream ID); Debian trixie's `libasound2-plugins` 1.2.12 **has no AAF plugin**, so it was built from `alsa-plugins-1.2.12.tar.bz2` (SHA-256 `7bd8a83d…66f2`, the same file downloaded on the VM) against Debian's `libavtp-dev` 0.2.0: `configure` "AAF plugin: yes", `make -C aaf` clean, `libasound_module_pcm_aaf.so` installed in `/usr/lib/aarch64-linux-gnu/alsa-lib/`. **The AAF source is identical in 1.2.7.1 (the board) and 1.2.12 (the Pi): `diff` 0 lines**, so both ends run the same plugin code.
+
+**`pmc` syntax, checked in linuxptp 4.4 (`pmc_common.c`):** `SET GRANDMASTER_SETTINGS_NP` takes exactly 11 values, and the keyword is **`ptpTimescale`**; the plugin documentation's `pTimescale` is from an older linuxptp and would be refused.
 
 ## 7. Bench and peers
 

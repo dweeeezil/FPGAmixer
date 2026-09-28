@@ -1,6 +1,7 @@
 # FPGAmixer kernel configuration on top of the EDF kernel.
 #
 #   fpgamixer-usb.cfg   USB device mode for the UAC2 gadget (Phase 8)
+#   fpgamixer-avb.cfg   CBS + ETF qdiscs for AVB class A (Phase 9, P9.6)
 #
 # Same pattern as meta-embedded-plus: the fragment goes into SRC_URI and is
 # named in KERNEL_FEATURES, so kernel-yocto merges it after the distro's .scc
@@ -17,6 +18,7 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 SRC_URI:append = " file://fpgamixer-usb.cfg \
+    file://fpgamixer-avb.cfg \
     file://0001-usb-gadget-f_uac2-add-optional-single-clock-source.patch \
 "
-KERNEL_FEATURES:append = " fpgamixer-usb.cfg"
+KERNEL_FEATURES:append = " fpgamixer-usb.cfg fpgamixer-avb.cfg"
