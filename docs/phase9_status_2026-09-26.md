@@ -960,6 +960,10 @@ P9.6 makes the board an AVB talker and listener at the Linux level: two AAF ALSA
 
 **`pmc` syntax, checked in linuxptp 4.4 (`pmc_common.c`):** `SET GRANDMASTER_SETTINGS_NP` takes exactly 11 values, and the keyword is **`ptpTimescale`**; the plugin documentation's `pTimescale` is from an older linuxptp and would be refused.
 
+**Builds, 2026-09-28:** components first (`bitbake fpgamixer-avb alsa-plugins linux-xlnx tcpdump fpgamixer-gptp`, exit 0): **our machine's** `linux-genesys_zu3eg-standard-build/.config` now has `NET_SCH_CBS=y`, `NET_SCH_ETF=y` (TAPRIO off, MQPRIO on); packages `libasound-module-pcm-aaf`, `libavtp0`, `iproute2-tc`, `fpgamixer-avb`. Then the image from the clean commit `af9e747`: `gen-machine-conf` exit 0, 15,069 tasks, all succeeded, 23 warnings (the usual). Checked: bitstream unchanged (`p95`, `2e22f414…`); kernel `Image` from the new build (01:47); the manifest has the six packages; the rootfs has `avb_net.py`, `/etc/fpgamixer/avb.conf` with both real stream IDs, `libasound_module_pcm_aaf.so`, `fpgamixer-avb-net.service` enabled, `phc2sys -a -rr`; no `/etc/alsa` yet (written at boot). **`build/sd/p96-avb-20260928.wic.xz`** (MD5 `c54a318f…`, same on both ends).
+
+**Pi bench state:** `/etc/asound.conf` = `tools/pi_avb_asound.conf`, `aplay -L` lists `avb_tx` / `avb_rx`; `eth4.2` (VLAN 2, `egress-qos-map 3:3`) up (not persistent across a Pi reboot).
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
