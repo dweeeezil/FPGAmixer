@@ -1062,6 +1062,8 @@ P9.7 connects the AVB front door's two halves: the AAF devices (`avb_rx`, `avb_t
 - `test_bridge_convert` (gcc on the VM): **PASS**: exact byte layouts of 0x123456 and −2 in both orders, sign extension at −2²³, 2²³−1, −1, 200,000 round trips. Mutants (no sign extension; BE bytes reversed): both FAIL.
 - `bitbake` both recipes: **0 compiler warnings** (`-Wall -Wextra`), after replacing a positional struct initializer the first build warned about.
 
+**Image built 2026-09-28** from the clean commit `3fc2090`: 15,069 tasks, all succeeded; bitstream unchanged (`p95`); the rootfs has both bridges (the USB one built on the core), `fpgamixer-avb-bridge.service` and `fpgamixer-avb-net.service` enabled, `avb.conf` with `[bridge]`. **`build/sd/p97-bridge-20260928.wic.xz`** (MD5 `3684b5a5…`, same on both ends).
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
