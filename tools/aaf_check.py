@@ -13,6 +13,12 @@ only, so the same file runs on the Pi, the board and the PC.
     aaf_check.py raw FILE [--channels 8] [--format S24_3BE] [--rate 48000]
         A raw recording (arecord -t raw): RMS and frequency per channel.
 
+    aaf_check.py tone [--seconds 60] [--freq 440] [--level -20] [--channel 1]
+                      [--channels 8] [--format S24_3BE] [--rate 48000]
+        Writes a continuous sine at a known level (dBFS RMS) on one channel,
+        silence on the others, as raw audio to stdout, for aplay:
+          python3 aaf_check.py tone | sudo aplay -D avb_tx -t raw -f S24_3BE -c 8 -r 48000 -F 12500
+
 Presentation time vs arrival: the AVTP timestamp is the low 32 bits of the
 presentation time in gPTP (TAI) nanoseconds; pcap timestamps are the
 capturing host's CLOCK_REALTIME (UTC), so --tai-offset (37 s) is added
@@ -237,6 +243,47 @@ def analyze_raw(path, channels, fmt, rate):
     return 0
 
 
+def tone_frames(n_frames, start, freq, level_db, channel, channels, fmt, rate):
+    """Raw big-endian frames [start, start + n_frames): a sine whose RMS is
+    level_db dBFS on `channel` (1-based), zeros elsewhere."""
+    width = RAW_FORMATS[fmt]
+    full = (1 << (8 * width - 1)) - 1
+    amp = math.sqrt(2) * 10 ** (level_db / 20)
+    zero = bytes(width)
+    out = bytearray()
+    for k in range(start, start + n_frames):
+        v = int(round(amp * full * math.sin(2 * math.pi * freq * k / rate)))
+        s = v.to_bytes(width, "big", signed=True)
+        for c in range(channels):
+            out += s if c == channel - 1 else zero
+    return bytes(out)
+
+
+def write_tone(a, out=None):
+    out = out or sys.stdout.buffer
+    if not 1 <= a.channel <= a.channels:
+        raise SystemExit("tone: --channel must be 1..--channels")
+    if a.level > -3.02:
+        raise SystemExit("tone: --level must be at most -3.02 dBFS (a sine's peak is +3 dB)")
+    if a.freq != int(a.freq) or a.freq <= 0:
+        raise SystemExit("tone: --freq must be a whole number of Hz (one second is looped)")
+    # One second, computed once and repeated: an integer frequency makes it
+    # seamless, and the board's CPU can't compute samples one by one in time.
+    second = tone_frames(a.rate, 0, a.freq, a.level, a.channel, a.channels,
+                         a.format, a.rate)
+    frame = len(second) // a.rate
+    left = int(a.seconds * a.rate)
+    try:
+        while left > 0:
+            n = min(a.rate, left)
+            out.write(second[:n * frame])
+            left -= n
+        out.flush()
+    except BrokenPipeError:
+        pass
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -249,7 +296,17 @@ def main(argv=None):
     b.add_argument("--channels", type=int, default=8)
     b.add_argument("--format", default="S24_3BE", choices=sorted(RAW_FORMATS))
     b.add_argument("--rate", type=int, default=48000)
+    c = sub.add_parser("tone")
+    c.add_argument("--seconds", type=float, default=60.0)
+    c.add_argument("--freq", type=float, default=440.0)
+    c.add_argument("--level", type=float, default=-20.0, help="dBFS RMS")
+    c.add_argument("--channel", type=int, default=1)
+    c.add_argument("--channels", type=int, default=8)
+    c.add_argument("--format", default="S24_3BE", choices=sorted(RAW_FORMATS))
+    c.add_argument("--rate", type=int, default=48000)
     args = ap.parse_args(argv)
+    if args.cmd == "tone":
+        return write_tone(args)
     if args.cmd == "pcap":
         return analyze_pcap(args.file, args.tai_offset, args.rate)
     return analyze_raw(args.file, args.channels, args.format, args.rate)

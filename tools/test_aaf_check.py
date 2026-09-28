@@ -124,6 +124,29 @@ class Pcap(unittest.TestCase):
         self.assertIsNone(aaf_check.parse_aaf(DST + SRC + b"\x08\x00" + bytes(40)))
 
 
+class Tone(unittest.TestCase):
+    def test_tone_level_channel_and_loop(self):
+        import argparse
+        import io
+        a = argparse.Namespace(seconds=2.5, freq=440.0, level=-20.0, channel=3,
+                               channels=8, format="S24_3BE", rate=48000)
+        buf = io.BytesIO()
+        aaf_check.write_tone(a, buf)
+        data = buf.getvalue()
+        self.assertEqual(len(data), int(2.5 * 48000) * 8 * 3)
+        s = aaf_check.samples_be(data, 3)
+        rep = aaf_check.channel_report([s[c::8] for c in range(8)], 48000)
+        self.assertAlmostEqual(rep[2][0], -20.0, delta=0.05)
+        self.assertAlmostEqual(rep[2][1], 440.0, delta=0.5)
+        self.assertTrue(all(db == float("-inf") for c, (db, _) in enumerate(rep) if c != 2))
+        # the loop is seamless: sample k equals the formula across the 1 s joins
+        ch3 = s[2::8]
+        amp = math.sqrt(2) * 10 ** (-20 / 20)
+        for k in (47999, 48000, 48001, 96000, 119999):
+            self.assertAlmostEqual(ch3[k], amp * math.sin(2 * math.pi * 440 * k / 48000),
+                                   delta=2 / 8388608)
+
+
 class Raw(unittest.TestCase):
     def test_raw_channels(self):
         d = tempfile.mkdtemp()
