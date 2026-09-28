@@ -79,6 +79,24 @@ class Config(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.load(**{"format = S24_3BE": "format = S24_LE"})
 
+    def test_bridge_geometry_as_decided(self):
+        c = self.load()
+        self.assertEqual((c["period_frames"], c["periods"], c["queue_periods"]), (96, 4, 2))
+        self.assertEqual(avb_net.bridge_env(c), "AVB_BRIDGE_ARGS=-p 96 -n 4 -q 2\n")
+
+    def test_bridge_period_not_multiple_of_pdu_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.load(**{"period_frames = 96": "period_frames = 100"})
+        self.assertIn("frames_per_pdu", str(cm.exception))
+
+    def test_bridge_limits_refused(self):
+        for repl in ({"period_frames = 96": "period_frames = 1602"},   # > 1600
+                     {"periods = 4": "periods = 7"},                    # link: 2..6
+                     {"queue_periods = 2": "queue_periods = 4"},        # must be < periods
+                     {"queue_periods = 2": "queue_periods = 0"}):
+            with self.assertRaises(SystemExit, msg=repl):
+                self.load(**repl)
+
 
 class Numbers(unittest.TestCase):
     def setUp(self):

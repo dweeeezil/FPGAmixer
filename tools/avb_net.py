@@ -30,6 +30,9 @@ From ONE config file (/etc/fpgamixer/avb.conf) it:
      static: a static file including a missing one would break every ALSA
      program on the board (the USB bridge too); a generated file is simply
      absent until this has run.
+  5. checks the bridge geometry ([bridge], P9.7) against the AAF plugin's and
+     the link card's limits and writes it for fpgamixer-avb-bridge.service
+     (/run/fpgamixer/avb-bridge.env), so the config has one parser.
 
     avb_net.py [--config FILE] [--dry-run]     # --dry-run: print, change nothing
 
@@ -58,6 +61,9 @@ VLAN_TAG = 4
 FCS = 4
 PREAMBLE_SFD_IPG = 8 + 12   # on the wire only
 MAX_INTERFERING_FRAME = 1522   # a full-size tagged best-effort frame
+LINK_PERIOD_FRAMES = (6, 1600)  # FPGAmixerLink2: 192..51200 B per period at 8 ch x 4 B
+LINK_PERIODS = (2, 6)
+BRIDGE_ENV = "/run/fpgamixer/avb-bridge.env"
 
 
 # ------------------------------------------------------------------ config
@@ -66,7 +72,7 @@ def load_config(path):
     cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
     if not cp.read(path):
         raise SystemExit(f"avb_net: no config at {path}")
-    net, st, tx, rx = cp["net"], cp["stream"], cp["tx"], cp["rx"]
+    net, st, tx, rx, br = cp["net"], cp["stream"], cp["tx"], cp["rx"], cp["bridge"]
     cfg = {
         "parent": net.get("parent"),
         "vlan_id": net.getint("vlan_id"),
@@ -86,6 +92,9 @@ def load_config(path):
         "tx_streamid": tx.get("streamid"),
         "rx_addr": rx.get("addr"),
         "rx_streamid": rx.get("streamid"),
+        "period_frames": br.getint("period_frames"),
+        "periods": br.getint("periods"),
+        "queue_periods": br.getint("queue_periods"),
     }
     check_config(cfg)
     return cfg
@@ -117,6 +126,19 @@ def check_config(cfg):
                          f"stream's own {need} kbit/s on the wire")
     if cfg["idleslope_kbps"] >= cfg["link_mbps"] * 1000:
         raise SystemExit("avb_net: idleslope must be below the link rate")
+    # [bridge]: the AAF plugin needs a period that is a multiple of
+    # frames_per_pdu; the link card (Phase 8 sec. 17) takes 192..51200 bytes
+    # per period (8 ch x 4 B: 6..1600 frames) and 2..6 periods.
+    p = cfg["period_frames"]
+    if p % cfg["frames_per_pdu"] or not LINK_PERIOD_FRAMES[0] <= p <= LINK_PERIOD_FRAMES[1]:
+        raise SystemExit(f"avb_net: period_frames {p}: a multiple of frames_per_pdu "
+                         f"({cfg['frames_per_pdu']}) within {LINK_PERIOD_FRAMES[0]}.."
+                         f"{LINK_PERIOD_FRAMES[1]}")
+    if not LINK_PERIODS[0] <= cfg["periods"] <= LINK_PERIODS[1]:
+        raise SystemExit(f"avb_net: periods {cfg['periods']}: the link card takes "
+                         f"{LINK_PERIODS[0]}..{LINK_PERIODS[1]}")
+    if not 1 <= cfg["queue_periods"] < cfg["periods"]:
+        raise SystemExit("avb_net: queue_periods must be at least 1 and below periods")
 
 
 # ----------------------------------------------------------------- numbers
@@ -209,6 +231,12 @@ def alsa_conf(cfg):
                   f"    time_uncertainty {cfg['time_uncertainty_us']}\n")
             + dev("avb_rx", cfg["rx_addr"], cfg["rx_streamid"],
                   f"    ptime_tolerance {cfg['ptime_tolerance_us']}\n"))
+
+
+def bridge_env(cfg):
+    """The EnvironmentFile line for fpgamixer-avb-bridge.service."""
+    return (f"AVB_BRIDGE_ARGS=-p {cfg['period_frames']} -n {cfg['periods']} "
+            f"-q {cfg['queue_periods']}\n")
 
 
 # --------------------------------------------------------------- TAI offset
@@ -305,6 +333,16 @@ def main(argv=None):
             f.write(text)
         os.replace(tmp, ALSA_OUT)
         print(f"avb_net: wrote {ALSA_OUT} (avb_tx, avb_rx on {vlan_name(cfg)})")
+
+    # 5. the bridge's geometry (P9.7), checked above
+    env = bridge_env(cfg)
+    if dry:
+        print(f"  (would write {BRIDGE_ENV}: {env.strip()})")
+    else:
+        os.makedirs(os.path.dirname(BRIDGE_ENV), exist_ok=True)
+        with open(BRIDGE_ENV, "w") as f:
+            f.write(env)
+        print(f"avb_net: wrote {BRIDGE_ENV} ({env.strip()})")
     return 0
 
 
