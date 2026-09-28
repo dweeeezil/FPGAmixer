@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Bench checker for IEEE 1722 AAF streams (Phase 9, P9.6). Standard library
-only, so the same file runs on the Pi, the board and the PC.
+only; runs on the Pi and the PC. NOT on the board: its image's Python has
+no 'statistics' module (found on the bench, 2026-09-28).
 
     aaf_check.py pcap FILE [--tai-offset 37] [--rate 48000]
         A tcpdump capture (classic pcap, Ethernet). For every AAF PDU:

@@ -964,6 +964,41 @@ P9.6 makes the board an AVB talker and listener at the Linux level: two AAF ALSA
 
 **Pi bench state:** `/etc/asound.conf` = `tools/pi_avb_asound.conf`, `aplay -L` lists `avb_tx` / `avb_rx`; `eth4.2` (VLAN 2, `egress-qos-map 3:3`) up (not persistent across a Pi reboot).
 
+### 6.14 P9.6 bench (2026-09-28 UTC, image `p96-avb-20260928`): PASS. **P9.6 done.**
+
+**Board, from boot:**
+
+| Check | Result |
+|---|---|
+| `fpgamixer-avb-net` journal | the stream line (190 B, 8000 PDU/s, 13,440 kbit/s; CBS 16000 / −984000 / 25 / −187), **`kernel TAI offset 0 -> 37 s`**, the `ip` / `tc` commands, the ALSA file written; before `ptp4l` as ordered |
+| `tc qdisc show dev end0` | `mqprio 100:` (map priority 3 → TC 1, queues `(0:0) (1:1)`), **`cbs 200:` on `100:2`** with those values, `offload 0`; **`etf` on `200:1`** (`clockid TAI delta 500000`, offload off); `pfifo_fast` on `100:1` |
+| `CLOCK_TAI − CLOCK_REALTIME` | **36.999996 s** |
+| gPTP after the qdisc change | `portState SLAVE` |
+
+**Pi:** `pmc SET GRANDMASTER_SETTINGS_NP` accepted (`currentUtcOffsetValid 1`, `timeTraceable 1`); `systemd-timesyncd` stopped (it would fight `phc2sys`); `phc2sys -s eth4 -c CLOCK_REALTIME -w -N 5`; Pi TAI offset **36.9999993 s**. **Seen:** the I350's PCIe read is bimodal again (delay ~1.0 / ~19.4 µs), so the **Pi's system clock** swings about **±8–10 µs** from second to second (frequency −8.7 … −24 ppm); `-N 5` doesn't help (a batch's reads fall in one mode). It now moves only the Pi's system clock (its AAF timing), not the grandmaster, and it is small against the 2 ms `mtt` and 125 µs `ptime_tolerance`. If it ever matters: softer `phc2sys` servo gains.
+
+**Board → Pi** (`speaker-test` 440 Hz on channel 1 into `avb_tx`; `tcpdump` on the Pi's `eth4`; `aaf_check.py pcap`):
+
+| | |
+|---|---|
+| stream | `00:18:3E:05:06:48:0000` → `91:E0:F0:00:FE:00`, **VLAN 2 / PCP 3** |
+| header | INT_24BIT, 8 ch, 48 kHz, bit depth 24, 144 B, sv 1, tv 1, version 0 |
+| rate | **8000.0 PDU/s, 0 sequence gaps** (23,006 PDUs) |
+| spacing | **median 124.9 µs** (p1 92, p99 166, max 544), **0 % bursts**: the software ETF paces the PDUs |
+| presentation − arrival | median 2456 µs, min 2038, **0 late**. Above the nominal 2125 µs (`mtt` + `time_uncertainty`) because software ETF releases a PDU up to `delta` (500 µs) before its launch time |
+| audio | **ch 1: 440.1 Hz**, channels 2–8 silent; level −53.1 dBFS: **not verified**, see below |
+
+**Pi → board** (`speaker-test` into the Pi's `avb_tx`, unshaped; `sudo arecord -D avb_rx … -d 5` on the board): **the board's listener received the stream**: `arecord` ran its 5 s and wrote **5,760,000 bytes** (= 5 s × 48,000 × 8 ch × 3 B, i.e. no missing periods) and exited normally.
+
+**Not verified in P9.6, on purpose (user, 2026-09-28: "does another 3 seconds really matter?"):** the audio *content* and *level* (the −53 dBFS could be `speaker-test`'s S24_3BE scaling or real); the Pi's own listener (`arecord` on the Pi); ETF drop counters (`tc -s`). All of these are covered, more directly, by P9.7: the AVB stream goes through the matrix to the Pmods and is judged by ear, with known levels from our own bridge.
+
+**Bench findings (for P9.7 and the runbook):**
+- **The AAF devices need root** (the plugin opens an `AF_PACKET` socket: `Setting of hwparams failed: Operation not permitted` as `amd-edf`). P9.7's bridge runs as a root service, like the USB bridge.
+- **`speaker-test -s 1` plays one pass and exits** (≈ 3 s), whatever `-l` says.
+- **Never put `sudo` in a background job** (`sudo … &`): it can't prompt, the job stops (`SIGTTIN`) and the typed password lands in the shell. Authenticate first (`sudo -v`) or run in the foreground.
+- On the Pi, `tcpdump -w` needs `-Z root` (it drops to its own user after opening the interface and then couldn't write the file); `tcpdump` wasn't installed on the Pi (installed with apt).
+- **`aaf_check.py` doesn't run on the board** (its Python has no `statistics` module); it's a Pi/PC tool.
+
 ## 7. Bench and peers
 
 - **Pi 5 + I350**: the known-good gPTP peer from the spike. For AAF it needs libavtp + the alsa-plugins AAF plugin (Debian packaging to be checked; building them is fine) and software CBS/ETF (the I350 has no Qav hardware). It can be talker, listener and gPTP grandmaster.
@@ -1023,3 +1058,4 @@ P9.6 makes the board an AVB talker and listener at the Linux level: two AAF ALSA
 - **2026-09-27: P9.5b** (§6.10): card driver named by `fpgamixer,card-name` (default unchanged), DT node `FPGAmixerLink2`, `mixer_hw` `linkstat2` / `link2`, restore test at 400 levels (the 144 old ones unchanged), simulator default 20; Python 46/46, 3 mutants caught, check-hw self-test 400/400 and 399/400 planted; driver 0 warnings. SDT: `psu_init` identical, `link2_formatter@80110000` (SPI 91/92) and `M_AXI_LINK2STAT@80004000` present. Next: the image, then the bench.
 - **2026-09-28 (UTC): P9.5 PASS on the bench** (§6.11, image `p95-link2-20260927`): cards `FPGAmixerLink` + `FPGAmixerLink2` by name; matrix 20 × 20; the media-clock loop LOCKED from boot (first image with it enabled); **440 Hz into `FPGAmixerLink2` heard on the Pmods** via core inputs 12/13; link #2 48,001.5 frames/s clean; **link #1 / USB unchanged** (48,001.5 frames/s clean, heard); restore test **400 set / 400 echoed, check-hw 400/400 → power pull → 400/400**, audio back by itself. **P9.5 done.** Next: the P9.6 proposal (shaping + AAF).
 - **2026-09-28: P9.6 proposal** (§6.12): found that the ZynqMP GEM has **no TC offload** in `macb` (only Versal; §2 corrected) and 2 TX queues; our kernel has mqprio but not CBS/ETF; the AAF plugin runs on `CLOCK_REALTIME` with a hard-coded 37 s TAI offset, and **the board's kernel TAI offset is 0 today**; the Pi can't shape (no CBS/ETF modules) and needs `phc2sys` for its system clock. Awaiting decisions A1–A8.
+- **2026-09-28: P9.6 PASS** (§6.12–6.14, decisions A1–A8 as recommended; image `p96-avb-20260928`): CBS + ETF in the kernel, alsa-plugins `aaf`, `fpgamixer-avb` (TAI offset 37 s, VLAN 2 / PCP 3, mqprio + CBS + ETF in software, `avb_tx` / `avb_rx`), `phc2sys -a -rr`; the Pi's AAF plugin built from 1.2.12 (identical AAF source). **Board → Pi: 8000 PDU/s, 0 gaps, ETF-paced at 125 µs, VLAN 2 / PCP 3, 440 Hz on ch 1, 0 late; Pi → board: the board's `avb_rx` recorded 5 s complete.** Content and level left to P9.7 by ear (user decision). Findings: the AAF devices need root; the Pi's `phc2sys` swings its system clock ±10 µs (PCIe read). Next: P9.7 proposal (the AVB bridge: AAF ↔ `FPGAmixerLink2`).
