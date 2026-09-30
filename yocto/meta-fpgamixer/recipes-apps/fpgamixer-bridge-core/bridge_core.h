@@ -10,7 +10,7 @@
  *   - ONE poll over both PCMs' descriptors. Both are serviced while the
  *     thread waits: the AAF plugin (alsa-plugins ioplug) only transmits a
  *     period when its timer event is handled, so a thread blocked on the
- *     other device would send late and ETF would drop the packets
+ *     other device would send late (and, while ETF was in use, see them dropped)
  *     (docs/phase9_status_2026-09-26.md sec. 6.16);
  *   - xrun recovery (restart, prefill), and a coarse fix that drops or pads
  *     whole periods when the queue is more than `coarse` frames off target;

@@ -23,8 +23,11 @@ From ONE config file (/etc/fpgamixer/avb.conf) it:
                       else, gPTP included -> TC 0 -> queue 0
         TC 1  cbs     credit-based shaper, class A, idleslope from the config
                       (with headroom; refused if below the stream's own rate)
-        under etf     releases each AAF PDU at its SO_TXTIME launch time
-                      (CLOCK_TAI), which the plugin's talker relies on
+     No ETF (Phase 10 bench, docs/phase10_status_2026-09-29.md sec. 14): ETF
+     refuses every packet whose launch time is before the last one it sent,
+     so a backward clock step (a grandmaster change) wedged the stream for
+     good. The plugin's timer paces the PDUs and CBS shapes them; the
+     launch time it still attaches (SO_TXTIME) is ignored by CBS.
   4. writes the AAF ALSA devices (avb_tx, avb_rx) to
      /etc/alsa/conf.d/50-fpgamixer-avb.conf, decision A7. Generated, not
      static: a static file including a missing one would break every ALSA
@@ -86,7 +89,6 @@ def load_config(path):
         "tai_offset": net.getint("tai_offset"),
         "link_mbps": net.getint("link_mbps"),
         "idleslope_kbps": net.getint("idleslope_kbps"),
-        "etf_delta_us": net.getint("etf_delta_us"),
         "channels": st.getint("channels"),
         "format": st.get("format"),
         "rate": st.getint("rate"),
@@ -279,8 +281,6 @@ def net_commands(cfg):
             ["tc", "qdisc", "replace", "dev", dev, "parent", "100:2", "handle", "200:",
              "cbs", "idleslope", str(idle), "sendslope", str(send),
              "hicredit", str(hi), "locredit", str(lo), "offload", "0"],
-            ["tc", "qdisc", "replace", "dev", dev, "parent", "200:1", "etf",
-             "clockid", "CLOCK_TAI", "delta", str(cfg["etf_delta_us"] * 1000)],
         ],
     }
 

@@ -134,6 +134,17 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 - **ETF wedged by the backward step:** after the step every AAF PDU failed ("Failed to send AAF PDU", ~485 playback xruns/s, ETF `dropped` rising at the same rate). ETF rejects a packet whose txtime is before the last dequeued one (`is_packet_valid`: `txtime < q->last`); `q->last` was a 2026 time. **Fixed on the bench** by deleting and re-adding only the ETF leaf (`parent 200:1`, the stream's queue; ptp4l untouched). **Open, needs a decision:** any backward step (grandmaster change) wedges ETF again: rebuild the leaf on a step, or drop ETF (CBS already shapes; ETF also caused the launch-time failures in §12).
 - **Result, 2026-09-30 01:11 (board clock):** both directions running: **B core→net 48,000 frames/s, xruns 0/0, no coarse fixes; A net→core 48,000 frames/s, xruns 2/3 at start-up only, queue −8 frames.** The Mac's stream arrived after unticking/re-ticking FPGAmixer in the Network Device Browser.
 
+## 14. First audio, and the decisions after it (2026-09-30)
+
+- **Heard by ear:** Mac audio → AVB → link #2 → JB-L / JC-L. Both directions streaming (§13's last point).
+- **Decisions (user, 2026-09-30):**
+  1. **ETF dropped.** `avb_net` now installs mqprio + CBS only. ETF's `txtime < q->last` rule wedged the stream after any backward clock step (a grandmaster change), and its launch-time drops caused §12's send failures. The plugin's timer paces the PDUs; CBS shapes them; the SO_TXTIME the plugin still attaches is ignored. `etf_delta_us` removed from `avb.conf`; `CONFIG_NET_SCH_ETF` stays built in, unused (no kernel rebuild). Unit tests updated.
+  2. **systemd-timesyncd removed** (`recipes-core/systemd/systemd_%.bbappend`, `PACKAGECONFIG:remove = "timesyncd"`): the board's time is gPTP's; a second time service can only fight phc2sys.
+  3. **`time_uncertainty_us` 125 → 1000** in the repo's `avb.conf`, as benched.
+- Also in the next image: `step_threshold 1.0` (§13), `avb_net` re-runnable (§12).
+- **Known, not fixed:** re-running `fpgamixer-avb-net` while ptp4l runs deletes the root qdisc under it (a TX queue reset). At boot it runs before ptp4l, so only a manual restart is affected; restart ptp4l after it.
+- **Next:** build image `p10d`, boot it clean with the Mac attached, and check without manual steps: SLAVE, FPGAmixer in the browser, audio both ways. Then the Mac's two-streams-to-one-listener question, the P9.7 checks (60-min log, round trip) and the P9.8 soak.
+
 ## 7. Log
 
 - **2026-09-29:** user go-ahead for "the rest of the code" to make the board show up as an AVB device on a Mac. Research (§2), then built (§3): the AAF plugin's `bit_depth` patch, S32_BE in the bridge, `avdecc_pdu` / `avdecc_model` / `avdecc_entity` / `msrp` / `avb_entityd` / `avdecc_probe`, runtime stream binding in `avb_net`, the entity service. Checks (§4): 67/67 unit tests, 6 mutants caught, the veth integration test with two entities and a probe controller PASS. Not on hardware yet; risks in §5.

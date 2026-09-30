@@ -52,7 +52,7 @@ class Config(unittest.TestCase):
         self.assertEqual((c["channels"], c["format"], c["rate"], c["frames_per_pdu"]),
                          (8, "S24_3BE", 48000, 6))
         self.assertEqual((c["mtt_us"], c["time_uncertainty_us"], c["ptime_tolerance_us"]),
-                         (2000, 125, 125))
+                         (2000, 1000, 125))
         self.assertEqual(c["tx_addr"], "91:E0:F0:00:FE:00")
         self.assertEqual(c["rx_addr"], "91:E0:F0:00:FE:01")
         self.assertEqual(c["tx_streamid"], "00:18:3E:05:06:48:0000")
@@ -147,21 +147,17 @@ class Commands(unittest.TestCase):
 
     def test_qdisc_chain(self):
         self.assertEqual(self.cmds["qdisc_del"], ["tc", "qdisc", "del", "dev", "end0", "root"])
-        mq, cbs, etf = self.cmds["qdiscs"]
+        mq, cbs = self.cmds["qdiscs"]       # no ETF (Phase 10, status doc sec. 14)
         self.assertEqual(mq[mq.index("root") + 2], "100:")
         self.assertIn("mqprio", mq)
         self.assertEqual(mq[mq.index("map") + 1: mq.index("map") + 17],
                          ["0", "0", "0", "1"] + ["0"] * 12)
         self.assertEqual(mq[mq.index("queues") + 1: mq.index("queues") + 3], ["1@0", "1@1"])
         self.assertEqual(mq[mq.index("hw") + 1], "0")
-        # CBS on TC 1's queue (class 100:2), ETF under the CBS
+        # CBS on TC 1's queue (class 100:2)
         self.assertEqual(cbs[cbs.index("parent") + 1], "100:2")
         self.assertEqual(cbs[cbs.index("idleslope") + 1], "20000")
         self.assertEqual(cbs[cbs.index("offload") + 1], "0")
-        self.assertEqual(etf[etf.index("parent") + 1], "200:1")
-        self.assertEqual(etf[etf.index("clockid") + 1], "CLOCK_TAI")
-        self.assertEqual(etf[etf.index("delta") + 1], "500000")
-        self.assertNotIn("offload", etf)
 
     def test_alsa_conf(self):
         t = avb_net.alsa_conf(self.c)
@@ -175,7 +171,7 @@ class Commands(unittest.TestCase):
         self.assertIn('streamid "00:18:3E:05:06:48:0000"', tx)
         self.assertIn("prio 3", tx)
         self.assertIn("mtt 2000", tx)
-        self.assertIn("time_uncertainty 125", tx)
+        self.assertIn("time_uncertainty 1000", tx)
         self.assertIn('addr "91:E0:F0:00:FE:01"', rx)
         self.assertIn(f'streamid "{PI_SID}"', rx)
         self.assertIn("ptime_tolerance 125", rx)

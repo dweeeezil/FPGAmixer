@@ -1,7 +1,7 @@
 SUMMARY = "FPGAmixer AVB front door, Linux half: class A shaping, AAF devices, the bridge to link #2"
 DESCRIPTION = "Phase 9 P9.6: at boot, from /etc/fpgamixer/avb.conf, sets the \
 kernel TAI offset the AAF plugin needs, creates the stream VLAN interface, \
-shapes end0 (mqprio + software CBS + ETF) and writes the ALSA AAF devices \
+shapes end0 (mqprio + software CBS; ETF dropped in Phase 10) and writes the ALSA AAF devices \
 avb_tx / avb_rx. P9.7: fpgamixer-avb-bridge moves 8 channels each way between \
 those devices and link #2 (FPGAmixerLink2), at a fixed queue (both sides run \
 on the PHC's time). Nothing here knows about the mixer core. See \
