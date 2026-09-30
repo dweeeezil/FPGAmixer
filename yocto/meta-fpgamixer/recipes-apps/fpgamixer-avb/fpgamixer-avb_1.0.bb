@@ -15,8 +15,15 @@ FILESEXTRAPATHS:prepend := "${FPGAMIXER_TOOLS}:${THISDIR}/files:${THISDIR}/../fp
 
 SRC_URI = " \
     file://avb_net.py \
+    file://avb_entityd.py \
+    file://avdecc_pdu.py \
+    file://avdecc_model.py \
+    file://avdecc_entity.py \
+    file://msrp.py \
+    file://avdecc_probe.py \
     file://avb.conf \
     file://fpgamixer-avb-net.service \
+    file://fpgamixer-avb-entity.service \
     file://fpgamixer-avb-bridge.c \
     file://bridge_core.c \
     file://bridge_core.h \
@@ -30,7 +37,8 @@ DEPENDS = "alsa-lib"
 
 inherit systemd
 
-SYSTEMD_SERVICE:${PN} = "fpgamixer-avb-net.service fpgamixer-avb-bridge.service"
+SYSTEMD_SERVICE:${PN} = "fpgamixer-avb-net.service fpgamixer-avb-bridge.service \
+    fpgamixer-avb-entity.service"
 SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 do_compile() {
@@ -41,8 +49,8 @@ do_compile() {
 # libasound-module-pcm-aaf: the AAF plugin (alsa-plugins with PACKAGECONFIG aaf,
 # see recipes-multimedia/alsa); iproute2-tc for tc (the image had only ip);
 # python3-ctypes for adjtimex (the TAI offset).
-RDEPENDS:${PN} = "python3-core python3-ctypes iproute2-ip iproute2-tc \
-    libasound-module-pcm-aaf"
+RDEPENDS:${PN} = "python3-core python3-ctypes python3-io python3-json python3-math \
+    python3-threading iproute2-ip iproute2-tc libasound-module-pcm-aaf linuxptp"
 
 APPDIR = "${libdir}/fpgamixer"
 
@@ -51,7 +59,10 @@ do_install() {
     install -m 0755 fpgamixer-avb-bridge ${D}${bindir}/
 
     install -d ${D}${APPDIR}
-    install -m 0644 ${S}/avb_net.py ${D}${APPDIR}/
+    for f in avb_net.py avb_entityd.py avdecc_pdu.py avdecc_model.py avdecc_entity.py \
+             msrp.py avdecc_probe.py; do
+        install -m 0644 ${S}/$f ${D}${APPDIR}/
+    done
 
     install -d ${D}${sysconfdir}/fpgamixer
     install -m 0644 ${S}/avb.conf ${D}${sysconfdir}/fpgamixer/avb.conf
@@ -59,6 +70,7 @@ do_install() {
     install -d ${D}${systemd_system_unitdir}
     install -m 0644 ${S}/fpgamixer-avb-net.service ${D}${systemd_system_unitdir}/
     install -m 0644 ${S}/fpgamixer-avb-bridge.service ${D}${systemd_system_unitdir}/
+    install -m 0644 ${S}/fpgamixer-avb-entity.service ${D}${systemd_system_unitdir}/
 }
 
 FILES:${PN} += "${APPDIR} ${sysconfdir}/fpgamixer/avb.conf"

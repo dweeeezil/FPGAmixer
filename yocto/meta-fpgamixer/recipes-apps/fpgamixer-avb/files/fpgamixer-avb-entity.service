@@ -1,0 +1,17 @@
+[Unit]
+Description=FPGAmixer AVDECC entity + MSRP on end0 (the board as an AVB device)
+# Design: docs/phase10_status_2026-09-29.md. Makes the board show up in AVB
+# controllers (e.g. macOS's Network Device Browser) as one 8-channel talker and
+# one 8-channel listener, and points fpgamixer-avb-bridge at the streams a
+# controller connects.
+Requires=fpgamixer-avb-net.service
+After=fpgamixer-avb-net.service fpgamixer-ptp4l.service
+
+[Service]
+# root: raw AF_PACKET sockets, and it restarts the bridge on a new binding
+ExecStart=/usr/bin/python3 /usr/lib/fpgamixer/avb_entityd.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

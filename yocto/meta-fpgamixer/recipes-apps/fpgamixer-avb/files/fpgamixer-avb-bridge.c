@@ -26,9 +26,15 @@
  * /etc/fpgamixer/avb.conf [bridge] through fpgamixer-avb-net, which checks it
  * and writes the arguments to /run/fpgamixer/avb-bridge.env.
  *
+ * Formats (Phase 10): the AAF devices run S24_3BE (AAF INT_24BIT) or S32_BE
+ * (AAF INT_32BIT with bit_depth 24, Milan's base format), per direction, as
+ * the AVDECC entity (avb_entityd) has set the stream formats.
+ *
  * Usage: fpgamixer-avb-bridge [-r RX] [-t TX] [-l LINK] [-p PERIOD]
- *                             [-n PERIODS] [-q QUEUE_PERIODS] [-v]
- *        defaults avb_rx, avb_tx, hw:FPGAmixerLink2, 96 frames, 4, 2
+ *                             [-n PERIODS] [-q QUEUE_PERIODS]
+ *                             [-F RX_FORMAT] [-G TX_FORMAT] [-v]
+ *        defaults avb_rx, avb_tx, hw:FPGAmixerLink2, 96 frames, 4, 2,
+ *        S24_3BE, S24_3BE
  */
 #define _GNU_SOURCE
 #include "bridge_core.h"
@@ -46,10 +52,11 @@ int main(int argc, char **argv)
 {
 	const char *rx = "avb_rx", *tx = "avb_tx", *link = "hw:FPGAmixerLink2";
 	unsigned long period = 96, periods = 4, queue = 2;
+	snd_pcm_format_t rx_fmt = SND_PCM_FORMAT_S24_3BE, tx_fmt = SND_PCM_FORMAT_S24_3BE;
 	pthread_t ta, tb;
 	int c;
 
-	while ((c = getopt(argc, argv, "r:t:l:p:n:q:v")) != -1) {
+	while ((c = getopt(argc, argv, "r:t:l:p:n:q:F:G:v")) != -1) {
 		switch (c) {
 		case 'r': rx = optarg; break;
 		case 't': tx = optarg; break;
@@ -57,12 +64,20 @@ int main(int argc, char **argv)
 		case 'p': period = strtoul(optarg, NULL, 0); break;
 		case 'n': periods = strtoul(optarg, NULL, 0); break;
 		case 'q': queue = strtoul(optarg, NULL, 0); break;
+		case 'F': rx_fmt = snd_pcm_format_value(optarg); break;
+		case 'G': tx_fmt = snd_pcm_format_value(optarg); break;
 		case 'v': bridge_verbose = 1; break;
 		default:
 			fprintf(stderr, "usage: %s [-r rx] [-t tx] [-l link] [-p period] "
-				"[-n periods] [-q queue_periods] [-v]\n", argv[0]);
+				"[-n periods] [-q queue_periods] [-F rx_format] [-G tx_format] "
+				"[-v]\n", argv[0]);
 			return 2;
 		}
+	}
+	if ((rx_fmt != SND_PCM_FORMAT_S24_3BE && rx_fmt != SND_PCM_FORMAT_S32_BE) ||
+	    (tx_fmt != SND_PCM_FORMAT_S24_3BE && tx_fmt != SND_PCM_FORMAT_S32_BE)) {
+		fprintf(stderr, "%s: the AAF formats are S24_3BE or S32_BE\n", argv[0]);
+		return 2;
 	}
 	if (period == 0 || period % 6 || periods < 2 || queue < 1 || queue >= periods) {
 		fprintf(stderr, "%s: period must be a multiple of 6 frames (frames_per_pdu), "
@@ -72,22 +87,23 @@ int main(int argc, char **argv)
 
 	struct bridge_dir a = {
 		.name = "A net->core", .cap_dev = rx, .play_dev = link,
-		.cap_fmt = SND_PCM_FORMAT_S24_3BE, .play_fmt = SND_PCM_FORMAT_S24_LE,
+		.cap_fmt = rx_fmt, .play_fmt = SND_PCM_FORMAT_S24_LE,
 		.channels = CHANNELS, .rate = RATE, .period = period, .periods = periods,
 		.target = period * queue, .coarse = period, .hold_s = HOLD_S,
 		.update_s = 1.0, .servo = NULL,
 	};
 	struct bridge_dir b = {
 		.name = "B core->net", .cap_dev = link, .play_dev = tx,
-		.cap_fmt = SND_PCM_FORMAT_S24_LE, .play_fmt = SND_PCM_FORMAT_S24_3BE,
+		.cap_fmt = SND_PCM_FORMAT_S24_LE, .play_fmt = tx_fmt,
 		.channels = CHANNELS, .rate = RATE, .period = period, .periods = periods,
 		.target = period * queue, .coarse = period, .hold_s = HOLD_S,
 		.update_s = 1.0, .servo = NULL,
 	};
 
-	bridge_log("fpgamixer-avb-bridge: %s -> %s and %s -> %s, period %lu frames, "
-		   "%lu periods, queue %lu periods; no servo (both sides on the PHC)",
-		   rx, link, link, tx, period, periods, queue);
+	bridge_log("fpgamixer-avb-bridge: %s (%s) -> %s and %s -> %s (%s), period %lu "
+		   "frames, %lu periods, queue %lu periods; no servo (both sides on the PHC)",
+		   rx, snd_pcm_format_name(rx_fmt), link, link, tx,
+		   snd_pcm_format_name(tx_fmt), period, periods, queue);
 	bridge_setup_process(50);
 	pthread_create(&ta, NULL, bridge_run, &a);
 	pthread_create(&tb, NULL, bridge_run, &b);

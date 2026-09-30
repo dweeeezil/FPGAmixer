@@ -1,0 +1,59 @@
+From: FPGAmixer project
+Subject: [PATCH] aaf: optional bit_depth configuration
+
+The plugin always sends, and on capture requires, an AAF bit_depth equal to
+the sample format's width. Avnu Milan's base audio format is AAF INT_32BIT
+with bit_depth 24 (24-bit audio in 32-bit samples), which S32_BE can carry
+but the plugin could neither send nor accept. A new optional configuration
+key, bit_depth, sets the value on both sides; without it the behaviour is
+unchanged.
+
+FPGAmixer docs/phase10_status_2026-09-29.md.
+
+Upstream-Status: Pending
+
+--- a/aaf/pcm_aaf.c
++++ b/aaf/pcm_aaf.c
+@@ -62,6 +62,7 @@
+ 	int t_uncertainty;
+ 	snd_pcm_uframes_t frames_per_pdu;
+ 	int ptime_tolerance;
++	unsigned int bit_depth;	/* 0: the sample format's width */
+
+ 	int sk_fd;
+ 	int timer_fd;
+@@ -246,6 +247,16 @@
+ 				goto err;
+
+ 			aaf->ptime_tolerance = ptime_tolerance * NSEC_PER_USEC;
++		} else if (strcmp(id, "bit_depth") == 0) {
++			long bit_depth;
++
++			if (snd_config_get_integer(entry, &bit_depth) < 0)
++				goto err;
++
++			if (bit_depth < 1 || bit_depth > 64)
++				goto err;
++
++			aaf->bit_depth = bit_depth;
+ 		} else {
+ 			SNDERR("Invalid configuration: %s", id);
+ 			goto err;
+@@ -396,6 +407,7 @@
+ 			goto err;
+
+ 		res = avtp_aaf_pdu_set(pdu, AVTP_AAF_FIELD_BIT_DEPTH,
++				       aaf->bit_depth ? aaf->bit_depth :
+ 				       snd_pcm_format_width(io->format));
+ 		if (res < 0)
+ 			goto err;
+@@ -728,7 +740,8 @@
+ 	const uint64_t data_len = snd_pcm_frames_to_bytes(pcm, aaf->frames_per_pdu);
+ 	const uint64_t format = alsa_to_avtp_format(io->format);
+ 	const uint64_t nsr = alsa_to_avtp_rate(io->rate);
+-	const uint64_t depth = snd_pcm_format_width(io->format);
++	const uint64_t depth = aaf->bit_depth ? aaf->bit_depth :
++			       (uint64_t)snd_pcm_format_width(io->format);
+ 	struct avtp_common_pdu *common = (struct avtp_common_pdu *) aaf->pdu;
+
+ 	res = avtp_pdu_get(common, AVTP_FIELD_VERSION, &val32);

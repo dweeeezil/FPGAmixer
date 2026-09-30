@@ -43,6 +43,7 @@ import argparse
 import configparser
 import ctypes
 import ctypes.util
+import json
 import math
 import os
 import re
@@ -64,6 +65,11 @@ MAX_INTERFERING_FRAME = 1522   # a full-size tagged best-effort frame
 LINK_PERIOD_FRAMES = (6, 1600)  # FPGAmixerLink2: 192..51200 B per period at 8 ch x 4 B
 LINK_PERIODS = (2, 6)
 BRIDGE_ENV = "/run/fpgamixer/avb-bridge.env"
+# Phase 10: what the AVDECC entity (avb_entityd) may switch a stream to, per
+# direction, at run time: AAF INT_24BIT, or INT_32BIT carrying 24 bits (Milan).
+# The shaper is set once at boot, so it is sized for the larger of them.
+AAF_FORMATS = ("S24_3BE", "S32_BE")
+RUNTIME = "/run/fpgamixer/avb-stream.json"
 
 
 # ------------------------------------------------------------------ config
@@ -96,8 +102,55 @@ def load_config(path):
         "periods": br.getint("periods"),
         "queue_periods": br.getint("queue_periods"),
     }
+    cfg["rx_format"] = cfg["tx_format"] = cfg["format"]
     check_config(cfg)
     return cfg
+
+
+def sid_str(stream_id):
+    """A 64-bit stream ID as the plugin's 'XX:XX:XX:XX:XX:XX:XXXX'."""
+    b = stream_id.to_bytes(8, "big")
+    return ":".join(f"{x:02X}" for x in b[:6]) + ":" + b[6:].hex().upper()
+
+
+def apply_runtime(cfg, path=RUNTIME):
+    """cfg with the AVDECC entity's run-time choices applied (Phase 10): the
+    listener's binding (rx addr, stream ID, format) and the talker's format,
+    from the JSON avb_entityd writes. No file: cfg unchanged."""
+    try:
+        with open(path) as f:
+            rt = json.load(f)
+    except FileNotFoundError:
+        return cfg
+    c = dict(cfg)
+    rx = rt.get("rx") or {}
+    for k_json, k_cfg in (("addr", "rx_addr"), ("streamid", "rx_streamid"),
+                          ("format", "rx_format")):
+        if rx.get(k_json):
+            c[k_cfg] = rx[k_json]
+    tx = rt.get("tx") or {}
+    if tx.get("format"):
+        c["tx_format"] = tx["format"]
+    check_config(c)
+    return c
+
+
+def write_runtime(rx=None, tx_format=None, path=RUNTIME):
+    """Record the entity's choices (see apply_runtime); None keeps a value."""
+    try:
+        with open(path) as f:
+            rt = json.load(f)
+    except FileNotFoundError:
+        rt = {}
+    if rx is not None:
+        rt["rx"] = rx
+    if tx_format is not None:
+        rt.setdefault("tx", {})["format"] = tx_format
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rt, f)
+    os.replace(tmp, path)
 
 
 _MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
@@ -113,17 +166,18 @@ def check_config(cfg):
     for k in ("tx_streamid", "rx_streamid"):
         if not _SID_RE.match(cfg[k] or ""):
             raise SystemExit(f"avb_net: {k} {cfg[k]!r} is not MAC:XXXX")
-    if cfg["format"] not in SAMPLE_BYTES:
-        raise SystemExit(f"avb_net: format {cfg['format']}: the AAF plugin takes "
-                         f"{', '.join(SAMPLE_BYTES)}")
+    for k in ("format", "rx_format", "tx_format"):
+        if cfg[k] not in AAF_FORMATS:
+            raise SystemExit(f"avb_net: {k} {cfg[k]}: the AAF streams take "
+                             f"{', '.join(AAF_FORMATS)}")
     if not 1 <= cfg["pcp"] <= 7:
         raise SystemExit("avb_net: pcp must be 1..7 (0 is best effort)")
     if not 1 <= cfg["vlan_id"] <= 4094:
         raise SystemExit("avb_net: vlan_id must be 1..4094")
-    need = stream_wire_kbps(cfg)
+    need = max_wire_kbps(cfg)
     if cfg["idleslope_kbps"] < need:
         raise SystemExit(f"avb_net: idleslope {cfg['idleslope_kbps']} kbit/s is below the "
-                         f"stream's own {need} kbit/s on the wire")
+                         f"stream's own {need} kbit/s on the wire (its largest format)")
     if cfg["idleslope_kbps"] >= cfg["link_mbps"] * 1000:
         raise SystemExit("avb_net: idleslope must be below the link rate")
     # [bridge]: the AAF plugin needs a period that is a multiple of
@@ -143,24 +197,33 @@ def check_config(cfg):
 
 # ----------------------------------------------------------------- numbers
 
-def pdu_payload_bytes(cfg):
-    return cfg["channels"] * SAMPLE_BYTES[cfg["format"]] * cfg["frames_per_pdu"]
+def pdu_payload_bytes(cfg, fmt=None):
+    return cfg["channels"] * SAMPLE_BYTES[fmt or cfg["format"]] * cfg["frames_per_pdu"]
 
 
-def frame_bytes(cfg):
+def avtpdu_bytes(cfg, fmt=None):
+    """The AVTPDU (AAF header + payload): MSRP's MaxFrameSize."""
+    return AVTP_AAF_HEADER + pdu_payload_bytes(cfg, fmt)
+
+
+def frame_bytes(cfg, fmt=None):
     """One AAF PDU as an Ethernet frame (VLAN tag and FCS, no preamble/gap)."""
-    return ETH_HEADER + VLAN_TAG + AVTP_AAF_HEADER + pdu_payload_bytes(cfg) + FCS
+    return ETH_HEADER + VLAN_TAG + AVTP_AAF_HEADER + pdu_payload_bytes(cfg, fmt) + FCS
 
 
 def pdus_per_second(cfg):
     return cfg["rate"] / cfg["frames_per_pdu"]
 
 
-def stream_wire_kbps(cfg):
+def stream_wire_kbps(cfg, fmt=None):
     """The stream's rate on the wire (preamble and gap included), kbit/s,
     rounded up."""
-    bits = (frame_bytes(cfg) + PREAMBLE_SFD_IPG) * 8 * pdus_per_second(cfg)
+    bits = (frame_bytes(cfg, fmt) + PREAMBLE_SFD_IPG) * 8 * pdus_per_second(cfg)
     return math.ceil(bits / 1000)
+
+
+def max_wire_kbps(cfg):
+    return max(stream_wire_kbps(cfg, f) for f in AAF_FORMATS)
 
 
 def cbs_params(cfg):
@@ -172,7 +235,7 @@ def cbs_params(cfg):
     idle = cfg["idleslope_kbps"]
     send = idle - port
     hi = math.ceil(MAX_INTERFERING_FRAME * idle / port)
-    lo = math.floor(frame_bytes(cfg) * send / port)
+    lo = math.floor(max(frame_bytes(cfg, f) for f in AAF_FORMATS) * send / port)
     return idle, send, hi, lo
 
 
@@ -213,30 +276,55 @@ def net_commands(cfg):
 
 
 def alsa_conf(cfg):
-    """The AAF PCM devices, in alsa-lib's configuration syntax."""
+    """The AAF PCM devices, in alsa-lib's configuration syntax. S32_BE is
+    AAF INT_32BIT with bit_depth 24 (the plugin's bit_depth key, our patch)."""
     common = (f"    ifname \"{vlan_name(cfg)}\"\n"
               f"    frames_per_pdu {cfg['frames_per_pdu']}\n")
 
-    def dev(name, addr, sid, extra):
+    def dev(name, addr, sid, fmt, extra):
+        depth = "    bit_depth 24\n" if fmt == "S32_BE" else ""
         return (f"pcm.{name} {{\n    type aaf\n{common}"
-                f"    addr \"{addr}\"\n    streamid \"{sid}\"\n{extra}}}\n")
+                f"    addr \"{addr}\"\n    streamid \"{sid}\"\n{depth}{extra}}}\n")
 
-    return ("# Generated at boot by avb_net.py (fpgamixer-avb-net.service) from\n"
-            "# /etc/fpgamixer/avb.conf. Edits here are lost: change avb.conf.\n"
-            f"# Stream: {cfg['channels']} ch {cfg['format']} {cfg['rate']} Hz, "
-            f"{cfg['frames_per_pdu']} frames/PDU; the application must use exactly this\n"
-            "# format, and a period that is a multiple of frames_per_pdu.\n"
-            + dev("avb_tx", cfg["tx_addr"], cfg["tx_streamid"],
+    return ("# Generated by avb_net.py (fpgamixer-avb-net.service at boot; avb_entityd\n"
+            "# when a controller binds a stream) from /etc/fpgamixer/avb.conf and\n"
+            f"# {RUNTIME}. Edits here are lost: change avb.conf.\n"
+            f"# Streams: {cfg['channels']} ch {cfg['rate']} Hz, {cfg['frames_per_pdu']} "
+            f"frames/PDU; avb_tx {cfg['tx_format']}, avb_rx {cfg['rx_format']}. The\n"
+            "# application must use exactly these, and a period that is a multiple of\n"
+            "# frames_per_pdu.\n"
+            + dev("avb_tx", cfg["tx_addr"], cfg["tx_streamid"], cfg["tx_format"],
                   f"    prio {cfg['pcp']}\n    mtt {cfg['mtt_us']}\n"
                   f"    time_uncertainty {cfg['time_uncertainty_us']}\n")
-            + dev("avb_rx", cfg["rx_addr"], cfg["rx_streamid"],
+            + dev("avb_rx", cfg["rx_addr"], cfg["rx_streamid"], cfg["rx_format"],
                   f"    ptime_tolerance {cfg['ptime_tolerance_us']}\n"))
 
 
 def bridge_env(cfg):
     """The EnvironmentFile line for fpgamixer-avb-bridge.service."""
     return (f"AVB_BRIDGE_ARGS=-p {cfg['period_frames']} -n {cfg['periods']} "
-            f"-q {cfg['queue_periods']}\n")
+            f"-q {cfg['queue_periods']} -F {cfg['rx_format']} -G {cfg['tx_format']}\n")
+
+
+def write_stream_files(cfg, dry=False):
+    """Steps 4 and 5: the ALSA devices and the bridge's arguments. Also what
+    avb_entityd calls after a binding or format change (then it restarts the
+    bridge)."""
+    text = alsa_conf(cfg)
+    env = bridge_env(cfg)
+    if dry:
+        print(f"  (would write {ALSA_OUT}:)\n" + text)
+        print(f"  (would write {BRIDGE_ENV}: {env.strip()})")
+        return
+    for path, content in ((ALSA_OUT, text), (BRIDGE_ENV, env)):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    print(f"avb_net: wrote {ALSA_OUT} (avb_tx {cfg['tx_format']}, avb_rx {cfg['rx_format']} "
+          f"from {cfg['rx_streamid']} on {vlan_name(cfg)}) and {BRIDGE_ENV} ({env.strip()})",
+          flush=True)
 
 
 # --------------------------------------------------------------- TAI offset
@@ -298,7 +386,8 @@ def main(argv=None):
     idle, send, hi, lo = cbs_params(cfg)
     print(f"avb_net: stream {cfg['channels']} ch {cfg['format']} @ {cfg['rate']} Hz, "
           f"{cfg['frames_per_pdu']} frames/PDU: {frame_bytes(cfg)} B frames, "
-          f"{pdus_per_second(cfg):.0f} PDU/s, {stream_wire_kbps(cfg)} kbit/s on the wire; "
+          f"{pdus_per_second(cfg):.0f} PDU/s, {stream_wire_kbps(cfg)} kbit/s on the wire "
+          f"({max_wire_kbps(cfg)} in its largest format); "
           f"CBS idleslope {idle} sendslope {send} hicredit {hi} locredit {lo}", flush=True)
 
     # 1. TAI offset
@@ -322,27 +411,8 @@ def main(argv=None):
     for c in cmds["qdiscs"]:
         _run(c, dry)
 
-    # 4. ALSA devices
-    text = alsa_conf(cfg)
-    if dry:
-        print(f"  (would write {ALSA_OUT}:)\n" + text)
-    else:
-        os.makedirs(os.path.dirname(ALSA_OUT), exist_ok=True)
-        tmp = ALSA_OUT + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(text)
-        os.replace(tmp, ALSA_OUT)
-        print(f"avb_net: wrote {ALSA_OUT} (avb_tx, avb_rx on {vlan_name(cfg)})")
-
-    # 5. the bridge's geometry (P9.7), checked above
-    env = bridge_env(cfg)
-    if dry:
-        print(f"  (would write {BRIDGE_ENV}: {env.strip()})")
-    else:
-        os.makedirs(os.path.dirname(BRIDGE_ENV), exist_ok=True)
-        with open(BRIDGE_ENV, "w") as f:
-            f.write(env)
-        print(f"avb_net: wrote {BRIDGE_ENV} ({env.strip()})")
+    # 4. ALSA devices, 5. the bridge's geometry and formats (P9.7, Phase 10)
+    write_stream_files(apply_runtime(cfg), dry)
     return 0
 
 

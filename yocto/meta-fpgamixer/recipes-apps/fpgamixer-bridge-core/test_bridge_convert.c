@@ -39,6 +39,18 @@ int main(void)
 	for (int i = 0; i < 3; i++)
 		CHECK(out[i] == want[i], "S24_3LE -> s32 [%d]: %d, want %d", i, out[i], want[i]);
 
+	/* S32_BE with 24-bit audio: left-justified, low byte zero; the low byte
+	 * of an incoming sample is dropped with the sign kept */
+	uint8_t b4[8];
+	s32_to_s32be(v, b4, 2);
+	const uint8_t b4_want[8] = { 0x12, 0x34, 0x56, 0x00,  0xFF, 0xFF, 0xFE, 0x00 };
+	CHECK(!memcmp(b4, b4_want, 8), "S32_BE layout");
+	const uint8_t b4_in[8] = { 0x80, 0x00, 0x00, 0x7F,  0x00, 0x00, 0x01, 0xFF };
+	int32_t o2[2];
+	s32be_to_s32(b4_in, o2, 2);
+	CHECK(o2[0] == -8388608, "S32_BE -> s32 [0]: %d", o2[0]);
+	CHECK(o2[1] == 1, "S32_BE -> s32 [1]: %d", o2[1]);
+
 	/* round trips: edges and a sweep */
 	uint32_t x = 12345;
 	for (int i = 0; i < 200000; i++) {
@@ -55,6 +67,9 @@ int main(void)
 		CHECK(r == s, "BE round trip %d -> %d", s, r);
 		s32_to_s24_3le(&s, b, 1); s24_3le_to_s32(b, &r, 1);
 		CHECK(r == s, "LE round trip %d -> %d", s, r);
+		uint8_t q[4];
+		s32_to_s32be(&s, q, 1); s32be_to_s32(q, &r, 1);
+		CHECK(r == s, "S32_BE round trip %d -> %d", s, r);
 		if (fails > 10)
 			break;
 	}

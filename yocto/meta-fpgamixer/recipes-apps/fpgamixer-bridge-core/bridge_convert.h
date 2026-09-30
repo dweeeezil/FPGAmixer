@@ -48,4 +48,28 @@ static inline void s32_to_s24_3be(const int32_t *in, uint8_t *out, size_t n)
 	}
 }
 
+/*
+ * S32_BE carrying 24-bit audio (AAF INT_32BIT with bit_depth 24, Milan's base
+ * format, Phase 10): the 24 bits left-justified, the low byte zero. On the
+ * way in the low byte is dropped (arithmetic shift keeps the sign).
+ */
+static inline void s32be_to_s32(const uint8_t *in, int32_t *out, size_t n)
+{
+	for (size_t i = 0; i < n; i++, in += 4) {
+		uint32_t v = ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) |
+			     ((uint32_t)in[2] << 8) | in[3];
+		out[i] = (int32_t)v >> 8;
+	}
+}
+
+static inline void s32_to_s32be(const int32_t *in, uint8_t *out, size_t n)
+{
+	for (size_t i = 0; i < n; i++, out += 4) {
+		out[0] = (uint8_t)(in[i] >> 16);
+		out[1] = (uint8_t)(in[i] >> 8);
+		out[2] = (uint8_t)in[i];
+		out[3] = 0;
+	}
+}
+
 #endif

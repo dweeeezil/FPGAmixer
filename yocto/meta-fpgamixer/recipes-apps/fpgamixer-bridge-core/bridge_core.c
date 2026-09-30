@@ -66,7 +66,7 @@ void bridge_setup_process(int prio)
 static int fmt_ok(snd_pcm_format_t f)
 {
 	return f == SND_PCM_FORMAT_S24_LE || f == SND_PCM_FORMAT_S24_3LE ||
-	       f == SND_PCM_FORMAT_S24_3BE;
+	       f == SND_PCM_FORMAT_S24_3BE || f == SND_PCM_FORMAT_S32_BE;
 }
 
 /* in (cap_fmt) -> the int32 staging buffer -> out (play_fmt) */
@@ -78,11 +78,13 @@ static void repack(const void *in, snd_pcm_format_t in_fmt, int32_t *mid,
 	switch (in_fmt) {
 	case SND_PCM_FORMAT_S24_3LE: s24_3le_to_s32(in, mid, samples); break;
 	case SND_PCM_FORMAT_S24_3BE: s24_3be_to_s32(in, mid, samples); break;
+	case SND_PCM_FORMAT_S32_BE:  s32be_to_s32(in, mid, samples); break;
 	default: src = in; break;                      /* S24_LE already */
 	}
 	switch (out_fmt) {
 	case SND_PCM_FORMAT_S24_3LE: s32_to_s24_3le(src, out, samples); break;
 	case SND_PCM_FORMAT_S24_3BE: s32_to_s24_3be(src, out, samples); break;
+	case SND_PCM_FORMAT_S32_BE:  s32_to_s32be(src, out, samples); break;
 	default: memcpy(out, src, samples * 4); break;
 	}
 }

@@ -72,8 +72,8 @@ class Config(unittest.TestCase):
 
     def test_idleslope_below_stream_refused(self):
         with self.assertRaises(SystemExit) as cm:
-            self.load(**{"idleslope_kbps = 16000": "idleslope_kbps = 13000"})
-        self.assertIn("13440", str(cm.exception))
+            self.load(**{"idleslope_kbps = 20000": "idleslope_kbps = 16000"})
+        self.assertIn("16512", str(cm.exception))      # S32_BE, the larger format
 
     def test_unknown_format_refused(self):
         with self.assertRaises(SystemExit):
@@ -82,7 +82,8 @@ class Config(unittest.TestCase):
     def test_bridge_geometry_as_decided(self):
         c = self.load()
         self.assertEqual((c["period_frames"], c["periods"], c["queue_periods"]), (96, 4, 2))
-        self.assertEqual(avb_net.bridge_env(c), "AVB_BRIDGE_ARGS=-p 96 -n 4 -q 2\n")
+        self.assertEqual(avb_net.bridge_env(c),
+                         "AVB_BRIDGE_ARGS=-p 96 -n 4 -q 2 -F S24_3BE -G S24_3BE\n")
 
     def test_bridge_period_not_multiple_of_pdu_refused(self):
         with self.assertRaises(SystemExit) as cm:
@@ -111,12 +112,18 @@ class Numbers(unittest.TestCase):
         self.assertEqual(avb_net.pdus_per_second(self.c), 8000)
         # + 20 B preamble/gap = 210 B x 8000/s = 13.44 Mbit/s (status doc 6.12)
         self.assertEqual(avb_net.stream_wire_kbps(self.c), 13440)
+        # S32_BE (Phase 10): 8 x 4 x 6 = 192 B payload, 238 B frames, 258 on the wire
+        self.assertEqual(avb_net.frame_bytes(self.c, "S32_BE"), 238)
+        self.assertEqual(avb_net.stream_wire_kbps(self.c, "S32_BE"), 16512)
+        self.assertEqual(avb_net.max_wire_kbps(self.c), 16512)
+        self.assertEqual(avb_net.avtpdu_bytes(self.c), 168)
+        self.assertEqual(avb_net.avtpdu_bytes(self.c, "S32_BE"), 216)
 
     def test_cbs(self):
         idle, send, hi, lo = avb_net.cbs_params(self.c)
-        self.assertEqual((idle, send), (16000, -984000))
-        self.assertEqual(hi, 25)        # ceil(1522 x 16/1000) = ceil(24.35)
-        self.assertEqual(lo, -187)      # floor(190 x -0.984) = floor(-186.96)
+        self.assertEqual((idle, send), (20000, -980000))
+        self.assertEqual(hi, 31)        # ceil(1522 x 20/1000) = ceil(30.44)
+        self.assertEqual(lo, -234)      # floor(238 x -0.98) = floor(-233.24): the larger frame
 
     def test_mqprio_map_only_pcp(self):
         m = avb_net.mqprio_map(3)
@@ -148,7 +155,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(mq[mq.index("hw") + 1], "0")
         # CBS on TC 1's queue (class 100:2), ETF under the CBS
         self.assertEqual(cbs[cbs.index("parent") + 1], "100:2")
-        self.assertEqual(cbs[cbs.index("idleslope") + 1], "16000")
+        self.assertEqual(cbs[cbs.index("idleslope") + 1], "20000")
         self.assertEqual(cbs[cbs.index("offload") + 1], "0")
         self.assertEqual(etf[etf.index("parent") + 1], "200:1")
         self.assertEqual(etf[etf.index("clockid") + 1], "CLOCK_TAI")
@@ -173,6 +180,49 @@ class Commands(unittest.TestCase):
         self.assertIn("ptime_tolerance 125", rx)
         self.assertNotIn("prio", rx)
         self.assertEqual(t.count("{"), t.count("}"))
+
+
+class Runtime(unittest.TestCase):
+    """Phase 10: the AVDECC entity's choices, through the runtime JSON."""
+
+    def setUp(self):
+        d, p = write_conf(repo_conf_text())
+        self.c = avb_net.load_config(p)
+        shutil.rmtree(d)
+        self.d = tempfile.mkdtemp(prefix="avbrt-")
+        self.rt = os.path.join(self.d, "avb-stream.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def test_no_file_no_change(self):
+        self.assertEqual(avb_net.apply_runtime(self.c, self.rt), self.c)
+
+    def test_binding_and_formats_applied(self):
+        sid = avb_net.sid_str(0x0A0B0C0D0E0F0001)
+        self.assertEqual(sid, "0A:0B:0C:0D:0E:0F:0001")
+        avb_net.write_runtime(rx={"addr": "91:E0:F0:00:12:34", "streamid": sid,
+                                  "format": "S32_BE"}, path=self.rt)
+        avb_net.write_runtime(tx_format="S32_BE", path=self.rt)      # keeps rx
+        c = avb_net.apply_runtime(self.c, self.rt)
+        self.assertEqual((c["rx_addr"], c["rx_streamid"], c["rx_format"], c["tx_format"]),
+                         ("91:E0:F0:00:12:34", sid, "S32_BE", "S32_BE"))
+        t = avb_net.alsa_conf(c)
+        tx = t[t.index("pcm.avb_tx"):t.index("pcm.avb_rx")]
+        rx = t[t.index("pcm.avb_rx"):]
+        self.assertIn("bit_depth 24", tx)
+        self.assertIn("bit_depth 24", rx)
+        self.assertIn(f'streamid "{sid}"', rx)
+        self.assertEqual(avb_net.bridge_env(c),
+                         "AVB_BRIDGE_ARGS=-p 96 -n 4 -q 2 -F S32_BE -G S32_BE\n")
+
+    def test_s24_has_no_bit_depth(self):
+        self.assertNotIn("bit_depth", avb_net.alsa_conf(self.c))
+
+    def test_bad_runtime_refused(self):
+        avb_net.write_runtime(rx={"streamid": "not-an-id"}, path=self.rt)
+        with self.assertRaises(SystemExit):
+            avb_net.apply_runtime(self.c, self.rt)
 
 
 if __name__ == "__main__":
