@@ -2,7 +2,7 @@
 
 **Branch:** `phase9/time-shared-core` (continued). **Starting image:** `p10e-names-20260930`.
 
-**Status: design proposal. Nothing is built.** The decisions in §6 come first, and one of them (H1) needs a fact only the bench can give: what the interface reports to Linux.
+**Status: decided (§6.1), nothing built yet.** Next: bench step H-1 (what the MOTU M2 reports to Linux).
 
 ---
 
@@ -22,7 +22,10 @@ No USB pass-through: the board is a host on one port and a device on the other, 
 | Fact | Source | Consequence |
 |---|---|---|
 | **USB1** (MIO 64–75) → USB2513B hub → 2 × Type-A + Mini PCIe; a separate controller from USB0 (Type-C, device mode). `&dwc3_1 { dr_mode = "host"; }` is in `system-user.dtsi` | Phase 8 §1, §9.2, §10 (deployed DTB checked then) | Host and device mode at the same time, no role switching |
-| `CONFIG_SND_USB_AUDIO=y` on the board kernel | Phase 8 §10 (P8.1 `.config`) | **Not re-checked:** the build VM didn't answer SSH today. The bench step H-1 (§5) checks it directly: a card in `/proc/asound` proves the driver |
+| **`CONFIG_SND_USB_AUDIO=y`, `SND_USB=y`, `USB_XHCI_HCD=y`, `USB_DWC3_DUAL_ROLE=y`** on the board kernel | the board's `.config` on the VM (`genesys_zu3eg-amd-linux/linux-xlnx/6.18.10…`, dated 2026-09-30), re-checked | The driver is there; no kernel change. (The first SSH attempt timed out at an 8 s connect timeout; with 20 s it answered) |
+| **`libsamplerate0` 0.2.2** and **`speexdsp` 1.2.1** recipes in poky | `sources/poky/meta/recipes-multimedia/` on the VM | The resampler needs no new layer |
+| **The interface: MOTU M2**, **2 × 2 class compliant** (MOTU's driver only adds hidden loopback channels) | user, 2026-09-30 | Only **2 channels each way** are resampled; the other 6 link channels are written as zeros (the bridge always opens the link card at 8 ch, so `pcm_link` sees every TID). CPU cost is small. Its formats and rates: read at H-1 |
+| **`seed_and_push` seeds identity on every index** (`0.0 if inp == out`) and walks only `n_in × n_out`; saved keys outside the core are left in the file, neither pushed nor deleted | `tools/osc_mixer_server.py` | H5 ("all off" for the new block) needs a small generic change (§6.1); the retire-don't-reuse rule for a removed block (§6.1) |
 | **`alsaloop` can't drive the link card:** it forces 8 periods per buffer; the formatter allows 2–6 | Phase 8 §17 | The `alsaloop -S` resampling option from Phase 8 §5 / §9.2 is **out**. Resampling goes into our own bridge |
 | `bridge_core` has one servo hook, `bridge_servo.update(queue_err, dt)`, and moves samples 1:1 (capture → repack → playback) | `recipes-apps/fpgamixer-bridge-core/bridge_core.h` | The servo seam exists; **a rate-changing stage does not**. It has to be added as a seam of its own (§3) |
 | The formatter carries **2–8 channels per direction** per instance | Phase 8 §1 (PG330) | An interface with more than 8 in or 8 out needs either a cap at 8 or two links (H2) |
@@ -86,6 +89,32 @@ H.2 before H.3 is on purpose: the software risk (resampler, servo, CPU, hot-plug
 | H5 | Seeding the new crosspoints: **all off**, or identity (interface in *k* → interface out *k*, i.e. its inputs on its own outputs at 0 dB)? | **All off.** Unlike the Mac/AVB loopbacks, identity here puts live inputs (mics) straight onto real speakers. This breaks the "one rule" of P8/P9.5, so it's your call |
 | H6 | H.2 on link #1 first (the USB-device bridge stopped for the test), then the FPGA work | **Yes** |
 
+### 6.1 Decisions (user, 2026-09-30)
+
+The user's purpose: the interface holds their main headphone and mic preamps, so from the Mac's side the board becomes an AVB (or USB) → MOTU converter. It may be hidden once the board has its own analog IO, so it must **not get in the way** (CPU load in particular) and must be **easy to trim**.
+
+| # | Decision |
+|---|---|
+| H0 | **Yes**, the reading in §1 |
+| H1 | **MOTU M2**, 2 × 2 class compliant |
+| H2 | **Cap at 8** (one link; moot at 2 × 2). Keep the blocks separate |
+| H3 | **libsamplerate**, quality after the CPU measurement |
+| H4 | **Yes**, and the feature must be **easy to trim** (below) |
+| H5 | **All off** for the new crosspoints |
+| H6 | **Yes** |
+
+**Trimming (H4), how it's built so one switch per layer removes it:**
+
+- **PL:** link #3 under its own define **`INCLUDE_LINK3`** and a `create_project.tcl` flag, as link #2. Without it the formatter, `pcm_link` and status window are gone and channels 20–27 read as silence; **the core stays 28 × 28** so saved indices keep their meaning (the P9.5 rule).
+- **Linux:** its own recipe **`fpgamixer-usbhost`** (bridge, unit, `usbhost.conf`), one line in the image bbappend. The rate stage lives in **its own source file** (`bridge_rate_src.c`); only the host bridge links it and libsamplerate, so the USB and AVB bridges don't carry it.
+- **DT:** the `FPGAmixerLink3` card node, removed with the define's build (the node references formatter #3).
+- **Control plane:** the `linkstat3` window entry; `mixer_hw` already skips a window whose DT node is absent (the presence guard).
+
+**Seeding (H5):** today's rule is identity everywhere, hard-coded. Proposed generic change: the server gets the **list of channel ranges seeded as identity** (a setting, default "all", so nothing changes until it's set); the board's setting is `0-19`, so link #3's block (20–27) seeds off. The server stays ignorant of what the channels are.
+
+**Removing the block later (the user's question):** the state file stores only `inputMatrix/<in>_<out>/level`, generic indices, so levels recorded for 20–27 do no harm while the core doesn't have those channels: they are skipped. **One rule to keep:** if the block is removed, indices 20–27 are **retired, not reused**. Otherwise the next block appended at 20 (e.g. the board's own analog IO) would inherit the MOTU's saved levels. (Alternatively, delete those keys when a different block takes the indices.)
+
 ## 7. Log
 
-- **2026-09-30:** proposal written from the Phase 8 §9.2 scope, the P9.5 link template and `bridge_core`. Build VM unreachable, so the kernel config check moved to bench step H-1.
+- **2026-09-30:** proposal written from the Phase 8 §9.2 scope, the P9.5 link template and `bridge_core`. Build VM unreachable at the first try (8 s connect timeout).
+- **2026-09-30:** decisions H0–H6 (§6.1): MOTU M2, 2 × 2; all off; trimmable. VM reached: `SND_USB_AUDIO=y` confirmed, libsamplerate0 / speexdsp recipes present. Next: bench H-1.
