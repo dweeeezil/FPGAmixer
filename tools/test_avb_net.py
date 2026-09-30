@@ -216,6 +216,12 @@ class Runtime(unittest.TestCase):
         self.assertEqual(avb_net.bridge_env(c),
                          "AVB_BRIDGE_ARGS=-p 96 -n 4 -q 2 -F S32_BE -G S32_BE\n")
 
+    def test_mtt_override(self):
+        avb_net.write_runtime(tx_mtt_us=1500, path=self.rt)
+        c = avb_net.apply_runtime(self.c, self.rt)
+        self.assertEqual(c["mtt_us"], 1500)
+        self.assertIn("mtt 1500", avb_net.alsa_conf(c))
+
     def test_s24_has_no_bit_depth(self):
         self.assertNotIn("bit_depth", avb_net.alsa_conf(self.c))
 

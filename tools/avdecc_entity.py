@@ -64,7 +64,8 @@ SR_CLASS_A_PRIORITY = 3
 
 class Entity:
     def __init__(self, model, *, tx_stream_id, tx_dest_mac, vlan_id,
-                 send, on_listener=None, on_format=None, log=print):
+                 send, on_listener=None, on_format=None, on_transit=None,
+                 max_transit_ns=2_000_000, log=print):
         self.m = model
         self.tx_stream_id = tx_stream_id
         self.tx_dest_mac = bytes(tx_dest_mac)
@@ -72,6 +73,10 @@ class Entity:
         self.send = send
         self.on_listener = on_listener or (lambda b: None)
         self.on_format = on_format or (lambda d, f: None)
+        self.on_transit = on_transit or (lambda ns: None)
+        # our talker's max transit time (the AAF plugin's mtt), and what a
+        # controller last set on the input (reported back; not ours to use)
+        self.max_transit = {M.STREAM_OUTPUT: max_transit_ns, M.STREAM_INPUT: max_transit_ns}
         self.log = log
 
         self.gm_id = 0
@@ -424,6 +429,27 @@ class Entity:
             return AEM_NO_SUCH_DESCRIPTOR, d["payload"][:8] + b"\0" * 4
         maps = self.m.mappings()
         return AEM_SUCCESS, struct.pack(">HHHHHH", dtype, dindex, 0, 1, len(maps) // 8, 0) + maps
+
+    def _aem_set_max_transit_time(self, d, src, now):
+        dtype, dindex, ns = struct.unpack_from(">HHQ", d["payload"], 0)
+        if not self._stream_desc(dtype, dindex):
+            return AEM_NO_SUCH_DESCRIPTOR, d["payload"][:12]
+        g = self._guard(d["controller"], now)
+        if g is not None:
+            return g, struct.pack(">HHQ", dtype, dindex, self.max_transit[dtype])
+        if ns != self.max_transit[dtype]:
+            self.max_transit[dtype] = ns
+            self.log(f"avdecc: max transit time of the {'output' if dtype == M.STREAM_OUTPUT else 'input'}"
+                     f" stream set to {ns} ns")
+            if dtype == M.STREAM_OUTPUT:
+                self.on_transit(ns)
+        return AEM_SUCCESS, struct.pack(">HHQ", dtype, dindex, ns)
+
+    def _aem_get_max_transit_time(self, d, src, now):
+        dtype, dindex = struct.unpack_from(">HH", d["payload"], 0)
+        if not self._stream_desc(dtype, dindex):
+            return AEM_NO_SUCH_DESCRIPTOR, d["payload"][:4] + b"\0" * 8
+        return AEM_SUCCESS, struct.pack(">HHQ", dtype, dindex, self.max_transit[dtype])
 
     # ------------------------------------------------------------ ACMP
     def _next_seq(self):

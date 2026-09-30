@@ -131,11 +131,13 @@ def apply_runtime(cfg, path=RUNTIME):
     tx = rt.get("tx") or {}
     if tx.get("format"):
         c["tx_format"] = tx["format"]
+    if tx.get("mtt_us"):
+        c["mtt_us"] = int(tx["mtt_us"])
     check_config(c)
     return c
 
 
-def write_runtime(rx=None, tx_format=None, path=RUNTIME):
+def write_runtime(rx=None, tx_format=None, tx_mtt_us=None, path=RUNTIME):
     """Record the entity's choices (see apply_runtime); None keeps a value."""
     try:
         with open(path) as f:
@@ -146,6 +148,8 @@ def write_runtime(rx=None, tx_format=None, path=RUNTIME):
         rt["rx"] = rx
     if tx_format is not None:
         rt.setdefault("tx", {})["format"] = tx_format
+    if tx_mtt_us is not None:
+        rt.setdefault("tx", {})["mtt_us"] = tx_mtt_us
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -170,6 +174,8 @@ def check_config(cfg):
         if cfg[k] not in AAF_FORMATS:
             raise SystemExit(f"avb_net: {k} {cfg[k]}: the AAF streams take "
                              f"{', '.join(AAF_FORMATS)}")
+    if not 1 <= cfg["mtt_us"] <= 1_000_000:
+        raise SystemExit(f"avb_net: mtt_us {cfg['mtt_us']}: 1..1000000")
     if not 1 <= cfg["pcp"] <= 7:
         raise SystemExit("avb_net: pcp must be 1..7 (0 is best effort)")
     if not 1 <= cfg["vlan_id"] <= 4094:

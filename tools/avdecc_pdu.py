@@ -108,6 +108,12 @@ CMD = {
     "IDENTIFY_NOTIFICATION": 0x0026,
     "GET_AVB_INFO": 0x0027, "GET_AS_PATH": 0x0028, "GET_COUNTERS": 0x0029,
     "GET_AUDIO_MAP": 0x002B,
+    # 1722.1-2021 (codes from la_avdecc src/protocol/protocolDefines.cpp;
+    # payloads: descriptor type 2, index 2, max_transit_time 8 (ns)). macOS
+    # sends these right after connecting (bench, 2026-09-30).
+    "GET_DYNAMIC_INFO": 0x004B,
+    "SET_MAX_TRANSIT_TIME": 0x004C,
+    "GET_MAX_TRANSIT_TIME": 0x004D,
 }
 CMD_NAME = {v: k for k, v in CMD.items()}
 

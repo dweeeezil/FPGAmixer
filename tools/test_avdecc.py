@@ -273,6 +273,22 @@ class Behaviour(unittest.TestCase):
         r = self.h.aem("GET_AS_PATH", struct.pack(">HH", 0, 0))
         self.assertEqual(struct.unpack_from(">H", r["payload"], 2)[0], 1)
 
+    def test_max_transit_time(self):
+        seen = []
+        self.h.e.on_transit = seen.append
+        r = self.h.aem("GET_MAX_TRANSIT_TIME", struct.pack(">HH", M.STREAM_OUTPUT, 0))
+        self.assertEqual((r["status"], len(r["payload"])), (0, 12))
+        self.assertEqual(struct.unpack_from(">Q", r["payload"], 4)[0], 2_000_000)
+        r = self.h.aem("SET_MAX_TRANSIT_TIME", struct.pack(">HHQ", M.STREAM_OUTPUT, 0, 1_500_000))
+        self.assertEqual(r["status"], 0)
+        self.assertEqual(seen, [1_500_000])
+        r = self.h.aem("GET_MAX_TRANSIT_TIME", struct.pack(">HH", M.STREAM_OUTPUT, 0))
+        self.assertEqual(struct.unpack_from(">Q", r["payload"], 4)[0], 1_500_000)
+        r = self.h.aem("SET_MAX_TRANSIT_TIME", struct.pack(">HHQ", M.STREAM_INPUT, 0, 900_000))
+        self.assertEqual((r["status"], seen), (0, [1_500_000]))    # input: stored only
+        r = self.h.aem("SET_MAX_TRANSIT_TIME", struct.pack(">HHQ", M.AUDIO_UNIT, 0, 1))
+        self.assertEqual(r["status"], P.AEM_NO_SUCH_DESCRIPTOR)
+
     def test_listener_connect(self):
         h = self.h
         h.aem("REGISTER_UNSOLICITED_NOTIFICATION", b"")

@@ -71,6 +71,26 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 3. Mac: System Settings → Network: the OWC adapter up (a link-local address is fine); Audio MIDI Setup → Window → Show Network Device Browser: the adapter's AVB enabled; **FPGAmixer listed?**
 4. Tick it: the Mac acquires, reads the model, sets formats, connects streams. Watch the entity log, then `mixer_hw.py link2 10` and the bridge log; by ear: route AVB in 1 → JB_L, and Mac output → the new device.
 
+## 8. First Mac bench (2026-09-30 UTC, image `p10-avdecc-20260929`, Mac + OWC TB4 10G adapter, direct cable)
+
+**What worked** (entity journal):
+- **macOS found the entity and drove it:** controllers from the Mac (`5ce91e726af90000`, later `5de91e726af90006`, `0023a40d5494…`) registered for notifications, **acquired**, **locked**, and **set both stream formats to `0x0205021802006000` (AAF INT_32BIT, 24-bit: Milan's base format)**, the path the plugin patch added. The bridge restarted on S32_BE.
+- **ACMP both ways:** the Mac connected its talker stream `0023a40d54940000` (dest `91:e0:f0:00:08:e8`, VLAN 2) to our listener (CONNECT_TX exchange with the Mac's talker, status 0), and connected our talker to its listener; START_STREAMING on both.
+- **MSRP both ways:** the Mac's **Talker Advertise registered** (234-byte MaxFrameSize: 8 ch × 32-bit × 6 + AAF header + Ethernet/VLAN header, i.e. the Mac counts the header) and **the Mac declared Listener Ready for our talker stream**.
+- gPTP: **the Mac is grandmaster** (`7a9d6b.b90e.020002`: priority1 250 like ours, clockAccuracy 0x21 better than our 0xFE), link `asCapable 1`, peer delay 250 ns.
+
+**What didn't:** macOS played nothing ("audio engine is off" in Ableton); `link2 5`: frames_rx 36/s, starved ~48,000/s; a 5 s capture showed **only gPTP frames from the Mac, no AAF**; the Mac later withdrew its Talker Advertises.
+
+**Findings:**
+1. **ptp4l rejects every Sync/Follow_Up from the Mac: "bad message" every 125 ms**, so the board stays **UNCALIBRATED** and never follows the Mac's time. From linuxptp 4.4's `msg.c`/`tlv.c`: `-EBADMSG` comes from a TLV with an odd length or one longer than what's left, an 802.1 organization TLV of the wrong size, or a total length that doesn't match `messageLength`. The Mac's Follow_Up is **96 bytes** (a plain gPTP one is 76: 44 + the 32-byte Follow_Up information TLV), so it carries 20 more bytes of TLV. Raw bytes requested to pin it down. Also noted: the Mac's gPTP time is ~320,617 s (not TAI/UTC), so once the board follows it, `phc2sys` will set the board's system clock to early 1970 (harmless for audio; the known "no plausibility guard" item).
+2. **macOS sends AEM `0x004C` / `0x004D` right after connecting: SET/GET_MAX_TRANSIT_TIME** (1722.1-2021; codes and 12-byte payloads read in la_avdecc's `protocolDefines.cpp` / `protocolAemPayloadSizes.hpp`). We answered NOT_IMPLEMENTED. **Implemented now** (§9).
+3. The Mac connected **two** of its talker streams (unique IDs 0 and 1) to our single listener, one after the other; our listener rebinds each time. Not fixed yet; to see what the Mac expects (possibly a 16-channel Mac device split in two streams).
+4. Several Mac controller processes: the first one's acquisition (it re-registers every 100 s, so it's alive) makes later ones get ENTITY_ACQUIRED (status 4); they then LOCK instead. Correct per 1722.1; left as is.
+
+## 9. Fix 1: SET/GET_MAX_TRANSIT_TIME
+
+`avdecc_pdu.CMD` gains `GET_DYNAMIC_INFO` 0x004B (still NOT_IMPLEMENTED), `SET_MAX_TRANSIT_TIME` 0x004C, `GET_MAX_TRANSIT_TIME` 0x004D. The entity keeps a max transit time per stream (default the configured `mtt`, 2 ms); a SET on the **output** stream becomes our talker's AAF `mtt` (runtime file `tx.mtt_us` → `avb_net` → the ALSA device → bridge restart); on the input it is stored and reported. Tests: `test_avdecc` +1 (get default, set → callback, get back, input stored only, wrong descriptor), `test_avb_net` +1 (the override reaches the ALSA text): **69/69**.
+
 ## 7. Log
 
 - **2026-09-29:** user go-ahead for "the rest of the code" to make the board show up as an AVB device on a Mac. Research (§2), then built (§3): the AAF plugin's `bit_depth` patch, S32_BE in the bridge, `avdecc_pdu` / `avdecc_model` / `avdecc_entity` / `msrp` / `avb_entityd` / `avdecc_probe`, runtime stream binding in `avb_net`, the entity service. Checks (§4): 67/67 unit tests, 6 mutants caught, the veth integration test with two entities and a probe controller PASS. Not on hardware yet; risks in §5.

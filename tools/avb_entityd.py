@@ -170,7 +170,8 @@ class Daemon:
         self.entity = Entity(self.model, tx_stream_id=tx_sid, tx_dest_mac=tx_dest,
                              vlan_id=self.cfg["vlan_id"], send=self.send_avtp,
                              on_listener=self.on_listener, on_format=self.on_format,
-                             log=log)
+                             on_transit=self.on_transit,
+                             max_transit_ns=self.cfg["mtt_us"] * 1000, log=log)
         self.decl = msrp.Declarer(vlan_id=self.cfg["vlan_id"], log=log)
         self.tx_sid, self.tx_dest = tx_sid, tx_dest
         self.update_talker_decl()
@@ -223,6 +224,13 @@ class Daemon:
             if self.rx:
                 self.rx = rx
             avb_net.write_runtime(rx=rx, path=avb_net.RUNTIME)
+        self.apply_at = time.monotonic() + 0.3
+
+    def on_transit(self, ns):
+        """A controller set our talker's max transit time: the AAF plugin's mtt
+        (presentation time = launch + time_uncertainty + mtt)."""
+        us = max(1, min(1_000_000, (ns + 999) // 1000))
+        avb_net.write_runtime(tx_mtt_us=us, path=avb_net.RUNTIME)
         self.apply_at = time.monotonic() + 0.3
 
     def apply(self):
