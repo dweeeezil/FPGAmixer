@@ -146,6 +146,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(v[v.index("egress-qos-map") + 1], "3:3")
 
     def test_qdisc_chain(self):
+        self.assertEqual(self.cmds["qdisc_del"], ["tc", "qdisc", "del", "dev", "end0", "root"])
         mq, cbs, etf = self.cmds["qdiscs"]
         self.assertEqual(mq[mq.index("root") + 2], "100:")
         self.assertIn("mqprio", mq)

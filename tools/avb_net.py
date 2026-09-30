@@ -257,11 +257,15 @@ def vlan_name(cfg):
 # ---------------------------------------------------------------- commands
 
 def net_commands(cfg):
-    """The ip/tc commands, in order. Each is idempotent: 'replace' for qdiscs,
-    and the VLAN add is skipped by the caller when the interface exists."""
+    """The ip/tc commands, in order. Re-runnable: the root qdisc is deleted
+    first (qdisc_del, its failure ignored when there is none), because
+    mqprio can't be changed in place ('tc qdisc replace' on an existing
+    mqprio fails: "Change operation not supported", found on the Phase 10
+    bench); the VLAN add is skipped by the caller when the interface exists."""
     dev, vl = cfg["parent"], vlan_name(cfg)
     idle, send, hi, lo = cbs_params(cfg)
     return {
+        "qdisc_del": ["tc", "qdisc", "del", "dev", dev, "root"],
         "link_up": ["ip", "link", "set", "dev", dev, "up"],
         "vlan_add": ["ip", "link", "add", "link", dev, "name", vl, "type", "vlan",
                      "id", str(cfg["vlan_id"]),
@@ -375,10 +379,10 @@ def set_tai_offset(seconds):
 
 # -------------------------------------------------------------------- main
 
-def _run(argv, dry):
+def _run(argv, dry, check=True):
     print("  " + " ".join(argv), flush=True)
     if not dry:
-        subprocess.run(argv, check=True)
+        subprocess.run(argv, check=check)
 
 
 def main(argv=None):
@@ -414,6 +418,7 @@ def main(argv=None):
     else:
         _run(cmds["vlan_add"], dry)
     _run(cmds["vlan_up"], dry)
+    _run(cmds["qdisc_del"], dry, check=False)      # none at boot: fails, fine
     for c in cmds["qdiscs"]:
         _run(c, dry)
 
