@@ -226,16 +226,28 @@ void *bridge_run(void *arg)
 		int nc, np, err;
 		snd_pcm_sframes_t av, delay;
 
-		nc = snd_pcm_poll_descriptors(cap, pfd, MAX_PFD);
 		/*
+		 * Ask for exactly each PCM's own descriptor count: the AAF
+		 * plugin (an ioplug) refuses any other 'space' with -EINVAL
+		 * (aaf_poll_descriptors: space != FD_COUNT_*), which the first
+		 * AVB bridge, asking for "up to MAX_PFD", died on at start-up
+		 * (Phase 10 bench, 2026-09-30).
+		 *
 		 * Playback is polled only while it runs. A drained hw playback
 		 * (e.g. while the source is idle) sits in XRUN, and its
 		 * descriptor would then report an error on every poll: a busy
 		 * loop. Stopped, it is restarted by the next write instead, as
 		 * the Phase 8 bridge did.
 		 */
-		np = snd_pcm_state(play) == SND_PCM_STATE_RUNNING ?
-		     snd_pcm_poll_descriptors(play, pfd + nc, MAX_PFD - nc) : 0;
+		int cc = snd_pcm_poll_descriptors_count(cap);
+		int pc = snd_pcm_state(play) == SND_PCM_STATE_RUNNING ?
+			 snd_pcm_poll_descriptors_count(play) : 0;
+		if (cc <= 0 || pc < 0 || cc + pc > MAX_PFD) {
+			bridge_log("%s: poll descriptor counts %d + %d", d->name, cc, pc);
+			goto fail;
+		}
+		nc = snd_pcm_poll_descriptors(cap, pfd, cc);
+		np = pc > 0 ? snd_pcm_poll_descriptors(play, pfd + nc, pc) : 0;
 		if (nc < 0 || np < 0) {
 			bridge_log("%s: poll descriptors: %s", d->name,
 				   snd_strerror(nc < 0 ? nc : np));

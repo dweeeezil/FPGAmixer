@@ -105,6 +105,15 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 
 **Image `p10b` built 2026-09-30** from `df7460e`: 15,069 tasks, all succeeded; linuxptp's `do_patch` log shows the new patch applied; the rootfs's `avdecc_pdu.py` has the transit-time commands. **`build/sd/p10b-ptpfix-20260930.wic.xz`** (MD5 `910bcc26…`, same on both ends).
 
+## 11. Second Mac bench (image `p10b`): gPTP fixed; the bridge never ran
+
+- **gPTP: fixed.** `UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED` 24 s after boot, then **rms 4–10 ns, max 10–27 ns**, path delay 244 ns, frequency +0.76 … +0.89 ppm (the crystals). No "bad message".
+- The Mac again: formats S32_BE both ways, our talker connected to its listener (Listener Ready), its talker to our listener (Talker Advertise, 234 B), **SET_MAX_TRANSIT_TIME on our output = 12,836 ns** (the same number as its MSRP accumulated latency), START_STREAMING. No AAF from the Mac (0 packets); link #2 received nothing; macOS apps hung or crashed on the device.
+- **Cause found: `fpgamixer-avb-bridge` has never run.** It exits at start-up with `B core->net: poll descriptors: Invalid argument`; systemd had restarted it 120 times. The board sent no stream (0 outgoing AAF packets), so the Mac's AVB device, waiting on our stream, never started (the likely reason for the hangs). **Bug in bridge_core (P9.7a):** it asked each PCM for "up to MAX_PFD" poll descriptors; the AAF plugin (ioplug) refuses any `space` other than its exact count (`aaf_poll_descriptors`: `space != FD_COUNT_* → -EINVAL`), a line read in P9.7 and not applied. Not caught because the P9.7 bench was skipped and the VM test exercised the entity, not the bridge with the plugin. **Fixed:** exact counts from `snd_pcm_poll_descriptors_count()`, checked against MAX_PFD. Hardware PCMs (the USB bridge) were unaffected by the old call.
+- macOS log: repeated internal asserts in its AVB configuration process (`_controllerTerminated == NO`, `interface.aecp != nil`) every 100 s, in step with its REGISTER_UNSOLICITED_NOTIFICATION renewals. Unclear whether related; to revisit once streams flow.
+- `link2 5` read frames_tx 51,390/s (not ~48,000) while the bridge was restart-looping: to re-check with a running bridge.
+- **To do before the next image:** run the bridge against the real AAF plugin off-hardware (the target binaries under qemu-user on a veth pair, ALSA `null` for link #2), the test that was missing. The build VM was off at this point.
+
 ## 7. Log
 
 - **2026-09-29:** user go-ahead for "the rest of the code" to make the board show up as an AVB device on a Mac. Research (§2), then built (§3): the AAF plugin's `bit_depth` patch, S32_BE in the bridge, `avdecc_pdu` / `avdecc_model` / `avdecc_entity` / `msrp` / `avb_entityd` / `avdecc_probe`, runtime stream binding in `avb_net`, the entity service. Checks (§4): 67/67 unit tests, 6 mutants caught, the veth integration test with two entities and a probe controller PASS. Not on hardware yet; risks in §5.
