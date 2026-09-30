@@ -143,7 +143,8 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
   3. **`time_uncertainty_us` 125 → 1000** in the repo's `avb.conf`, as benched.
 - Also in the next image: `step_threshold 1.0` (§13), `avb_net` re-runnable (§12).
 - **Known, not fixed:** re-running `fpgamixer-avb-net` while ptp4l runs deletes the root qdisc under it (a TX queue reset). At boot it runs before ptp4l, so only a manual restart is affected; restart ptp4l after it.
-- **Next:** build image `p10d`, boot it clean with the Mac attached, and check without manual steps: SLAVE, FPGAmixer in the browser, audio both ways. Then the Mac's two-streams-to-one-listener question, the P9.7 checks (60-min log, round trip) and the P9.8 soak.
+- **Image `p10d` built 2026-09-30** from `0f9bf96` (synced, clean): 15,069 tasks, all succeeded, 11 min. Checked in the rootfs: no timesyncd binary or unit (only EDF's `timesyncd.conf.d` drop-in directory, inert), `step_threshold 1.0` in `/etc/fpgamixer/gptp.cfg`, no ETF in `avb_net.py` and the root-qdisc delete present, `time_uncertainty_us = 1000`. **`build/sd/p10d-clockfix-20260930.wic.xz`** (MD5 `885f90c2…`, same on both ends).
+- **Next:** boot `p10d`, boot it clean with the Mac attached, and check without manual steps: SLAVE, FPGAmixer in the browser, audio both ways. Then the Mac's two-streams-to-one-listener question, the P9.7 checks (60-min log, round trip) and the P9.8 soak.
 
 ## 7. Log
 
