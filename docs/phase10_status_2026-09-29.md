@@ -52,6 +52,8 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 - **Mutants, all caught**, baseline passing in the same setup: ACMP field order, the stream format's bit-depth position, the CONNECT_RX reply's sequence ID, the MRP three-packing, the ADP available index; `test_bridge_convert` (C, VM): S32_BE layouts and round trips PASS, a logical-shift (sign-losing) mutant caught.
 - **Integration on Linux (VM, real raw sockets):** a Linux bridge with three veth ports: two `avb_entityd` instances (A, B) and `avdecc_probe`. The probe **discovered both**, **enumerated A's whole model (30 descriptors, all answered)** plus stream info / AVB info / sampling rate, **connected B's talker to A's listener** (A ran the CONNECT_TX exchange with B, bound B's stream `563626ef224b0000`, replied status 0, rewrote its ALSA device and bridge arguments for that stream and asked systemd to restart the bridge), read A's rx state, and **disconnected** (A back on the static stream).
 
+**Image built 2026-09-29** from the clean commit `db1a736`: 15,069 tasks, all succeeded. Checked: the alsa-plugins build applied `0001-aaf-optional-bit_depth.patch` and the deployed plugin contains the `bit_depth` key; `/usr/lib/fpgamixer` has `avb_entityd.py`, `avdecc_{pdu,model,entity,probe}.py`, `msrp.py`; `fpgamixer-avb-{net,bridge,entity}.service` enabled; the bridge binary knows S32_BE. **`build/sd/p10-avdecc-20260929.wic.xz`** (MD5 `4a4b5c2a…`, same on both ends).
+
 ## 5. Not verified, and the known risks (for the bench)
 
 1. **Whether the Mac talks AVB over this adapter on a direct cable** at all (OWC: "requires AVB compatible switch/router"). If Network Device Browser says "AVB is not enabled" on that interface, nothing on the board can fix it.
