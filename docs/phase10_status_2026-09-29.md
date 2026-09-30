@@ -144,7 +144,10 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 - Also in the next image: `step_threshold 1.0` (§13), `avb_net` re-runnable (§12).
 - **Known, not fixed:** re-running `fpgamixer-avb-net` while ptp4l runs deletes the root qdisc under it (a TX queue reset). At boot it runs before ptp4l, so only a manual restart is affected; restart ptp4l after it.
 - **Image `p10d` built 2026-09-30** from `0f9bf96` (synced, clean): 15,069 tasks, all succeeded, 11 min. Checked in the rootfs: no timesyncd binary or unit (only EDF's `timesyncd.conf.d` drop-in directory, inert), `step_threshold 1.0` in `/etc/fpgamixer/gptp.cfg`, no ETF in `avb_net.py` and the root-qdisc delete present, `time_uncertainty_us = 1000`. **`build/sd/p10d-clockfix-20260930.wic.xz`** (MD5 `885f90c2…`, same on both ends).
-- **Next:** boot `p10d`, boot it clean with the Mac attached, and check without manual steps: SLAVE, FPGAmixer in the browser, audio both ways. Then the Mac's two-streams-to-one-listener question, the P9.7 checks (60-min log, round trip) and the P9.8 soak.
+- **Device names (user, 2026-09-30):** USB gadget product / UAC2 function "StudioRunner USB" (manufacturer "StudioRunner", clock "StudioRunner USB clock"); AVDECC entity name "StudioRunner AVB" (`avb.conf [entity] name`), also the audio unit name and the model name string, vendor string "StudioRunner"; no "FPGAmixer" fallback for the firmware string. Internal ALSA card names unchanged. Reasons to follow from the user.
+- **Image `p10e` built 2026-09-30** from `f4776e2` (p10d + the names): 15,069 tasks, all succeeded. Checked in the rootfs: the names in the gadget script, `avb.conf` and `avdecc_model.py`; `step_threshold`, no timesyncd, as p10d. **`build/sd/p10e-names-20260930.wic.xz`** (MD5 `bf1e5cc4…`, same on both ends). Supersedes p10d.
+- USB on a Windows PC: Windows 10 1703+ / 11 have an in-box UAC2 driver; never tried with this gadget.
+- **Next:** boot `p10e`, boot it clean with the Mac attached, and check without manual steps: SLAVE, FPGAmixer in the browser, audio both ways. Then the Mac's two-streams-to-one-listener question, the P9.7 checks (60-min log, round trip) and the P9.8 soak.
 
 ## 7. Log
 
