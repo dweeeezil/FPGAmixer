@@ -97,8 +97,10 @@ start() {
     echo 0x0200 > bcdUSB
 
     mkdir -p strings/0x409
-    echo "FPGAmixer" > strings/0x409/manufacturer
-    echo "FPGAmixer" > strings/0x409/product
+    # Device name as the host shows it (user's choice, 2026-09-30): the USB
+    # front door is "StudioRunner USB", the AVB one "StudioRunner AVB"
+    echo "StudioRunner" > strings/0x409/manufacturer
+    echo "StudioRunner USB" > strings/0x409/product
     serial=$(cut -c1-16 /etc/machine-id 2>/dev/null || echo 0)
     echo "$serial" > strings/0x409/serialnumber
 
@@ -110,7 +112,7 @@ start() {
     echo $CHANNELS_MASK > $F/p_chmask     # board -> Mac (the Mac's input)
     echo $RATE          > $F/p_srate
     echo $SSIZE         > $F/p_ssize
-    echo "FPGAmixer"    > $F/function_name
+    echo "StudioRunner USB" > $F/function_name
 
     # One clock source for both directions, so the Mac shows ONE 8x8 device.
     # True here: both directions run on the PL's mclk (the bridge steers the
@@ -119,7 +121,7 @@ start() {
     # stock two clock sources (two devices on the Mac).
     if [ -e $F/single_clock ]; then
         echo 1 > $F/single_clock
-        echo "FPGAmixer clock" > $F/clksrc_out_name
+        echo "StudioRunner USB clock" > $F/clksrc_out_name
         echo "UAC2: one clock source (single_clock)"
     else
         echo "UAC2: kernel without single_clock, two clock sources (two devices on a Mac)"

@@ -186,7 +186,7 @@ class Daemon:
             with open("/etc/fpgamixer/version") as f:
                 return f.read().strip()[:63]
         except OSError:
-            return "FPGAmixer"
+            return ""          # no version file: no firmware string shown
 
     # ----- outputs
     def send_avtp(self, dst, pdu):

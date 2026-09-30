@@ -168,7 +168,7 @@ class Model:
         # 142 sampling_rates_count, 144 rates
         pairs = [(1, 0), (1, 0)] + [(0, 0)] * 14
         return (struct.pack(">HH64sHH", AUDIO_UNIT, 0,
-                            s64(self.object_name(AUDIO_UNIT, 0, "FPGAmixer")), NO_STRING, 0) +
+                            s64(self.object_name(AUDIO_UNIT, 0, self.entity_name)), NO_STRING, 0) +
                 b"".join(struct.pack(">HH", n, b) for n, b in pairs) +
                 struct.pack(">IHHI", sampling_rate(48000), 144, 1, sampling_rate(48000)))
 
@@ -216,7 +216,8 @@ class Model:
         return struct.pack(">HH64sHH", LOCALE, 0, s64("en-US"), 1, 0)
 
     def strings(self):
-        s = ["FPGAmixer project", "FPGAmixer (Genesys ZU-3EG)", "", "", "", "", ""]
+        # vendor and model name strings (the entity descriptor points at 0, 1)
+        s = ["StudioRunner", self.entity_name, "", "", "", "", ""]
         return struct.pack(">HH", STRINGS, 0) + b"".join(s64(x) for x in s)
 
     def stream_port(self, dtype):
