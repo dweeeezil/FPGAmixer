@@ -103,6 +103,8 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 
 **Consequence to expect:** once the board follows the Mac, its PHC carries the Mac's gPTP time (~320,977 s, not TAI), so `phc2sys` sets the board's system clock to early January 1970 (the Mac's Announce doesn't flag its UTC offset as valid). Harmless for audio (the AAF plugin uses CLOCK_TAI = CLOCK_REALTIME + 37 s consistently, and the media-clock loop goes through HOLDOVER on the PHC step and re-locks); journal dates will look odd.
 
+**Image `p10b` built 2026-09-30** from `df7460e`: 15,069 tasks, all succeeded; linuxptp's `do_patch` log shows the new patch applied; the rootfs's `avdecc_pdu.py` has the transit-time commands. **`build/sd/p10b-ptpfix-20260930.wic.xz`** (MD5 `910bcc26…`, same on both ends).
+
 ## 7. Log
 
 - **2026-09-29:** user go-ahead for "the rest of the code" to make the board show up as an AVB device on a Mac. Research (§2), then built (§3): the AAF plugin's `bit_depth` patch, S32_BE in the bridge, `avdecc_pdu` / `avdecc_model` / `avdecc_entity` / `msrp` / `avb_entityd` / `avdecc_probe`, runtime stream binding in `avb_net`, the entity service. Checks (§4): 67/67 unit tests, 6 mutants caught, the veth integration test with two entities and a probe controller PASS. Not on hardware yet; risks in §5.
