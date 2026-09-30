@@ -91,6 +91,18 @@ Answers the user gave on the three open questions: (1) the adapter is advertised
 
 `avdecc_pdu.CMD` gains `GET_DYNAMIC_INFO` 0x004B (still NOT_IMPLEMENTED), `SET_MAX_TRANSIT_TIME` 0x004C, `GET_MAX_TRANSIT_TIME` 0x004D. The entity keeps a max transit time per stream (default the configured `mtt`, 2 ms); a SET on the **output** stream becomes our talker's AAF `mtt` (runtime file `tx.mtt_us` → `avb_net` → the ALSA device → bridge restart); on the input it is stored and reported. Tests: `test_avdecc` +1 (get default, set → callback, get back, input stored only, wrong descriptor), `test_avb_net` +1 (the override reaches the ALSA text): **69/69**.
 
+## 10. Fix 2: ptp4l rejected every Follow_Up from macOS
+
+**Raw Follow_Up** (captured on the board, `tcpdump -xx`): `messageLength` = **96** (`0x0060`); after the 44-byte header + body come the **802.1AS Follow_Up information TLV** (type 3, length 28, org `00:80:C2` subtype 1) and a **16-byte Apple organization TLV** (org `00:0D:93` subtype 4), which make exactly 96; **then 54 more bytes: a further Apple TLV (length 50, subtype 2) outside the message**, 150 bytes of PTP in the frame.
+
+**Cause:** linuxptp 4.4 `msg_post_recv()` parses TLVs over everything received (`suffix_post_recv(m, cnt - pdulen)`) and then requires header + TLVs == `messageLength`: 150 ≠ 96 → `-EBADMSG` → "bad message" on every Follow_Up → no two-step Sync ever completes → UNCALIBRATED.
+
+**Fix:** `recipes-connectivity/linuxptp/files/0001-msg-ignore-octets-after-messageLength.patch` (+ bbappend): after the header is parsed, `cnt` is cut to `messageLength`; octets beyond a message's own length aren't part of it, like Ethernet padding. Generated against the build's linuxptp 4.4 source with an exact-anchor script.
+
+**Proof on the captured bytes (VM):** linuxptp 4.4 built natively twice, a harness feeding the 150 captured bytes to `msg_post_recv()`: **unpatched `-74` (EBADMSG), patched `0` (accepted)**, sequence 16051 and correction 150,463 ns as decoded by tcpdump.
+
+**Consequence to expect:** once the board follows the Mac, its PHC carries the Mac's gPTP time (~320,977 s, not TAI), so `phc2sys` sets the board's system clock to early January 1970 (the Mac's Announce doesn't flag its UTC offset as valid). Harmless for audio (the AAF plugin uses CLOCK_TAI = CLOCK_REALTIME + 37 s consistently, and the media-clock loop goes through HOLDOVER on the PHC step and re-locks); journal dates will look odd.
+
 ## 7. Log
 
 - **2026-09-29:** user go-ahead for "the rest of the code" to make the board show up as an AVB device on a Mac. Research (§2), then built (§3): the AAF plugin's `bit_depth` patch, S32_BE in the bridge, `avdecc_pdu` / `avdecc_model` / `avdecc_entity` / `msrp` / `avb_entityd` / `avdecc_probe`, runtime stream binding in `avb_net`, the entity service. Checks (§4): 67/67 unit tests, 6 mutants caught, the veth integration test with two entities and a probe controller PASS. Not on hardware yet; risks in §5.
