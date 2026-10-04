@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: steps 0–3 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules), verified on the PC, not yet on the board. Next: step 4 (config reply and snapshot ordering).
+**Status: steps 0–4 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules; config reply and snapshot ordering), verified on the PC, not yet on the board or in the app. Next: step 5 (ping).
 
 ---
 
@@ -136,10 +136,37 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 - Mutation test: 22 planted bugs in `mixer_params.py`, 16 in the server's set/get/startup code. **A runner bug first made every model mutant look killed**: two test modules were passed as one argument, so every run failed on import. Found from the identical error counts, fixed, checked with a no-op mutation (survives), and all re-run. Real result: 2 model survivors (a redundant bool clamp, now deleted; a module checked against all zones' modules instead of its own zone's, now tested) and 5 server survivors (state stored under the raw path, the backend call, the reset routing, the state-conflict refusal: now tested; a read-only branch equivalent to the default, now deleted). All killed after the fixes. Steps 1–2 ran one test module per mutation run, so the bug didn't affect them.
 - `osc_mixer_test.py` against a local server named `FOH`: 22/22, including the destructive rename.
 
+### Step 4: config reply and snapshot ordering (F1, F3) — done, PC only
+
+**What.**
+
+- `get system/config` (alias or name, trailing slash or not) → `set system/config "<json>"`, an OSC string, to the requester only. `set system/config` is refused (it isn't a setting); over UDP nothing happens.
+- The JSON is built by `Model.config` (`mixer_params.py`) from the backends' descriptions and the state: `schemaVersion` 1, `deviceName`, `firmware`, `sampleRate` 48000, `zones`, `modules`, `system`, `values`. Metadata objects carry only the fields that are set, `default` always, `readOnly` only when true. `values` is sparse (non-defaults) plus `system/deviceName` always; read-only settings are never listed.
+- What the board will send (20 × 20 core, fresh state): `zones` = `inputMatrix` 20 × 20 `["level"]`; `modules.level` = float, dB, −90 … 6.0205, default −90, group `level`; `system` = `deviceName` (string, default `mixer`) and `sampleRate` (enum `[48000]`, Hz, read-only); `values` = the 20 unity diagonal crosspoints and `system/deviceName`. 1,033 bytes (measured with the simulated 20 × 20 backend).
+- **`firmware`** is the commit: on the board, `VERSION` next to the server, which the `fpgamixer-osc` recipe now installs from the `.synced-from` that `scripts/sync_buildhost.sh` writes (`<commit>` or `<commit>-dirty`; the recipe re-runs when it changes); in a checkout, `git describe --always --dirty`; else `dev`.
+- **Ordering (F3).** `ClientRegistry.lock` (now re-entrant) is held while a change is applied, stored and echoed, while any packet is sent, and while the snapshot is read and sent. Besides F3 this fixes two races the old server had: two changes to one parameter could echo in the reverse of their store order (controllers ending on a value the mixer doesn't have), and a get reply and a broadcast could write into one socket at the same time.
+- **The price, bounded.** A controller that stops reading now holds everyone up for at most 5 s (`SEND_TIMEOUT`, the socket timeout); then it is dropped and its connection shut down, so it reconnects and resyncs. The reader thread's old 120 s timeout is gone (it never reaped anything: a recv timeout just looped).
+- **Codec:** the unframed string limit went from 1 kB to the packet limit (4 MB): the config reply is one long string, which an unframed reader used to reject as "no NUL within 1024 bytes".
+
+**Seam.** `Model.config` is generic: a new block's zone, modules and values appear in the reply through its `describe()`, with nothing to add to the server. The ordering guarantees are written into `ClientRegistry`'s docstring and §4.2 as the contract; the lock is the Python server's way of meeting them.
+
+**App compatibility, without a Mac.** The app's `DeviceConfig.swift` was ported rule by rule into the test (`app_config_problems`: every throw and every warning); the server's reply produces none. Its shape is compared with `MockProfile.hardwareToday` (the same keys; `level` identical except `max`, 6.0205 vs the profile's 6.02; unity diagonal in `values`). **Not yet checked in the app itself**: that is the user's run in step 8 (or earlier, on request).
+
+**Verified (PC), measured:**
+
+- `test_mixer_params.py`: 23 tests (5 new: shape, sparse values, read-only exclusion, every parameter once, strict JSON).
+- `test_osc_mixer_server.py`: 53 tests (13 new): the reply through every address form, to the requester only; app rules; mock shape; values following sets and a rename; refusals; the reply over unframed TCP; **F3 end to end** (a writer sets one crosspoint up to 9,000 times as fast as it can while 15 controllers connect in turn: no set after a snapshot is older than it, and snapshot + later sets end on the mixer's value); **F3 deterministic** in-process (the snapshot slowed after reading the state: a concurrent set waits and its echo follows the snapshot); store-order echoes; two-thread sends never interleave (both orders); a stalled controller dropped and its connection closed; the reply's firmware; the firmware sources.
+- `test_osc_codec.py`: 33 (a 50 kB string waits for its NUL).
+- All 123 unit tests, three runs in a row on the final code: no flakes. `osc_mixer_test.py` against a local server: 22/22.
+- Mutation test: 10 server mutants, 10 config-builder mutants, 1 codec mutant. **Two false kills found and fixed in the method:** the runner's temp folder isn't a git checkout, so two new tests that assumed one failed for every mutant. The tests now check git only in a checkout, and the runner runs the unmutated baseline first and stops if it fails. Re-run with the baseline check: the config builder 10/10; the server 5/10 at first. Survivors: the lock in `apply_set` (the test slowed the backend, before the store, not the store-to-echo window), `send` without the lock (no test of interleaved writes), `broadcast` without its own lock (only one order tested), no shutdown on drop (only the client list checked), `firmware` hard-coded (equal to `dev` in the temp folder). Each got a test; all 21 killed after.
+
+**Not verified:** the recipe change (the `VERSION` install and `file-checksums`) has not been built; the app hasn't decoded a real reply.
+
 ## 5. Open items
 
 - The board image needs the meter/Bonjour modules added to the `fpgamixer-osc` recipe (`osc_codec.py` is in since step 1), and `avahi-daemon` in the image (step 7).
 - `osc_mixer_test.py` gains F1–F9 coverage in step 8. It needs a matrix with at least 20 outputs for its default scratch output (pass `--scratch-output` otherwise).
+- The step 4 recipe change (`VERSION` from `.synced-from`, `do_install[file-checksums]`) is unbuilt; check it in the first image build (step 8): `cat /usr/lib/fpgamixer/VERSION` on the board.
 - `sampleRate` is reported as 48000 (nominal). The core actually runs ~+324 ppm fast unless disciplined (roadmap §4); the setting is the nominal rate, which is what the app shows.
 - **The board's current name.** The service starts with `--mixer-name mixer`; if the board's state file still has `mixer`, it is the factory name (fine). Renaming it is the user's call; the app works either way through the alias.
 - `MockProfile.hardwareToday` is 12 × 12 (Phase 8); the board on this branch is 20 × 20. The config JSON follows the PL's CONFIG register, so a comparison with the mock is by shape, not size.

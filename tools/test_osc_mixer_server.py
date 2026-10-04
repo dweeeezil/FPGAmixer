@@ -14,12 +14,14 @@ the ones mutation-tested.
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -189,6 +191,15 @@ class UnframedFraming(ServerCase):
 
     def test_framing_is_logged(self):
         self.assertIn("TCP framing: none", self.log())
+
+    def test_config_reply_unframed(self):
+        """The reply is one long OSC string (here ~600 bytes over 4 x 4; a
+        20 x 20 board is larger); an unframed reader must wait for its NUL."""
+        c = self.tcp()
+        c.send_message("/mixer/get/system/config")
+        text = c.read_message().args[0]
+        self.assertGreater(len(text), 500)
+        self.assertEqual(json.loads(text)["schemaVersion"], 1)
 
 
 class Udp(ServerCase):
@@ -499,6 +510,8 @@ class InProcess(unittest.TestCase):
         sent = []
 
         class Registry:
+            lock = threading.RLock()
+
             def broadcast(self, packet):
                 sent.append(packet)
 
@@ -517,12 +530,411 @@ class InProcess(unittest.TestCase):
         self.assertEqual(self.state.get("inputMatrix/1_0/level"), -6.5)
         self.assertEqual(sent, [encode_message("/mixer/set/inputMatrix/1_0/level", [-6.5])])
 
+    def with_model(self, backend):
+        srv = self.srv
+        old = srv.BACKENDS.copy(), srv.MODEL
+        srv.BACKENDS.clear()
+        srv.BACKENDS[backend.zone] = backend
+        srv.MODEL = srv.build_model(srv.BACKENDS, srv.SYSTEM_SETTINGS)
+
+        def restore():
+            srv.BACKENDS.clear()
+            srv.BACKENDS.update(old[0])
+            srv.MODEL = old[1]
+        self.addCleanup(restore)
+
+    def test_snapshot_and_a_concurrent_set_are_never_interleaved(self):
+        """F3, deterministic: the snapshot is slowed down after it has read
+        the state; a set that arrives meanwhile must wait, so its echo comes
+        after the snapshot (which doesn't contain it)."""
+        srv = self.srv
+        self.with_model(srv.MatrixBackend("inputMatrix", None, 2, 2, max_db=6.0))
+        registry = srv.ClientRegistry("len32")
+        server_side, client_side = socket.socketpair()
+        self.addCleanup(server_side.close)
+        self.addCleanup(client_side.close)
+        registry.add(server_side)
+        build = srv.MODEL.config
+
+        def slow_config(*args, **kwargs):
+            body = build(*args, **kwargs)
+            time.sleep(0.4)                 # state already read; the reply not yet sent
+            return body
+        srv.MODEL.config = slow_config
+        snap = threading.Thread(target=srv.reply_config, args=(self.state, registry, server_side, "t"))
+        snap.start()
+        time.sleep(0.1)
+        srv.apply_set("inputMatrix/0_1/level", -6.0, self.state, registry, None, "t")
+        snap.join()
+        link = TCPLink("unused", 0, timeout=2.0)
+        link.sock = client_side
+        first, second = link.read_message(), link.read_message()
+        self.assertEqual(first.address, "/mixer/set/system/config")
+        self.assertNotIn("inputMatrix/0_1/level", json.loads(first.args[0])["values"])
+        self.assertEqual((second.address, second.args), ("/mixer/set/inputMatrix/0_1/level", [-6.0]))
+
+    def test_echoes_follow_the_store_order(self):
+        """Two changes to one parameter from two threads: the last echo is the
+        stored value (apply, store and echo are one step under the lock). The
+        first change dawdles between its store and its echo, the window in
+        which an unlocked second change would store and echo in between."""
+        srv = self.srv
+        from mixer_state import MixerState
+
+        class SlowStore(MixerState):
+            def set(self, tail, value):
+                why = super().set(tail, value)
+                if value == -1.0:
+                    time.sleep(0.3)
+                return why
+        self.state = SlowStore("mixer", None, log=lambda m: None)
+        self.with_model(srv.MatrixBackend("inputMatrix", None, 2, 2, max_db=6.0))
+        registry = srv.ClientRegistry("len32")
+        server_side, client_side = socket.socketpair()
+        self.addCleanup(server_side.close)
+        self.addCleanup(client_side.close)
+        registry.add(server_side)
+        first = threading.Thread(target=srv.apply_set,
+                                 args=("inputMatrix/0_1/level", -1.0, self.state, registry, None, "a"))
+        first.start()
+        time.sleep(0.1)
+        srv.apply_set("inputMatrix/0_1/level", -2.0, self.state, registry, None, "b")
+        first.join()
+        link = TCPLink("unused", 0, timeout=2.0)
+        link.sock = client_side
+        echoes = [link.read_message().args[0], link.read_message().args[0]]
+        self.assertEqual(echoes[-1], self.state.get("inputMatrix/0_1/level"))
+
+    def test_a_stalled_controller_is_dropped_and_closed(self):
+        srv = self.srv
+        registry = srv.ClientRegistry("len32")
+        registry.SEND_TIMEOUT = 0.2
+        stalled, peer = socket.socketpair()
+        self.addCleanup(stalled.close)
+        self.addCleanup(peer.close)
+        registry.add(stalled)
+        big = encode_message("/mixer/set/x", ["y" * 60000])
+        t0 = time.monotonic()
+        for _ in range(200):                 # the peer never reads: buffers fill, sendall times out
+            registry.broadcast(big)
+            if stalled not in registry.clients:
+                break
+        self.assertNotIn(stalled, registry.clients)
+        self.assertLess(time.monotonic() - t0, 10)
+        peer.settimeout(2)                   # and its connection is closed: EOF after the backlog
+        while True:
+            chunk = peer.recv(1 << 16)
+            if not chunk:
+                break
+
+    def test_sends_from_two_threads_never_interleave(self):
+        """A get reply (reader thread) and a broadcast (another thread) to one
+        socket: whole packets, one after the other."""
+        srv = self.srv
+        registry = srv.ClientRegistry("len32")
+        written = []
+
+        class SlowSocket:
+            def settimeout(self, t):
+                pass
+
+            def sendall(self, data):
+                half = len(data) // 2
+                written.append(data[:half])
+                time.sleep(0.2)              # another thread could write here
+                written.append(data[half:])
+        sock = SlowSocket()
+        registry.add(sock)
+        a = encode_message("/mixer/set/a", [1.0])
+        b = encode_message("/mixer/set/b", [2.0])
+        for first, then in ((lambda: registry.send(sock, a), lambda: registry.broadcast(b)),
+                            (lambda: registry.broadcast(b), lambda: registry.send(sock, a))):
+            written.clear()
+            t = threading.Thread(target=first)
+            t.start()
+            time.sleep(0.05)
+            then()
+            t.join()
+            stream = b"".join(written)
+            self.assertIn(stream, (Len32Framer.frame(a) + Len32Framer.frame(b),
+                                   Len32Framer.frame(b) + Len32Framer.frame(a)))
+
+    def test_reply_config_carries_the_firmware_and_goes_to_the_requester(self):
+        srv = self.srv
+        self.with_model(srv.MatrixBackend("inputMatrix", None, 2, 2, max_db=6.0))
+        old = srv.FIRMWARE
+        srv.FIRMWARE = "abc1234-dirty"
+        self.addCleanup(setattr, srv, "FIRMWARE", old)
+        registry = srv.ClientRegistry("len32")
+        server_side, client_side = socket.socketpair()
+        self.addCleanup(server_side.close)
+        self.addCleanup(client_side.close)
+        srv.reply_config(self.state, registry, server_side, "t")
+        link = TCPLink("unused", 0, timeout=2.0)
+        link.sock = client_side
+        self.assertEqual(json.loads(link.read_message().args[0])["firmware"], "abc1234-dirty")
+
+    def test_firmware_version_sources(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.assertEqual(self.srv.firmware_version(d), "dev")          # no VERSION, not a checkout
+        with open(os.path.join(d, "VERSION"), "w") as f:
+            f.write("071aadb-dirty\n")
+        self.assertEqual(self.srv.firmware_version(d), "071aadb-dirty")
+        in_checkout = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=HERE,
+                                     capture_output=True).returncode == 0
+        if in_checkout:                       # a copy outside git (e.g. the board) has no git
+            self.assertNotEqual(self.srv.firmware_version(HERE), "dev")
+
     def test_unset_parameter_reads_as_its_default(self):
         from mixer_params import ModuleSpec, Param
         p = Param("inputChannel", "0", "level", ModuleSpec("float", default=-12.0))
         self.assertEqual(self.srv.current_value(p, self.state), -12.0)
         self.state.set("inputChannel/0/level", -3.0)
         self.assertEqual(self.srv.current_value(p, self.state), -3.0)
+
+
+APP_ZONES = {"inputChannel": "channel", "busChannel": "channel", "outputChannel": "channel",
+             "inputMatrix": "matrix", "busMatrix": "matrix", "system": "system"}
+APP_TYPES = ("float", "int", "bool", "enum", "string")
+
+
+def app_config_problems(d):
+    """Everything the app's DeviceConfig (StudioRunnerProtocol/DeviceConfig.swift,
+    controller repo, 2026-10-04) would throw on or warn about, ported rule by
+    rule, so the reply can be checked without a Mac. Empty = decodes cleanly."""
+    problems = []
+
+    def is_int(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and float(v).is_integer()
+
+    def is_num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    def module(ctx, m):
+        if not isinstance(m, dict):
+            return problems.append(f"{ctx} is not an object")
+        t = m.get("type")
+        if t is None:
+            problems.append(f"{ctx} has no type")
+        elif t not in APP_TYPES:
+            problems.append(f"{ctx} has unknown type {t!r}")
+        for key in ("min", "max"):
+            if key in m and not is_num(m[key]):
+                problems.append(f"{ctx}.{key} not numeric")
+        if is_num(m.get("min")) and is_num(m.get("max")) and m["min"] > m["max"]:
+            problems.append(f"{ctx} min > max")
+        if "default" in m:
+            numeric_type = t != "string"
+            v = m["default"]
+            numeric_value = is_num(v) or isinstance(v, bool)
+            if isinstance(v, (dict, list)) or v is None or numeric_type != numeric_value:
+                problems.append(f"{ctx}.default doesn't match its type")
+        if t == "enum" and not m.get("options"):
+            problems.append(f"{ctx} is an enum without options")
+
+    def parses(key):
+        parts = key.split("/")
+        while parts and parts[-1] == "":
+            parts.pop()
+        if len(parts) < 2 or "" in parts or parts[0] not in APP_ZONES:
+            return False
+        kind = APP_ZONES[parts[0]]
+        if kind == "system":
+            return len(parts) <= 3
+        if len(parts) != 3:
+            return False
+        idx = parts[1].split("_") if kind == "matrix" else [parts[1]]
+        return len(idx) == (2 if kind == "matrix" else 1) and all(
+            i and len(i) <= 9 and i.isascii() and i.isdigit() for i in idx)
+
+    v = d.get("schemaVersion")
+    if not is_int(v) or v < 1 or v > 1:
+        problems.append(f"schemaVersion {v!r} (the app supports 1)")
+    for key in ("deviceName", "firmware"):
+        if key in d and not isinstance(d[key], str):
+            problems.append(f"{key} not a string")
+    if "sampleRate" in d and not is_int(d["sampleRate"]):
+        problems.append("sampleRate not an integer")
+    modules = d.get("modules")
+    if not isinstance(modules, dict):
+        problems.append("modules missing or not an object")
+        modules = {}
+    for name, m in modules.items():
+        module(f"modules.{name}", m)
+    zones = d.get("zones")
+    if not isinstance(zones, dict):
+        problems.append("zones missing or not an object")
+        zones = {}
+    for name, z in zones.items():
+        kind = APP_ZONES.get(name)
+        if kind in (None, "system"):
+            problems.append(f"zone {name!r} ignored")
+            continue
+        dims = ("count",) if kind == "channel" else ("rows", "cols")
+        limit = 1024 if kind == "channel" else 256
+        for dim in dims:
+            if not (is_int(z.get(dim)) and 0 <= z[dim] <= limit):
+                problems.append(f"zones.{name}.{dim} invalid")
+        mods = z.get("modules")
+        if mods is None:
+            problems.append(f"zones.{name} has no modules")
+        elif not isinstance(mods, list):
+            problems.append(f"zones.{name}.modules not an array")
+        else:
+            for m in mods:
+                if not (isinstance(m, str) and m and "/" not in m):
+                    problems.append(f"zones.{name} module name {m!r}")
+                elif m not in modules:
+                    problems.append(f"zones.{name} lists {m!r} without metadata")
+    system = d.get("system", {})
+    if not isinstance(system, dict):
+        problems.append("system not an object")
+        system = {}
+    for name, m in system.items():
+        module(f"system.{name}", m)
+    if isinstance(system.get("deviceName"), dict) and system["deviceName"].get("type") != "string":
+        problems.append("system.deviceName must be a string")
+    values = d.get("values", {})
+    if not isinstance(values, dict):
+        problems.append("values not an object")
+        values = {}
+    for key, value in values.items():
+        if not parses(key):
+            problems.append(f"values key {key!r} doesn't parse")
+        elif isinstance(value, (dict, list)) or value is None:
+            problems.append(f"values[{key!r}] not a number, bool or string")
+    return problems
+
+
+# MockProfile.hardwareToday (MockDevice/MockProfile.swift, controller repo),
+# as its configJSON writes it: the shape the app was built against.
+HARDWARE_TODAY_LEVEL = {"type": "float", "unit": "dB", "min": -90, "max": 6.02, "default": -90,
+                        "group": "level"}
+
+
+class Config(ServerCase):
+    """F1: get/system/config -> set/system/config "<json>", to the requester only."""
+
+    SERVER_ARGS = ["--mixer-name", "FOH"]
+
+    def config(self, link, address="/mixer/get/system/config"):
+        link.send_message(address)
+        m = link.read_message()
+        self.assertEqual(m.address, "/FOH/set/system/config")
+        self.assertIsInstance(m.args[0], str)
+        return json.loads(m.args[0])
+
+    def test_reply_decodes_in_the_app_without_warnings(self):
+        d = self.config(self.tcp())
+        self.assertEqual(app_config_problems(d), [])
+
+    def test_shape_matches_the_mocks_hardware_today_profile(self):
+        d = self.config(self.tcp())
+        self.assertEqual(set(d), {"schemaVersion", "deviceName", "firmware", "sampleRate", "zones",
+                                  "modules", "system", "values"})
+        self.assertEqual(d["zones"], {"inputMatrix": {"rows": 4, "cols": 4, "modules": ["level"]}})
+        level = d["modules"]["level"]
+        self.assertEqual(set(level), set(HARDWARE_TODAY_LEVEL))
+        for key in ("type", "unit", "min", "default", "group"):
+            self.assertEqual(level[key], HARDWARE_TODAY_LEVEL[key], key)
+        self.assertAlmostEqual(level["max"], 6.02, places=2)     # the real ceiling, 6.0205
+        self.assertEqual(d["values"], {**{f"inputMatrix/{i}_{i}/level": 0.0 for i in range(4)},
+                                       "system/deviceName": "FOH"})   # unity diagonal, as the profile
+        logged = re.search(r"Firmware (\S+);", self.log())      # sources: test_firmware_version_sources
+        self.assertEqual(d["firmware"], logged.group(1))
+
+    def test_requester_only_and_every_address_form(self):
+        a, b = self.tcp(), self.tcp()
+        self.get(b, "system/deviceName")
+        for address in ("/mixer/get/system/config", "/FOH/get/system/config", "/FOH/get/system/config/"):
+            self.config(a, address)
+        silent(self, b)
+
+    def test_values_follow_changes_and_rename(self):
+        c = self.tcp()
+        foh = XP.replace("/mixer/", "/FOH/")
+        self.roundtrip(c, foh.format(0, 0), -90.0)        # back to the default: leaves values
+        self.roundtrip(c, foh.format(1, 2), -6.0)
+        c.send_message("/mixer/set/system/deviceName", ["Stage"])
+        c.read_message()
+        c.send_message("/mixer/get/system/config")
+        d = json.loads(c.read_message().args[0])
+        self.assertEqual(d["deviceName"], "Stage")
+        self.assertEqual(d["values"]["system/deviceName"], "Stage")
+        self.assertEqual(d["values"]["inputMatrix/1_2/level"], -6.0)
+        self.assertNotIn("inputMatrix/0_0/level", d["values"])
+
+    def test_config_is_not_a_setting_and_udp_gets_nothing(self):
+        c = self.tcp()
+        c.send_message("/mixer/set/system/config", ["{}"])
+        m = c.read_message()
+        self.assertEqual((m.address, m.args[0]), ("/FOH/error", "system/config"))
+        self.udp().send_message("/mixer/get/system/config")
+        silent(self, c)
+
+
+
+class SnapshotOrdering(ServerCase):
+    """F3, end to end: one controller sets values in a tight loop while others
+    connect and sync. Every set a syncing controller receives after its
+    snapshot must be newer than the snapshot, and snapshot + later sets must
+    end on the mixer's value."""
+
+    SERVER_ARGS = ["--matrix-size", "4"]
+    PATH = "inputMatrix/0_1/level"
+
+    def test_snapshot_never_older_than_what_follows(self):
+        stop = threading.Event()
+        sent = []
+
+        w = self.tcp()
+
+        def discard_echoes():             # the writer must read, or the server drops it
+            while not stop.is_set():
+                try:
+                    w.read_message(timeout=0.2)
+                except (TimeoutError, OSError):
+                    pass
+
+        def writer():
+            i = 0
+            while not stop.is_set() and i < 9000:
+                w.send_message(f"/mixer/set/{self.PATH}", [-89.0 + i * 0.01])   # strictly increasing
+                sent.append(i)
+                i += 1
+
+        threading.Thread(target=discard_echoes, daemon=True).start()
+        t = threading.Thread(target=writer, daemon=True)
+        t.start()
+        try:
+            for _ in range(15):
+                c = self.tcp()
+                c.send_message("/mixer/get/system/config")
+                while True:                                   # sets before the snapshot: dropped
+                    m = c.read_message(timeout=5)
+                    if m.address.endswith("/set/system/config"):
+                        break
+                snap = json.loads(m.args[0])["values"].get(self.PATH, -90.0)
+                later = []
+                deadline = time.monotonic() + 0.05
+                while time.monotonic() < deadline:
+                    try:
+                        later.append(c.read_message(timeout=0.05).args[0])
+                    except TimeoutError:
+                        break
+                for v in later:
+                    self.assertGreaterEqual(v, snap, f"a set older than the snapshot ({v} < {snap})")
+                c.close()
+        finally:
+            stop.set()
+            t.join(timeout=10)
+        self.assertGreater(len(sent), 100, "the writer barely ran")
+        final = self.tcp()
+        expected = self.get(final, self.PATH)
+        c = self.tcp()
+        c.send_message("/mixer/get/system/config")
+        self.assertEqual(json.loads(c.read_message().args[0])["values"][self.PATH], expected)
 
 
 class FactoryName(ServerCase):

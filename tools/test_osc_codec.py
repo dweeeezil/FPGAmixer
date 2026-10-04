@@ -49,9 +49,16 @@ class WireFormat(unittest.TestCase):
                      osc_string("/x") + osc_string("f"),
                      osc_string("/x") + osc_string(",z") + b"\0\0\0\0",
                      osc_string("/x") + osc_string(",b") + struct.pack(">i", -1),
-                     b"/" + b"a" * 2000):
+                     b"/" + b"a" * (osc_codec.MAX_STRING_SCAN + 1)):
             with self.assertRaises(OSCMalformed, msg=repr(data[:24])):
                 decode_message(data)
+
+    def test_long_string_is_incomplete_until_its_nul(self):
+        """A config reply is one long string: an unframed reader must wait for it."""
+        long = encode_message("/m/set/system/config", ["x" * 50000])
+        with self.assertRaises(OSCIncomplete):
+            decode_message(long[:30000])
+        self.assertEqual(len(decode_message(long)[0].args[0]), 50000)
 
     def test_bundle_where_a_message_is_expected(self):
         with self.assertRaisesRegex(OSCMalformed, "bundle"):

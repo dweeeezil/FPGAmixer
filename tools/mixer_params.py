@@ -26,7 +26,9 @@ system zone", "Config", "Error reply").
   Model        zones + module metadata + system settings. resolve(tail) turns
                an address tail into a Param, or raises Refused with the path
                (normalised, no trailing slash) and the reason for the error
-               reply.
+               reply. config(...) is the config reply's JSON object, built
+               from the same descriptions (describe() on each spec) and the
+               current values (sparse: non-defaults, plus system/deviceName).
 
 Indices are canonical in Param.path ('01_1' resolves to '1_1'), so the state
 tree only ever holds canonical keys.
@@ -40,6 +42,7 @@ TYPES = ("float", "int", "bool", "enum", "string")
 CHANNEL_ZONES = ("inputChannel", "busChannel", "outputChannel")
 MATRIX_ZONES = ("inputMatrix", "busMatrix")
 SYSTEM_ZONE = "system"
+SCHEMA_VERSION = 1       # the config's breaking-change number (D29)
 
 NONFINITE_LOW = -99.9    # mirrors mixer_state: NaN and -inf
 NONFINITE_HIGH = 99.9    # +inf
@@ -126,6 +129,21 @@ class ModuleSpec:
                 return None, f"{value!r} is not one of {list(self.options)}"
         return float32(x), None
 
+    def describe(self):
+        """The config JSON's metadata object (amendment B): only the fields
+        that are set; readOnly only when true; default always (explicit)."""
+        d = {"type": self.type}
+        for key, value in (("unit", self.unit), ("min", self.min), ("max", self.max),
+                           ("group", self.group)):
+            if value is not None:
+                d[key] = value
+        d["default"] = self.default_value()
+        if self.options:
+            d["options"] = list(self.options)
+        if self.read_only:
+            d["readOnly"] = True
+        return d
+
 
 @dataclass(frozen=True)
 class ZoneSpec:
@@ -139,6 +157,17 @@ class ZoneSpec:
     def __post_init__(self):
         if self.kind not in ("channels", "matrix"):
             raise ValueError(f"unknown zone kind {self.kind!r}")
+
+    def indices(self):
+        """Every canonical index, in order (channels, or row-major crosspoints)."""
+        if self.kind == "channels":
+            return [str(i) for i in range(self.count)]
+        return [f"{r}_{c}" for r in range(self.rows) for c in range(self.cols)]
+
+    def describe(self):
+        """The config JSON's zone object."""
+        shape = {"count": self.count} if self.kind == "channels" else {"rows": self.rows, "cols": self.cols}
+        return dict(shape, modules=list(self.modules))
 
     def index(self, text):
         """The canonical index for `text`, or None if it isn't one of this
@@ -195,6 +224,39 @@ class Model:
                 raise ValueError(f"module {name!r} described differently by two zones")
             self.modules[name] = m
         self.zones[zone] = spec
+
+    def params(self):
+        """Every parameter the mixer has: zones in insertion order (index,
+        then module), then the system settings."""
+        for zone, spec in self.zones.items():
+            for index in spec.indices():
+                for module in spec.modules:
+                    yield Param(zone, index, module, self.modules[module])
+        for name, spec in self.system.items():
+            yield Param(SYSTEM_ZONE, name, None, spec)
+
+    def config(self, device_name, firmware, sample_rate, value_of):
+        """The config reply's JSON object (amendment B, schemaVersion 1).
+        value_of(param) is the parameter's current value. values is sparse:
+        only values that differ from their default, plus system/deviceName
+        always; read-only settings are never listed (they are their default)."""
+        values = {}
+        for p in self.params():
+            if p.spec.read_only:
+                continue
+            value = value_of(p)
+            if value != p.spec.default_value() or p.path == "system/deviceName":
+                values[p.path] = value
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "deviceName": device_name,
+            "firmware": firmware,
+            "sampleRate": sample_rate,
+            "zones": {zone: spec.describe() for zone, spec in self.zones.items()},
+            "modules": {name: m.describe() for name, m in self.modules.items()},
+            "system": {name: m.describe() for name, m in self.system.items()},
+            "values": values,
+        }
 
     def resolve(self, tail):
         """The Param `tail` names, or raise Refused."""

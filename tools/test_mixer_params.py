@@ -6,6 +6,7 @@ resolution and the model's consistency checks. Standard library only.
     python3 -m unittest -v test_mixer_params        (from tools/)
 """
 
+import json
 import math
 import unittest
 
@@ -152,6 +153,53 @@ class Resolve(unittest.TestCase):
 
     def test_long_index_refused(self):
         self.refused("inputChannel/0000000001/level")       # 10 digits, as the app's parser
+
+
+class Config(unittest.TestCase):
+    def model(self):
+        m = Model(system={"deviceName": ModuleSpec("string", default="mixer"),
+                          "sampleRate": ModuleSpec("enum", unit="Hz", options=(48000,), default=48000,
+                                                   read_only=True),
+                          "location": ModuleSpec("string")})
+        m.add_zone("inputMatrix", ZoneSpec("matrix", ("level",), rows=2, cols=3), {"level": LEVEL})
+        m.add_zone("inputChannel", ZoneSpec("channels", ("level", "mute"), count=2),
+                   {"level": LEVEL, "mute": ModuleSpec("bool", group="level")})
+        return m
+
+    def test_shape(self):
+        c = self.model().config("FOH", "abc123", 48000, lambda p: p.spec.default_value())
+        self.assertEqual(c["schemaVersion"], 1)
+        self.assertEqual((c["deviceName"], c["firmware"], c["sampleRate"]), ("FOH", "abc123", 48000))
+        self.assertEqual(c["zones"], {"inputMatrix": {"rows": 2, "cols": 3, "modules": ["level"]},
+                                      "inputChannel": {"count": 2, "modules": ["level", "mute"]}})
+        self.assertEqual(c["modules"]["level"], {"type": "float", "unit": "dB", "min": -90.0, "max": 6.02,
+                                                 "group": "level", "default": -90.0})
+        self.assertEqual(c["modules"]["mute"], {"type": "bool", "group": "level", "default": 0.0})
+        self.assertEqual(c["system"]["sampleRate"], {"type": "enum", "unit": "Hz", "default": 48000,
+                                                     "options": [48000], "readOnly": True})
+        self.assertEqual(c["system"]["deviceName"], {"type": "string", "default": "mixer"})
+
+    def test_values_are_sparse_plus_device_name(self):
+        current = {"inputMatrix/1_2/level": 0.0, "inputChannel/1/mute": 1.0,
+                   "system/deviceName": "mixer", "system/location": "FOH riser"}
+        c = self.model().config("mixer", "x", 48000, lambda p: current.get(p.path, p.spec.default_value()))
+        self.assertEqual(c["values"], current)        # deviceName listed although it is the default
+
+    def test_read_only_settings_are_not_values(self):
+        c = self.model().config("FOH", "x", 48000, lambda p: 44100.0 if p.index == "sampleRate" else
+                                p.spec.default_value())
+        self.assertNotIn("system/sampleRate", c["values"])
+
+    def test_params_cover_every_parameter_once(self):
+        paths = [p.path for p in self.model().params()]
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertEqual(len(paths), 2 * 3 + 2 * 2 + 3)
+        self.assertIn("inputMatrix/1_2/level", paths)
+        self.assertIn("inputChannel/1/mute", paths)
+
+    def test_json_is_strict(self):
+        c = self.model().config("FOH", "x", 48000, lambda p: p.spec.default_value())
+        json.dumps(c, allow_nan=False)
 
 
 class ModelChecks(unittest.TestCase):

@@ -33,10 +33,21 @@ RDEPENDS:${PN} = "python3-core python3-io python3-json python3-mmap"
 
 APPDIR = "${libdir}/fpgamixer"
 
+# Re-run do_install when a new sync changes the recorded commit.
+FPGAMIXER_SYNCED_FROM = "${FPGAMIXER_TOOLS}/../.synced-from"
+do_install[file-checksums] += "${FPGAMIXER_SYNCED_FROM}:True"
+
 do_install() {
     install -d ${D}${APPDIR}
     install -m 0644 ${S}/osc_mixer_server.py ${S}/osc_codec.py ${S}/mixer_params.py \
         ${S}/mixer_state.py ${S}/mixer_hw.py ${D}${APPDIR}/
+
+    # The config reply's "firmware": the commit scripts/sync_buildhost.sh
+    # synced (".synced-from", next to tools/ on the VM; '-dirty' if the tree
+    # had changes). Without it the server reports "dev".
+    if [ -f ${FPGAMIXER_SYNCED_FROM} ]; then
+        install -m 0644 ${FPGAMIXER_SYNCED_FROM} ${D}${APPDIR}/VERSION
+    fi
 
     install -d ${D}${systemd_system_unitdir}
     install -m 0644 ${S}/fpgamixer-osc.service ${D}${systemd_system_unitdir}/

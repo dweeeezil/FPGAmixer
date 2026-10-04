@@ -43,7 +43,8 @@ FRAMINGS = ("len32", "none")
 DEFAULT_FRAMING = "len32"
 
 MAX_PACKET = 4 * 1024 * 1024    # room for a large config JSON (controller D22)
-MAX_STRING_SCAN = 1024          # unframed: a string with no NUL this long is garbage
+MAX_STRING_SCAN = MAX_PACKET    # a string with no NUL this long is garbage (the config
+                                # reply is one long string, so this is the packet limit)
 
 BUNDLE_TAG = b"#bundle\x00"
 

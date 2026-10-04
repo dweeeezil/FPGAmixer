@@ -83,6 +83,18 @@ made here so you can compare against the real firmware once it exists):
     window in mixer_hw + a new Backend + one BACKENDS entry; its description
     comes with it.
   - system: deviceName (string) and sampleRate (enum 48000, read-only).
+  - Config (amendment B, F1): '/<root>/get/system/config' is answered, to
+    the requester only, with '/<name>/set/system/config "<json>"' built by
+    mixer_params.Model.config from the backends' own descriptions:
+    schemaVersion 1, deviceName, firmware (firmware_version: VERSION from
+    the image, else git, else 'dev'), sampleRate, zones, modules, system,
+    and values (sparse: non-defaults, plus system/deviceName).
+  - Ordering (F3): ClientRegistry.lock is held while a change is applied,
+    stored and echoed, while any packet is sent, and while the config
+    snapshot is read and sent. Echoes therefore follow the store order, two
+    threads never write into one socket, and no broadcast falls between a
+    snapshot's read and its send. A controller that stops reading is dropped
+    after ClientRegistry.SEND_TIMEOUT (5 s) and its connection closed.
 
 Usage:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --mixer-name mixer
@@ -108,7 +120,9 @@ refused with an error reply.
 """
 
 import argparse
+import json
 import math
+import os
 import re
 import signal
 import socket
@@ -141,21 +155,43 @@ def log(msg):
 
 
 class ClientRegistry:
-    """Connected TCP controller sockets, for broadcasting set/echo/sync
-    messages. Every TCP send goes through here (send() or broadcast()), so
-    each packet is framed with the port's framing (--tcp-framing)."""
+    """Connected TCP controller sockets, and the server's ORDERING LOCK.
+
+    Every TCP send goes through here (send() or broadcast()), framed with the
+    port's framing (--tcp-framing), and happens while holding self.lock. Every
+    change (apply, store, broadcast: apply_set, the rename) and every config
+    snapshot (reply_config) also runs under it. So:
+      - the echoes of two changes go out in the order the changes were stored,
+        never the reverse;
+      - two threads never write into one socket at once;
+      - no broadcast can fall between reading the state for a snapshot and
+        sending it (contract F3: everything after the snapshot is newer).
+    The lock is re-entrant, so code holding it can call send/broadcast.
+
+    The price: a controller that stops reading holds everyone up, for at most
+    SEND_TIMEOUT; then it is dropped and its connection closed (it reconnects
+    and resyncs from a new snapshot)."""
+
+    SEND_TIMEOUT = 5.0
 
     def __init__(self, framing=DEFAULT_FRAMING):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.clients = set()
         self.framing = framing
         self.frame = make_framer(framing).frame
 
     def send(self, sock, packet: bytes):
-        """One packet to one controller (get replies)."""
-        sock.sendall(self.frame(packet))
+        """One packet to one controller (get replies, errors, the snapshot).
+        A failure drops and closes that controller, then raises."""
+        with self.lock:
+            try:
+                sock.sendall(self.frame(packet))
+            except OSError:
+                self._drop(sock)
+                raise
 
     def add(self, sock):
+        sock.settimeout(self.SEND_TIMEOUT)   # bounds a stalled send (and paces the reader's recv)
         with self.lock:
             self.clients.add(sock)
 
@@ -163,20 +199,24 @@ class ClientRegistry:
         with self.lock:
             self.clients.discard(sock)
 
+    def _drop(self, sock):
+        """Forget a controller whose send failed and close its connection, so
+        its reader thread ends instead of serving a client that no longer
+        gets broadcasts (a timed-out sendall may have left half a packet)."""
+        self.clients.discard(sock)
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
     def broadcast(self, packet: bytes):
         data = self.frame(packet)
         with self.lock:
-            targets = list(self.clients)
-        dead = []
-        for sock in targets:
-            try:
-                sock.sendall(data)
-            except OSError:
-                dead.append(sock)
-        if dead:
-            with self.lock:
-                for sock in dead:
-                    self.clients.discard(sock)
+            for sock in list(self.clients):
+                try:
+                    sock.sendall(data)
+                except OSError:
+                    self._drop(sock)
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +386,53 @@ def build_backends(use_hw, matrix_size):
 
 # The system zone's settings (standard: "The system zone"). deviceName is
 # handled by the rename path; a read-only setting's value is its default.
-# 'config' is a request, not a setting (step 4 of the controller work).
+# 'config' is a request, not a setting (handle_get -> reply_config).
+SAMPLE_RATE = 48000      # nominal; the core runs on mclk (roadmap section 4)
 SYSTEM_SETTINGS = {
     "deviceName": ModuleSpec("string", default=ALIAS),
-    "sampleRate": ModuleSpec("enum", unit="Hz", options=(48000,), default=48000, read_only=True),
+    "sampleRate": ModuleSpec("enum", unit="Hz", options=(SAMPLE_RATE,), default=SAMPLE_RATE,
+                             read_only=True),
 }
+CONFIG_PATH = "system/config"
+
+
+def firmware_version(here=os.path.dirname(os.path.abspath(__file__))):
+    """The config's 'firmware': the commit this server was built from.
+    On the board: VERSION next to this file, installed by the fpgamixer-osc
+    recipe from the .synced-from that scripts/sync_buildhost.sh writes (the
+    commit, '-dirty' if the tree had changes). In a checkout: git. Else 'dev'."""
+    try:
+        with open(os.path.join(here, "VERSION")) as f:
+            version = f.read().strip()
+        if version:
+            return version
+    except OSError:
+        pass
+    try:
+        import subprocess    # here, not at the top: only a checkout needs it
+        rev = subprocess.run(["git", "describe", "--always", "--dirty"], cwd=here,
+                             capture_output=True, text=True, timeout=5)
+        if rev.returncode == 0 and rev.stdout.strip():
+            return rev.stdout.strip()
+    except Exception:        # no git, no subprocess module, a timeout: a version is never fatal
+        pass
+    return "dev"
+
+
+FIRMWARE = "dev"     # set once in main()
+
+
+def reply_config(state, registry, reply_sock, via):
+    """The config reply (amendment B), to the requester only. The state is
+    read and the reply sent while holding the ordering lock, so no broadcast
+    falls between them (contract F3): any set the controller receives after
+    the snapshot is newer than it."""
+    with registry.lock:
+        body = MODEL.config(state.mixer_name, FIRMWARE, SAMPLE_RATE,
+                            lambda p: current_value(p, state))
+        text = json.dumps(body, separators=(",", ":"), allow_nan=False)
+        registry.send(reply_sock, encode_message(f"/{state.mixer_name}/set/{CONFIG_PATH}", [text]))
+    log(f"    [{via}] config sent ({len(text)} bytes, {len(body['values'])} value(s))")
 
 MODEL = Model()  # what the mixer has: filled from BACKENDS in main() (build_model)
 
@@ -393,12 +475,13 @@ def apply_set(tail, value, state, registry, reply, via):
     if conflict is not None:     # only an old, hand-edited state file can do this
         return send_error(reply, state, param.path, f"can't store: {conflict}", via)
     backend = BACKENDS.get(param.zone)
-    if backend is not None:
-        applied = backend.apply(param.index, param.module, applied)
-    state.set(param.path, applied)
+    with registry.lock:          # apply, store and echo as one step (ClientRegistry)
+        if backend is not None:
+            applied = backend.apply(param.index, param.module, applied)
+        state.set(param.path, applied)
+        registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
     if VERBOSE:
         log(f"    [{via}] SET {param.path} = {applied!r}")
-    registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
 
 
 def handle_devicename_change(new_name, state, registry, reply, via):
@@ -406,15 +489,16 @@ def handle_devicename_change(new_name, state, registry, reply, via):
     applies (the alias keeps working). Refused (D33 rules): the sender alone
     gets the name that stands, then an error reply (D38); nobody else hears
     anything."""
-    old_name = state.mixer_name
-    why = name_problem(new_name)
-    if why is not None:
-        if reply is not None:
-            reply(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [old_name]))
-        send_error(reply, state, DEVICE_NAME_KEY, why, via)
-        return
-    registry.broadcast(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [new_name]))
-    state.rename(new_name)
+    with registry.lock:          # the name read, the confirmation and the rename are one step
+        old_name = state.mixer_name
+        why = name_problem(new_name)
+        if why is not None:
+            if reply is not None:
+                reply(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [old_name]))
+            send_error(reply, state, DEVICE_NAME_KEY, why, via)
+            return
+        registry.broadcast(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [new_name]))
+        state.rename(new_name)
     log(f"    *** [{via}] device name changed: {old_name!r} -> {new_name!r}. "
           f"Address root is now /{new_name}/ (and /{ALIAS}/); /{old_name}/ is ignored. ***")
 
@@ -458,6 +542,8 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
     reply = lambda packet: registry.send(reply_sock, packet)  # noqa: E731
     if kind == "set":
         handle_set(tail, msg.args, state, registry, reply, via)
+    elif kind == "get" and "/".join(split_path(tail) or ()) == CONFIG_PATH:
+        reply_config(state, registry, reply_sock, via)
     elif kind == "get":
         handle_get(tail, state, reply, via)
     else:
@@ -484,7 +570,8 @@ def handle_tcp_client(conn, addr, state, registry):
     via = f"TCP {addr[0]}:{addr[1]}"
     log(f"[+] {via} connected")   # already in the registry (tcp_accept_loop)
     framer = make_framer(registry.framing)
-    conn.settimeout(120.0)  # only to reap a truly dead/idle connection eventually
+    # The socket's timeout is the registry's send bound (ClientRegistry.add);
+    # a recv that times out just waits again: an idle controller is fine.
     try:
         while True:
             try:
@@ -573,7 +660,7 @@ def handle_udp_message(msg, state, registry, via):
 # ---------------------------------------------------------------------------
 
 def main():
-    global VERBOSE, MODEL
+    global VERBOSE, MODEL, FIRMWARE
     p = argparse.ArgumentParser(description="Reference/simulator server for the FPGA mixer OSC protocol.")
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
@@ -600,6 +687,8 @@ def main():
     state = MixerState(args.mixer_name, args.state_file or None, log=log)
     BACKENDS.update(build_backends(args.hw, args.matrix_size))
     MODEL = build_model(BACKENDS, SYSTEM_SETTINGS)
+    FIRMWARE = firmware_version()
+    log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}")
     for backend in BACKENDS.values():
         backend.seed_and_push(state)
     registry = ClientRegistry(args.tcp_framing)
