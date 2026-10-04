@@ -187,7 +187,13 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 
 **Content:** this branch at the build commit: Phases 9–10 (as `p10e`), Phase 11 (docs only, nothing built), and controller support steps 1–5 and 7, plus Mac access (link-local, mDNS). No hardware change, so no new SDT or bitstream (`p95`, as `p10e`).
 
-**Build:** commit, `scripts/sync_buildhost.sh` (clean tree, so `VERSION` = the commit), then on the VM `bitbake edf-linux-disk-image xilinx-bootbin`, copy to `build/sd/`. (Plan from the earlier hand deploy via the Pi, superseded.)
+**Image `ctl1` built 2026-10-04** from the clean commit `12c8f9f` (synced, `.synced-from` = `12c8f9f`): `bitbake edf-linux-disk-image xilinx-bootbin`, 15,069 tasks, all succeeded, 23 warnings (the usual; none from fpgamixer recipes). No `gen-machine-conf` (no hardware change). **`build/sd/ctl1-controller-20261004.wic.xz`** (108 MB, MD5 `f8f37f53…`, same on both ends).
+
+**Checked in the rootfs tarball:** `/usr/lib/fpgamixer/` has `osc_mixer_server.py`, `osc_codec.py`, `osc_discovery.py`, `mixer_params.py`, `mixer_state.py`, `mixer_hw.py` and `VERSION` = `12c8f9f` (so the recipe's `.synced-from` install works); the unit runs `--hw --advertise dnssd`; `/etc/systemd/resolved.conf.d/fpgamixer-mdns.conf` (`MulticastDNS=yes`) and `/etc/systemd/dnssd/`; `10-end0-bench.network` with `LinkLocalAddressing=yes` and `MulticastDNS=yes`.
+
+**Checked under the board's Python version:** all 138 tests on the VM (Python 3.12.3, Linux; the board has 3.12.12), including the SIGTERM test that Windows skips. It failed once: the test still set `inputChannel/5/level`, refused since step 3 (I had updated its framing in step 1, not its path, and it had never run). Fixed to `inputMatrix/0_1/level`; 138/138. A test-only change, not in the image.
+
+**Not verified:** anything on the board (first boot below).
 
 ## 6. Open items
 

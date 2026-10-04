@@ -214,7 +214,7 @@ class ServerShutdown(Base):
             else:
                 self.fail("server did not start")
 
-            c.sendall(Len32Framer.frame(encode_message("/mixer/set/inputChannel/5/level", [-7.5])))
+            c.sendall(Len32Framer.frame(encode_message("/mixer/set/inputMatrix/0_1/level", [-7.5])))
             c.settimeout(2)
             c.recv(256)                                  # the echo: it's in memory now
             proc.send_signal(signal.SIGTERM)             # well inside the batch delay
@@ -224,7 +224,7 @@ class ServerShutdown(Base):
                 proc.kill()
         self.assertEqual(proc.returncode, 0, out.decode(errors="replace"))
         self.assertIn(b"state saved", out)
-        self.assertEqual(self.read()["inputChannel"]["5"]["level"], -7.5)
+        self.assertEqual(self.read()["inputMatrix"]["0_1"]["level"], -7.5)
 
 
 if __name__ == "__main__":
