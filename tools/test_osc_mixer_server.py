@@ -11,6 +11,7 @@ osc_mixer_test.py; these tests pin down server behaviour precisely and are
 the ones mutation-tested.
 """
 
+import json
 import os
 import shutil
 import socket
@@ -41,9 +42,13 @@ class ServerCase(unittest.TestCase):
 
     SERVER_ARGS = []
     FRAMING = "len32"
+    STATE = None        # a state tree to start from (written as the state file)
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="oscsrv-")
+        if self.STATE is not None:
+            with open(os.path.join(self.dir, "state.json"), "w") as f:
+                json.dump(self.STATE, f)
         self.tcp_port = free_port(socket.SOCK_STREAM)
         self.udp_port = free_port(socket.SOCK_DGRAM)
         self.log_path = os.path.join(self.dir, "server.log")
@@ -199,6 +204,123 @@ class Udp(ServerCase):
         with self.assertRaises(TimeoutError):
             watcher.read_message(timeout=0.5)
         self.assertIn("after the message", self.log())
+
+
+def silent(test, link, wait=0.4):
+    """Assert nothing arrives on `link` for `wait` seconds."""
+    try:
+        msg = link.read_message(timeout=wait)
+    except TimeoutError:
+        return
+    test.fail(f"expected silence, got {msg}")
+
+
+class Names(ServerCase):
+    """The /mixer/ alias and the name rules (F2, F9; standard: "Mixer name
+    and the /mixer/ alias", "The system zone")."""
+
+    SERVER_ARGS = ["--mixer-name", "FOH"]
+    NAME = "/FOH/set/system/deviceName"
+
+    def synced(self):
+        """A connection the server certainly has (one round trip done)."""
+        c = self.tcp()
+        self.get(c, "system/deviceName")
+        return c
+
+    def test_alias_and_name_both_answer_replies_use_the_name(self):
+        c = self.tcp()
+        for root in ("mixer", "FOH"):
+            c.send_message(f"/{root}/set/inputMatrix/0_1/level", [-6.0])
+            self.assertEqual(c.read_message().address, "/FOH/set/inputMatrix/0_1/level", root)
+            c.send_message(f"/{root}/get/system/deviceName")
+            self.assertEqual(c.read_message().args, ["FOH"], root)
+
+    def test_other_roots_are_ignored(self):
+        c = self.tcp()
+        for address in ("/other/set/inputMatrix/0_1/level", "/FO/set/inputMatrix/0_1/level",
+                        "/mixerX/set/inputMatrix/0_1/level", "mixer/set/inputMatrix/0_1/level",
+                        "/mixer"):
+            c.send_message(address, [-6.0])
+        silent(self, c)
+
+    def test_alias_over_udp(self):
+        c = self.synced()
+        self.udp().send_message("/mixer/set/inputMatrix/1_2/level", [-4.0])
+        m = c.read_message()
+        self.assertEqual((m.address, m.args), ("/FOH/set/inputMatrix/1_2/level", [-4.0]))
+
+    def test_rename_confirmed_under_old_name_then_new_name_and_alias(self):
+        a, b = self.synced(), self.synced()
+        a.send_message("/mixer/set/system/deviceName/", ["Stage.L-2_b"])
+        for link in (a, b):
+            m = link.read_message()
+            self.assertEqual((m.address, m.args), (self.NAME, ["Stage.L-2_b"]))
+        a.send_message("/FOH/get/system/deviceName")                 # old name: ignored
+        silent(self, a)
+        for root in ("Stage.L-2_b", "mixer"):
+            a.send_message(f"/{root}/get/system/deviceName")
+            m = a.read_message()
+            self.assertEqual((m.address, m.args), ("/Stage.L-2_b/set/system/deviceName", ["Stage.L-2_b"]))
+
+    def test_63_bytes_is_allowed(self):
+        c = self.synced()
+        c.send_message(self.NAME, ["n" * 63])
+        self.assertEqual(c.read_message().args, ["n" * 63])
+
+    def test_refused_rename_answers_the_sender_only(self):
+        a, b = self.synced(), self.synced()
+        for bad in ("mixer", "", "two words", "a/b", "n" * 64, "café", -1.0, 3):
+            a.send_message(self.NAME, [bad])
+            name = a.read_message()
+            self.assertEqual((name.address, name.args), (self.NAME, ["FOH"]), repr(bad))
+            err = a.read_message()
+            self.assertEqual(err.address, "/FOH/error", repr(bad))
+            self.assertEqual(err.args[0], "system/deviceName", repr(bad))
+            self.assertIsInstance(err.args[1], str)
+        silent(self, b)
+        self.assertEqual(self.get(a, "system/deviceName"), "FOH")    # unchanged
+        self.assertIn("reserved", self.log())
+        self.assertIn("can't be empty", self.log())
+
+    def test_refused_rename_over_udp_is_only_logged(self):
+        c = self.synced()
+        self.udp().send_message(self.NAME, ["two words"])
+        silent(self, c)
+        self.assertEqual(self.get(c, "system/deviceName"), "FOH")
+        self.assertIn("refused system/deviceName", self.log())
+
+    def test_rename_survives_a_restart(self):
+        c = self.synced()
+        c.send_message(self.NAME, ["Monitor"])
+        c.read_message()
+        time.sleep(0.6)                      # past the batched save
+        with open(os.path.join(self.dir, "state.json")) as f:
+            self.assertEqual(json.load(f)["system"]["deviceName"], "Monitor")
+
+
+class FactoryName(ServerCase):
+    """No name given anywhere: the mixer is 'mixer' (C6) and can be renamed."""
+
+    def test_factory_name_is_mixer_and_renaming_away_works(self):
+        c = self.tcp()
+        self.assertEqual(self.get(c, "system/deviceName"), "mixer")
+        c.send_message("/mixer/set/system/deviceName", ["FOH"])
+        self.assertEqual(c.read_message().address, "/mixer/set/system/deviceName")
+        c.send_message("/mixer/get/system/deviceName")               # alias still works
+        self.assertEqual(c.read_message().address, "/FOH/set/system/deviceName")
+
+
+class StoredInvalidName(ServerCase):
+    """A name stored before the rules existed loads as it is (C6)."""
+
+    STATE = {"system": {"deviceName": "FOH mixer"}}
+
+    def test_loads_and_answers(self):
+        c = self.tcp()
+        c.send_message("/mixer/get/system/deviceName")
+        m = c.read_message()
+        self.assertEqual((m.address, m.args), ("/FOH mixer/set/system/deviceName", ["FOH mixer"]))
 
 
 if __name__ == "__main__":

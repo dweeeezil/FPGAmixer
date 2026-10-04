@@ -643,6 +643,11 @@ def test_devicename_roundtrip(ctx):
     back in a finally block, even if an assertion above it fails — but if the
     device wedges mid-rename, you may need to recover it manually."""
     original = ctx.mixer_name
+    if original == "mixer":
+        # 'mixer' is the factory name: a mixer can have it but can't be
+        # renamed to it, so this test couldn't put the name back.
+        return ("not run: the mixer has the factory name 'mixer', which can't be restored "
+                "after a rename (pass --mixer-name <its name> for a named mixer)")
     temp_name = f"{original}_TEST"
     link = ctx.new_tcp()
     renamed = False
@@ -681,8 +686,10 @@ def test_devicename_roundtrip(ctx):
                 try:
                     revert_link = ctx.new_tcp(timeout=2.0)
                     revert_link.send_message(f"/{root}/set/system/deviceName/", [original])
-                    revert_link.read_message(timeout=2.0)
+                    ack = revert_link.read_message(timeout=2.0)
                     revert_link.close()
+                    if ack.args != [original]:      # a refusal answers with the name that stands
+                        continue
                     print(f"    reverted device name to {original!r} via root {root!r}")
                     reverted = True
                     break

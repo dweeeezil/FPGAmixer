@@ -108,7 +108,7 @@ Sets the level of input 5 going to bus 8 to -24db, and delays it by 2.39ms
 
 `system` has no index: its addresses are `/<name>/<set|get>/system/<setting>`. A trailing slash is allowed and means the same (`system/deviceName/` is `system/deviceName`); controllers send it without one.
 
-- **`deviceName`** (string): the mixer name. A rename is confirmed by a broadcast of the new name under the **old** name (the address the request arrived on); from then on, every message uses the new name. A refused rename (the name breaks a rule, or the value is not a string) is answered to the **sender only** with a `set` carrying the name that stands, followed by an *Error reply*; nobody else hears anything.
+- **`deviceName`** (string): the mixer name. A rename is confirmed by a broadcast of the new name under the **old** name (the name the mixer had when the request arrived, even if the request used `/mixer/`); from then on, every message uses the new name. A refused rename (the name breaks a rule, or the value is not a string) is answered to the **sender only** with a `set` carrying the name that stands, followed by an *Error reply*; nobody else hears anything.
 - **`config`**: not a setting but a request; see *Config*.
 - Other settings the mixer has are listed in the config's `system` block. A setting marked `readOnly` refuses every `set` with an *Error reply*.
 
@@ -252,4 +252,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 ## Change log
 
 - **18 Aug 2026:** first version (set/get, zones, matrix and channel examples, `deviceName`).
-- **4 Oct 2026:** amendments A–H folded in (from the StudioRunner controller's `OSC_Amendments_Proposed.md`, agreed 4 Oct 2026), with the device rules decided alongside them (controller `DECISIONS.md` D33, D37, D38, D39, D50) and in the firmware session: `mixer` is the factory name; the error `path` has no trailing slash; UDP never replies; a malformed `meter/subscribe` gets an error. The `deviceName` example lost its trailing slash (both forms are accepted).
+- **4 Oct 2026:** amendments A–H folded in (from the StudioRunner controller's `OSC_Amendments_Proposed.md`, agreed 4 Oct 2026), with the device rules decided alongside them (controller `DECISIONS.md` D33, D37, D38, D39, D50) and in the firmware session: `mixer` is the factory name; the error `path` has no trailing slash; UDP never replies; a malformed `meter/subscribe` gets an error. The `deviceName` example lost its trailing slash (both forms are accepted). Wording fix: a rename is confirmed under the old *name*, also when the request came through `/mixer/`.

@@ -28,7 +28,8 @@ At the prompt:
 
 Value types are inferred — a number becomes an OSC float, anything else an
 OSC string. Force a type explicitly with i:<int>, f:<float>, or s:<string>.
-Quote a value that has spaces: /mixer/set/system/deviceName/ "FOH mixer"
+Quote a value that has spaces (shlex rules). Device names can't have spaces:
+/mixer/set/system/deviceName FOH
 
 KNOWN LIMITATION: an incoming message that arrives while you're mid-way
 through typing a line will interrupt the terminal's display of what you've
@@ -165,7 +166,8 @@ class Console:
             "  :quit                       exit\n"
             "Value types are inferred: numbers -> float, everything else -> string.\n"
             "Force a type explicitly with i:<int>, f:<float>, or s:<string>.\n"
-            'Quote a value with spaces: /mixer/set/system/deviceName/ "FOH mixer"',
+            'Quote a value with spaces (shlex rules). Rename: /mixer/set/system/deviceName FOH\n'
+            "Errors from the mixer arrive as /<name>/error <path> <reason>.",
             DIM))
 
     # -- receiving ----------------------------------------------------------

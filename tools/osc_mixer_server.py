@@ -23,13 +23,18 @@ made here so you can compare against the real firmware once it exists):
     UDP — is broadcast to ALL connected TCP clients, including whichever
     one sent it. That single broadcast IS the echo/confirmation; there's no
     separate "echo the sender, sync everyone else" split.
-  - deviceName: the doc's own caveat ("this may cause sync issues if
-    controllers don't know to start listening to the new address space")
-    implies the address root genuinely changes. So it does: the
-    confirmation of a deviceName set goes out under the OLD root (that's
-    the address the request arrived on), and every message after that must
-    use the NEW root — messages still addressed to the old root are logged
-    and ignored, exactly the footgun the doc describes.
+  - Address root (standard: "Mixer name and the /mixer/ alias"): the server
+    answers to its current name AND to the reserved alias 'mixer', on TCP
+    and UDP; any other root is logged and ignored. Everything it sends is
+    under its current name. A mixer never named is called 'mixer'.
+  - deviceName: the address root genuinely changes. The confirmation of an
+    accepted rename is broadcast under the OLD name, and every message after
+    that uses the NEW one; messages still addressed to the old name are
+    ignored (the alias keeps working). Name rules (name_problem): letters,
+    digits, '-', '_', '.', 1-63 bytes, not 'mixer'. A refused rename (or a
+    non-string value) is answered to the sender only with the name that
+    stands, then /<name>/error (D38); over UDP it's only logged. A stored
+    name that breaks the rules (older state files) loads as it is.
   - TCP framing (--tcp-framing, one per port, rules in osc_codec.py):
       * len32 (default): OSC 1.0 stream framing, a 4-byte big-endian size
         before each packet; packets may be bundles, whose messages are
@@ -95,6 +100,7 @@ echoed, logged. A get on a missing path or a branch replies 0.0.
 
 import argparse
 import math
+import re
 import signal
 import socket
 import sys
@@ -110,7 +116,7 @@ from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
 
 from mixer_state import MixerState, split_path, is_device_name, finite_value  # noqa: E402
 
-DEVICE_NAME_KEY = "system/deviceName/"  # mirrors the doc's own literal example format
+DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
 VERBOSE = False
 
@@ -167,15 +173,46 @@ class ClientRegistry:
 # Protocol handling (shared by TCP and UDP paths)
 # ---------------------------------------------------------------------------
 
+ALIAS = "mixer"            # the reserved address root every mixer answers to
+NAME_MAX_BYTES = 63         # a Bonjour label
+_NAME_CHARS = re.compile(r"[A-Za-z0-9._-]+")
+
+
 def split_after_mixer_name(address, mixer_name):
-    """('set'|'get', 'zone/index/module...') or (None, None) if the address
-    isn't under the currently-active root."""
-    prefix = f"/{mixer_name}/"
-    if not address.startswith(prefix):
+    """(kind, tail) for '/<root>/<kind>/<tail>' when <root> is the current
+    name or the alias; (None, None) for any other root. kind is 'set',
+    'get', ...; tail is everything after it (may be empty)."""
+    root, sep, rest = address[1:].partition("/") if address.startswith("/") else ("", "", "")
+    if not sep or root not in (mixer_name, ALIAS):
         return None, None
-    rest = address[len(prefix):]
     kind, _, tail = rest.partition("/")
     return kind, tail
+
+
+def name_problem(name):
+    """Why `name` can't be the mixer name (standard: "Mixer name and the
+    /mixer/ alias"), or None if it can. 'mixer' is the factory name, which a
+    mixer may have but can't be renamed to."""
+    if not isinstance(name, str):
+        return "the name must be a string"
+    if not name:
+        return "the name can't be empty"
+    if len(name.encode("utf-8")) > NAME_MAX_BYTES:
+        return f"the name can be at most {NAME_MAX_BYTES} bytes"
+    if name == ALIAS:
+        return f"'{ALIAS}' is reserved"
+    if not _NAME_CHARS.fullmatch(name):
+        return "use only letters, digits, '-', '_' and '.'"
+    return None
+
+
+def send_error(reply, state, path, reason, via):
+    """Amendment G: tell the requester why its request was refused. reply is
+    the requester's send function (TCP), or None (UDP: logged only, since UDP
+    never replies)."""
+    log(f"    [{via}] refused {path}: {reason}")
+    if reply is not None:
+        reply(encode_message(f"/{state.mixer_name}/error", [path, reason]))
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +349,27 @@ def apply_set(tail, value, state, registry, via):
     registry.broadcast(encode_message(f"/{state.mixer_name}/set/{tail}", [value]))
 
 
-def handle_devicename_change(new_name, state, registry, via):
+def handle_devicename_change(new_name, state, registry, reply, via):
+    """A rename. Accepted: broadcast under the old name, then the new name
+    applies (the alias keeps working). Refused (D33 rules): the sender alone
+    gets the name that stands, then an error reply (D38); nobody else hears
+    anything."""
     old_name = state.mixer_name
-    confirm_addr = f"/{old_name}/set/{DEVICE_NAME_KEY}"
-    registry.broadcast(encode_message(confirm_addr, [new_name]))
+    why = name_problem(new_name)
+    if why is not None:
+        if reply is not None:
+            reply(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [old_name]))
+        send_error(reply, state, DEVICE_NAME_KEY, why, via)
+        return
+    registry.broadcast(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [new_name]))
     state.rename(new_name)
     log(f"    *** [{via}] device name changed: {old_name!r} -> {new_name!r}. "
-          f"Address root is now /{new_name}/ — messages under /{old_name}/ will be ignored. ***")
+          f"Address root is now /{new_name}/ (and /{ALIAS}/); /{old_name}/ is ignored. ***")
 
 
-def handle_set(tail, args, state, registry, via):
+def handle_set(tail, args, state, registry, reply, via):
+    """Every set, TCP and UDP. reply sends to the requester (TCP), or is None
+    (UDP, which never replies)."""
     if not args:
         log(f"    [{via}] set with no value for {tail!r}, ignoring")
         return
@@ -330,10 +378,7 @@ def handle_set(tail, args, state, registry, via):
     value = args[0]
 
     if is_device_name(tail):
-        if isinstance(value, str):
-            handle_devicename_change(value, state, registry, via)
-        else:
-            log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
+        handle_devicename_change(value, state, registry, reply, via)
         return
 
     apply_set(tail, value, state, registry, via)
@@ -353,7 +398,8 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
               f"(currently listening as {state.mixer_name!r})")
         return
     if kind == "set":
-        handle_set(tail, msg.args, state, registry, via)
+        handle_set(tail, msg.args, state, registry,
+                   lambda packet: registry.send(reply_sock, packet), via)
     elif kind == "get":
         handle_get(tail, state, registry, reply_sock, via)
     else:
@@ -461,18 +507,7 @@ def handle_udp_message(msg, state, registry, via):
     if kind != "set":
         log(f"    [{via}] ignoring non-set command over UDP (write-only): {msg.address!r}")
         return
-    if not msg.args:
-        return
-    value = msg.args[0]
-
-    if is_device_name(tail):
-        if isinstance(value, str):
-            handle_devicename_change(value, state, registry, via)
-        else:
-            log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
-        return
-
-    apply_set(tail, value, state, registry, via)
+    handle_set(tail, msg.args, state, registry, None, via)   # None: UDP never replies
 
 
 # ---------------------------------------------------------------------------

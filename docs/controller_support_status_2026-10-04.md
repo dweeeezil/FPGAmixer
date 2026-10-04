@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: steps 0–1 done** (standard approved; shared codec and TCP framing, verified on the PC, not yet on the board). Next: step 2 (alias and name rules).
+**Status: steps 0–2 done** (standard approved; shared codec and TCP framing; alias and name rules), verified on the PC, not yet on the board. Next: step 3 (error reply and value rules).
 
 ---
 
@@ -85,9 +85,33 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 
 **Not verified:** anything on the board. The board's image still runs the unframed server; the board check is part of step 8 (deploy, `osc_mixer_test.py` from the Pi with `--tcp-framing len32`).
 
+### Step 2: the `/mixer/` alias and the name rules (F2, F9) — done, PC only
+
+**What.**
+
+- The server answers to its current name **and** `/mixer/`, on TCP and UDP; any other root is ignored. Replies, echoes and broadcasts always use the current name.
+- Name rules (`name_problem`, D33): letters, digits, `-`, `_`, `.`; 1–63 bytes; not `mixer`.
+- An accepted rename is broadcast under the old name, then the new name applies; the old name is ignored, and the alias keeps working.
+- A refused rename (rule broken, or a non-string value) answers the **sender only**: `set system/deviceName <name that stands>`, then `/<name>/error system/deviceName <reason>` (D38, amendment G). Nobody else hears anything. Over UDP it's only logged (C7).
+- `mixer` stays a valid *current* name: a fresh board is `mixer` (C6). A stored name that breaks the rules (e.g. `FOH mixer` from before) loads as it is.
+
+**Seam.** The protocol layer's entry: one address parser for both transports, and one `handle_set` path for TCP and UDP (UDP used to have its own copy of the set logic). `send_error` is the error reply in its minimal form; step 3 uses it for every refusal.
+
+**Changed on the wire:** the rename confirmation's address is now `.../set/system/deviceName`, without the trailing slash the old server added. Requests may still carry one. The app accepts both (controller D34).
+
+**Standard:** one wording fix (change log updated). It said a rename is confirmed under "the address the request arrived on"; it is the old *name*, also when the request came through `/mixer/`. The mock, the app and this server all do that.
+
+**Tools:** `osc_mixer_test.py`'s destructive rename test now reports "not run" for a mixer named `mixer` (it couldn't rename it back), and its cleanup checks that the revert was accepted instead of trusting any reply. `osc_console.py`'s help no longer suggests a name with a space.
+
+**Verified (PC), measured:**
+
+- `test_osc_mixer_server.py`: 23 tests (10 new): alias and name on TCP and UDP, other roots silent, rename confirmed under the old name and seen by a second client, the new name and the alias answering afterwards, 63 bytes allowed, eight refused values (each: current name + error to the sender, silence for a second client, name unchanged), UDP refusal only logged, the factory name, a stored invalid name, the rename persisted.
+- Mutation test: 15 planted bugs; 13 caught at once. Of the two survivors, one (no explicit empty-name check) is caught by the character rule anyway, so the test now pins its message as well and catches it; the other (a no-op reply function for UDP) behaves exactly like `None` and can't be observed.
+- `osc_mixer_test.py` against a local server named `FOH`: 22/22, including the destructive rename.
+
 ## 5. Open items
 
 - The board image needs the meter/Bonjour modules added to the `fpgamixer-osc` recipe (`osc_codec.py` is in since step 1), and `avahi-daemon` in the image (step 7).
 - `osc_mixer_test.py` still exercises `inputChannel`, which step 3 refuses (C2). Its tests move to advertised paths in step 3 and gain F1–F9 coverage in step 8.
-- `osc_console.py`'s help still shows `deviceName "FOH mixer"` (a space, invalid from step 2); fixed in step 2.
+- **The board's current name.** The service starts with `--mixer-name mixer`; if the board's state file still has `mixer`, it is the factory name (fine). Renaming it is the user's call; the app works either way through the alias.
 - `MockProfile.hardwareToday` is 12 × 12 (Phase 8); the board on this branch is 20 × 20. The config JSON follows the PL's CONFIG register, so a comparison with the mock is by shape, not size.

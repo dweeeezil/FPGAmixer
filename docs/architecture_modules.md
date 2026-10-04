@@ -178,6 +178,7 @@ Adding a block = one more SmartConnect master port, one more window, one more re
 ### 4.2 Software: OSC zone → backend → window
 
 - **Below the protocol: transport.** `tools/osc_codec.py` turns bytes into OSC messages and back. A TCP connection carries packets in one framing per port (`--tcp-framing len32|none`, default `len32`, the standard's "TCP framing"); a UDP datagram is one packet. A packet is a message or a bundle, and the protocol layer sees only messages, in order. Nothing above this layer knows the framing; `ClientRegistry` frames every TCP send.
+- **Address root.** One parser (`split_after_mixer_name`) accepts the current name or the alias `mixer`, for TCP and UDP alike; the name rules are `name_problem`. Every `set` from either transport takes one path (`handle_set`), with a reply function for TCP and none for UDP, which never replies.
 - The OSC address `/<name>/<set|get>/<zone>/<index>/<module>` selects a **zone**; each zone is served by one **backend** that knows one block type and one register window.
 - Today: zone `inputMatrix` → `MatrixBackend` (in `BACKENDS`, `tools/osc_mixer_server.py`) → `MatrixHW` (`tools/mixer_hw.py`) → window `matrix`, 0x8000_0000. Zones with no backend are stored and echoed generically.
 - Adding a block on the software side = a window entry in `mixer_hw.WINDOWS`, a `Backend` subclass, and one entry in `build_backends()`.
