@@ -63,6 +63,7 @@ class Context:
     inputs: int
     buses: int
     framing: str = DEFAULT_FRAMING
+    scratch_output: int = 19
 
     def new_tcp(self, timeout=None) -> TCPLink:
         return TCPLink(self.host, self.tcp_port, timeout or self.timeout, self.framing).connect()
@@ -76,6 +77,15 @@ class Context:
 
     def addr(self, kind, zone, index, module):
         return f"/{self.mixer_name}/{kind}/{zone}/{index}/{module}"
+
+    def scratch_path(self, k):
+        """A parameter the tests may change freely: the level of crosspoint
+        input k -> output --scratch-output (default 19, an AVB output nothing
+        listens to on the bench), so the suite never touches what is heard."""
+        return f"inputMatrix/{k}_{self.scratch_output}/level"
+
+    def scratch(self, kind, k):
+        return f"/{self.mixer_name}/{kind}/{self.scratch_path(k)}"
 
 
 def split_address(ctx: Context, address: str):
@@ -153,7 +163,7 @@ def test_tcp_connect(ctx):
 def test_udp_socket_send(ctx):
     link = ctx.new_udp()
     try:
-        link.send_message(ctx.addr("get", "inputChannel", 0, "level"))
+        link.send_message(ctx.scratch("get", 0))
     finally:
         link.close()
     return "sendto() did not raise (UDP is write-only, so this only checks the local socket)"
@@ -163,11 +173,11 @@ def test_udp_socket_send(ctx):
 # Basic correctness
 # ---------------------------------------------------------------------------
 
-@suite.register("set_get_echo_input_channel_level")
+@suite.register("set_get_echo_level")
 def test_set_echo(ctx):
     link = ctx.new_tcp()
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         link.send_message(target, [-6.0])
         reply = link.read_message()
         assert reply.address == target, f"echoed address {reply.address!r} != sent {target!r}"
@@ -187,14 +197,14 @@ def test_set_echo(ctx):
 def test_get_reply_style(ctx):
     link = ctx.new_tcp()
     try:
-        set_addr = ctx.addr("set", "inputChannel", 0, "level")
+        set_addr = ctx.scratch("set", 0)
         link.send_message(set_addr, [-3.5])
         link.read_message()  # absorb the set's own echo
 
-        link.send_message(ctx.addr("get", "inputChannel", 0, "level"))
+        link.send_message(ctx.scratch("get", 0))
         reply = link.read_message()
         kind, zim = split_address(ctx, reply.address)
-        assert zim == "inputChannel/0/level", (
+        assert zim == ctx.scratch_path(0), (
             f"reply address {reply.address!r} doesn't reference the request"
         )
         assert len(reply.args) == 1, f"expected a single value back, got {reply.args!r}"
@@ -205,23 +215,25 @@ def test_get_reply_style(ctx):
 
 @suite.register("matrix_crosspoint_set_echo")
 def test_matrix_crosspoint(ctx):
+    """The standard's example: level then delay on one crosspoint. Today's
+    matrix has no delay module, so the delay must be refused with an error
+    reply (amendment G), not stored and echoed."""
     link = ctx.new_tcp()
     try:
-        idx = "0_0"
-        level_addr = ctx.addr("set", "inputMatrix", idx, "level")
+        level_addr = ctx.scratch("set", 5)
         link.send_message(level_addr, [-24.0])
         reply = link.read_message()
         assert reply.address == level_addr, f"got {reply.address!r}"
         assert abs(reply.args[0] - (-24.0)) <= ctx.epsilon, f"level echo off by {reply.args[0] + 24.0:.4f}"
 
-        delay_addr = ctx.addr("set", "inputMatrix", idx, "delay")
-        link.send_message(delay_addr, [2.39])
+        delay_path = ctx.scratch_path(5).replace("/level", "/delay")
+        link.send_message(f"/{ctx.mixer_name}/set/{delay_path}", [2.39])
         reply = link.read_message()
-        assert reply.address == delay_addr, f"got {reply.address!r}"
-        assert abs(reply.args[0] - 2.39) <= ctx.epsilon, f"delay echo off by {reply.args[0] - 2.39:.4f}"
+        assert reply.address.endswith("/error") and reply.args[:1] == [delay_path], (
+            f"expected an error reply for {delay_path}, got {reply}")
     finally:
         link.close()
-    return f"crosspoint {idx}: level and delay both echoed correctly"
+    return f"level echoed; delay refused: {reply.args[1]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +249,7 @@ def test_pipelined_order(ctx):
     n = 20
     link = ctx.new_tcp()
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         values = [round(-40.0 + i * 2.0, 2) for i in range(n)]
         for v in values:
             link.send_message(target, [v])
@@ -262,13 +274,13 @@ def test_multi_client_broadcast(ctx):
     a = ctx.new_tcp()
     b = ctx.new_tcp()
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         # B's connect() returning only means the kernel finished the TCP
         # handshake; the server may not have accepted it yet, and no server can
         # broadcast to a connection still in its listen backlog. One round trip
         # on B (a get, as a controller does to sync on connect) proves the
         # server has B before A's change -- without it this test is racy.
-        b.send_message(ctx.addr("get", "inputChannel", 0, "level"), [])
+        b.send_message(ctx.scratch("get", 0), [])
         b.read_message()
         a.send_message(target, [-9.0])
         reply_a = a.read_message()
@@ -294,7 +306,7 @@ def test_udp_then_tcp_get(ctx):
     value = -17.25
     udp = ctx.new_udp()
     try:
-        udp.send_message(ctx.addr("set", "inputChannel", 1, "level"), [value])
+        udp.send_message(ctx.scratch("set", 1), [value])
         time.sleep(0.2)  # UDP set is fire-and-forget; give it time to land
     finally:
         udp.close()
@@ -306,7 +318,7 @@ def test_udp_then_tcp_get(ctx):
     # return that instead.
     tcp = ctx.new_tcp()
     try:
-        tcp.send_message(ctx.addr("get", "inputChannel", 1, "level"))
+        tcp.send_message(ctx.scratch("get", 1))
         reply = tcp.read_message()
         assert reply.args and abs(reply.args[0] - value) <= ctx.epsilon, (
             f"TCP get after UDP set returned {reply.args!r}, expected ~{value}"
@@ -320,13 +332,13 @@ def test_udp_then_tcp_get(ctx):
 def test_set_then_get_race(ctx):
     link = ctx.new_tcp()
     try:
-        zim = "inputChannel/2/level"
-        target_set = ctx.addr("set", "inputChannel", 2, "level")
+        zim = ctx.scratch_path(2)
+        target_set = ctx.scratch("set", 2)
         value = -1.0
         # Send set and get back to back, no wait in between — checks whether
         # the get reflects the just-sent value rather than a stale one.
         link.send_message(target_set, [value])
-        link.send_message(ctx.addr("get", "inputChannel", 2, "level"))
+        link.send_message(ctx.scratch("get", 2))
         replies = [link.read_message(), link.read_message()]
         set_echo = next((r for r in replies if r.address == target_set), None)
         assert set_echo is not None, f"missing set-echo among replies: {replies}"
@@ -351,7 +363,7 @@ def test_set_then_get_race(ctx):
 def test_concatenated_single_write(ctx):
     link = ctx.new_tcp()
     try:
-        a1 = ctx.addr("set", "inputChannel", 0, "level")
+        a1 = ctx.scratch("set", 0)
         blob = link.frame(encode_message(a1, [-10.0])) + link.frame(encode_message(a1, [-20.0]))
         link.send_raw(blob)  # one sendall() -> likely one TCP segment on the wire
         r1 = link.read_message(timeout=3.0)
@@ -368,7 +380,7 @@ def test_fragmented_message(ctx):
     """Split one message at a few different byte offsets and dribble it out
     over multiple delayed writes, to check the receiver waits for the rest
     rather than acting on a partial packet."""
-    target = ctx.addr("set", "inputChannel", 0, "level")
+    target = ctx.scratch("set", 0)
     full = ctx.frame(encode_message(target, [-5.5]))   # len32: split points 1 and 4 are in the size
     split_points = sorted(set([1, 4, len(full) // 2, len(full) - 1]))
     failures = []
@@ -391,7 +403,7 @@ def test_fragmented_message(ctx):
 
 @suite.register("byte_at_a_time_extreme_fragmentation")
 def test_byte_at_a_time(ctx):
-    target = ctx.addr("set", "inputChannel", 0, "level")
+    target = ctx.scratch("set", 0)
     full = ctx.frame(encode_message(target, [-1.5]))
     link = ctx.new_tcp()
     try:
@@ -409,14 +421,14 @@ def test_byte_at_a_time(ctx):
 def test_malformed_type_tag_recovery(ctx):
     link = ctx.new_tcp()
     try:
-        bad_addr = ctx.addr("set", "inputChannel", 0, "level")
+        bad_addr = ctx.scratch("set", 0)
         # 'z' isn't a type tag this standard uses.
         bad_packet = osc_string(bad_addr) + osc_string(",z") + b"\x00\x00\x00\x00"
         link.send_packet(bad_packet)
         time.sleep(0.2)
         link.drain(0.3)  # discard whatever (if anything) the device said about the bad packet
 
-        good = ctx.addr("set", "inputChannel", 0, "level")
+        good = ctx.scratch("set", 0)
         link.send_message(good, [-2.0])
         reply = link.read_message(timeout=3.0)
         assert reply.address == good and abs(reply.args[0] - (-2.0)) <= ctx.epsilon, (
@@ -431,7 +443,7 @@ def test_malformed_type_tag_recovery(ctx):
 def test_truncated_arg_recovery(ctx):
     link = ctx.new_tcp()
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         # Header claims a float follows, but only 2 of 4 bytes are ever sent.
         # len32: the size prefix delimits the bad packet, so the device drops
         # it and stays in step. none: the device can't tell where it ends, so
@@ -441,7 +453,7 @@ def test_truncated_arg_recovery(ctx):
         time.sleep(0.3)
         link.drain(0.3)
 
-        good = ctx.addr("set", "inputChannel", 0, "level")
+        good = ctx.scratch("set", 0)
         link.send_message(good, [-8.25])
         try:
             reply = link.read_message(timeout=3.0)
@@ -464,7 +476,7 @@ def test_out_of_range_values(ctx):
     link = ctx.new_tcp()
     observations = []
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         cases = [("NaN", float("nan")), ("+inf", float("inf")),
                  ("-inf", float("-inf")), ("huge", 1e30)]
         for label, value in cases:
@@ -491,16 +503,17 @@ def test_invalid_matrix_index(ctx):
     link = ctx.new_tcp()
     try:
         bogus_idx = f"{ctx.inputs + 500}_{ctx.buses + 500}"
+        bogus_path = f"inputMatrix/{bogus_idx}/level"
         link.send_message(ctx.addr("set", "inputMatrix", bogus_idx, "level"), [-6.0])
         try:
             reply = link.read_message(timeout=2.0)
-            observation = f"out-of-range index got a reply: {reply}"
         except TimeoutError:
-            observation = "out-of-range index: no reply within 2s (silently ignored)"
-            link.drain(0.2)
+            raise AssertionError("out-of-range index: no reply within 2s (expected an error reply)")
+        assert reply.address.endswith("/error") and reply.args[:1] == [bogus_path], (
+            f"expected an error reply for {bogus_path}, got {reply}")
+        observation = f"out-of-range index refused: {reply.args[1]!r}"
 
-        good_idx = "0_0"
-        link.send_message(ctx.addr("set", "inputMatrix", good_idx, "level"), [-3.0])
+        link.send_message(ctx.scratch("set", 0), [-3.0])
         reply = link.read_message(timeout=3.0)
         assert abs(reply.args[0] - (-3.0)) <= ctx.epsilon, f"didn't recover: {reply}"
     finally:
@@ -517,7 +530,7 @@ def test_connection_churn(ctx):
         link.close()
     fresh = ctx.new_tcp()
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         fresh.send_message(target, [-4.0])
         reply = fresh.read_message(timeout=3.0)
         assert abs(reply.args[0] - (-4.0)) <= ctx.epsilon, f"got {reply}"
@@ -535,8 +548,8 @@ def test_udp_double_message(ctx):
     it applied the first message."""
     udp = ctx.new_udp()
     try:
-        addr1 = ctx.addr("set", "inputChannel", 3, "level")
-        addr2 = ctx.addr("set", "inputChannel", 4, "level")
+        addr1 = ctx.scratch("set", 3)
+        addr2 = ctx.scratch("set", 4)
         blob = encode_message(addr1, [-11.0]) + encode_message(addr2, [-22.0])
         udp.send_raw(blob)
         time.sleep(0.3)
@@ -549,9 +562,9 @@ def test_udp_double_message(ctx):
     # the 1-request/1-reply pairing this test relies on.
     tcp = ctx.new_tcp()
     try:
-        tcp.send_message(ctx.addr("get", "inputChannel", 3, "level"))
+        tcp.send_message(ctx.scratch("get", 3))
         r1 = tcp.read_message()
-        tcp.send_message(ctx.addr("get", "inputChannel", 4, "level"))
+        tcp.send_message(ctx.scratch("get", 4))
         r2 = tcp.read_message()
         v1 = r1.args[0] if r1.args else None
         v2 = r2.args[0] if r2.args else None
@@ -571,8 +584,8 @@ def test_tcp_bundle(ctx):
         return f"not applicable with --tcp-framing {ctx.framing} (no bundles)"
     link = ctx.new_tcp()
     try:
-        a = ctx.addr("set", "inputChannel", 5, "level")
-        b = ctx.addr("set", "inputChannel", 6, "level")
+        a = ctx.scratch("set", 5)
+        b = ctx.scratch("set", 6)
         link.send_packet(encode_bundle([encode_message(a, [-13.0]), encode_message(b, [-14.0])]))
         r1 = link.read_message(timeout=3.0)
         r2 = link.read_message(timeout=3.0)
@@ -587,8 +600,8 @@ def test_tcp_bundle(ctx):
 def test_udp_bundle(ctx):
     udp = ctx.new_udp()
     try:
-        a = ctx.addr("set", "inputChannel", 3, "level")
-        b = ctx.addr("set", "inputChannel", 4, "level")
+        a = ctx.scratch("set", 3)
+        b = ctx.scratch("set", 4)
         udp.send_raw(encode_bundle([encode_message(a, [-15.0]), encode_message(b, [-16.0])]))
         time.sleep(0.3)
     finally:
@@ -597,7 +610,7 @@ def test_udp_bundle(ctx):
     try:
         got = []
         for ch in (3, 4):
-            tcp.send_message(ctx.addr("get", "inputChannel", ch, "level"))
+            tcp.send_message(ctx.scratch("get", ch))
             got.append(tcp.read_message().args[0])
         assert abs(got[0] + 15.0) <= ctx.epsilon and abs(got[1] + 16.0) <= ctx.epsilon, (
             f"bundle over UDP not applied: got {got}, expected [-15.0, -16.0]")
@@ -616,7 +629,7 @@ def test_latency_profile(ctx):
     link = ctx.new_tcp()
     times = []
     try:
-        target = ctx.addr("set", "inputChannel", 0, "level")
+        target = ctx.scratch("set", 0)
         for i in range(n):
             v = -30.0 + (i % 10)
             t0 = time.monotonic()
@@ -659,7 +672,7 @@ def test_devicename_roundtrip(ctx):
         reply = link.read_message(timeout=3.0)
         renamed = True
 
-        probe_new = f"/{temp_name}/set/inputChannel/0/level"
+        probe_new = f"/{temp_name}/set/{ctx.scratch_path(0)}"
         link.send_message(probe_new, [-1.0])
         new_name_works = False
         try:
@@ -668,7 +681,7 @@ def test_devicename_roundtrip(ctx):
         except TimeoutError:
             pass
 
-        probe_old = f"/{original}/set/inputChannel/0/level"
+        probe_old = f"/{original}/set/{ctx.scratch_path(0)}"
         link.send_message(probe_old, [-1.0])
         old_name_still_works = False
         try:
@@ -715,6 +728,9 @@ def build_arg_parser():
                    help="TCP framing the mixer uses: len32 (default) or none (older firmware)")
     p.add_argument("--timeout", type=float, default=2.0, help="default per-op timeout in seconds")
     p.add_argument("--epsilon", type=float, default=0.01, help="float round-trip tolerance")
+    p.add_argument("--scratch-output", type=int, default=19,
+                   help="matrix output whose crosspoints the tests may change (default 19: an AVB "
+                        "output nothing listens to on the bench); inputs 0-6 into it are used")
     p.add_argument("--inputs", type=int, default=8, help="number of input channels, for picking safe test indices")
     p.add_argument("--buses", type=int, default=8, help="number of buses, for picking safe test indices")
     p.add_argument("--only", nargs="*", help="only run tests whose name contains any of these substrings")
@@ -738,7 +754,8 @@ def main():
 
     ctx = Context(host=args.host, tcp_port=args.tcp_port, udp_port=args.udp_port,
                   mixer_name=args.mixer_name, timeout=args.timeout, epsilon=args.epsilon,
-                  inputs=args.inputs, buses=args.buses, framing=args.tcp_framing)
+                  inputs=args.inputs, buses=args.buses, framing=args.tcp_framing,
+                  scratch_output=args.scratch_output)
 
     print(f"Target: {ctx.host}  TCP:{ctx.tcp_port} ({ctx.framing})  UDP:{ctx.udp_port}  "
           f"mixer name: {ctx.mixer_name!r}\n")

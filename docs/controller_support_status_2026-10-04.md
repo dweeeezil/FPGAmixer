@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: steps 0–2 done** (standard approved; shared codec and TCP framing; alias and name rules), verified on the PC, not yet on the board. Next: step 3 (error reply and value rules).
+**Status: steps 0–3 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules), verified on the PC, not yet on the board. Next: step 4 (config reply and snapshot ordering).
 
 ---
 
@@ -109,9 +109,37 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 - Mutation test: 15 planted bugs; 13 caught at once. Of the two survivors, one (no explicit empty-name check) is caught by the character rule anyway, so the test now pins its message as well and catches it; the other (a no-op reply function for UDP) behaves exactly like `None` and can't be observed.
 - `osc_mixer_test.py` against a local server named `FOH`: 22/22, including the destructive rename.
 
+### Step 3: error reply and value rules (F8, F9) — done, PC only
+
+**What.**
+
+- **The parameter model** (`tools/mixer_params.py`, new): `ModuleSpec` (type, unit, min, max, default, options, group, read-only, and the value rule `apply`), `ZoneSpec` (shape and module list), `Model.resolve(tail)` (→ a parameter with a canonical path, or `Refused(path, reason)`). No sockets, no hardware.
+- **Backends describe themselves** (`Backend.describe()`); `MatrixBackend` says: matrix `n_in × n_out`, module `level`, float dB, −90 to the gain ceiling (read from the window's CONFIG with `--hw`: Q2.16 → 6.0205 dB), default −90 (off), group `level`. `build_model` assembles the model from the backends plus `SYSTEM_SETTINGS` (`deviceName` string, default `mixer`; `sampleRate` enum `[48000]`, read-only). Step 4 builds the config JSON from the same model.
+- **Only what the model names is accepted** (C2). Set and get of anything else is refused.
+- **Error reply** `/<name>/error <path> <reason>`, to the TCP requester, for: unknown path (zone, index, module or setting; `get` no longer answers 0.0), `set` without a value, wrong kind (string for a number, blob, …), read-only setting, enum value outside `options`, invalid name (step 2). Over UDP: logged only.
+- **Value rules** (D37): non-finite remapped (NaN, −inf → −99.9; +inf → +99.9), then clamped to the module's range; bool snapped (≥ 0.5 → 1); int rounded, halves away from zero (as the mock's Swift `rounded()`); enum checked against `options`; result rounded to float32, so stored, echoed and snapshot values agree (D30). Clamping is not an error: the echo carries the applied value.
+- **Canonical paths:** `inputMatrix/01_002/level/` resolves to `inputMatrix/1_2/level`, which is what is stored, echoed and named in errors.
+- **Startup:** stored crosspoint levels are brought inside the rules (an old −99.9 or −120 becomes −90, 50 becomes the ceiling; a non-number gets the reset routing) and logged.
+
+**Seam.** `Backend.describe()` is the new seam: a block's software side now carries its own description, so adding a block adds its parameters, validation and (step 4) config in one place. `Backend.apply(index, module, value)` only drives hardware: it gets a canonical index and an already-accepted value.
+
+**State file:** format unchanged (§4.2). Values for paths the model doesn't name (old `inputChannel/0/level`, `inputMatrix/0_0/delay`) stay in the file, untouched and unreachable; tested.
+
+**Behaviour changes a user could notice:** `level` below −90 now echoes −90 (it used to echo the value sent, e.g. −120, while applying off); `inputChannel`, `delay` and other paths with no hardware are refused instead of stored; `get` of anything unknown is an error, not 0.0.
+
+**Tools:** `osc_mixer_test.py` no longer uses `inputChannel`. Its tests change only "scratch" crosspoints, input 0–6 → output `--scratch-output` (default 19, an AVB output nothing listens to on the bench), so a run on the board doesn't touch what is heard. `matrix_crosspoint_set_echo` now expects the `delay` to be refused; `invalid_matrix_index_handling` expects an error reply. `set_get_echo_input_channel_level` is now `set_get_echo_level`.
+
+**Verified (PC), measured:**
+
+- `test_mixer_params.py` (new): 18 tests, the value rules per type, defaults, resolution and its refusal paths, the model's consistency checks.
+- `test_osc_mixer_server.py`: 40 tests (17 new): error replies for set and get of six kinds of unknown path, wrong kind, missing value, read-only, clamping with the applied value echoed, canonical paths in echo, get and state file, UDP refusals only logged, the reset routing, an old state file (values brought inside the rules, unadvertised values kept), a conflicting state file, and in-process tests of `MatrixBackend` against a fake hardware window (write order out/in, the startup bank, the ceiling from the window geometry).
+- Mutation test: 22 planted bugs in `mixer_params.py`, 16 in the server's set/get/startup code. **A runner bug first made every model mutant look killed**: two test modules were passed as one argument, so every run failed on import. Found from the identical error counts, fixed, checked with a no-op mutation (survives), and all re-run. Real result: 2 model survivors (a redundant bool clamp, now deleted; a module checked against all zones' modules instead of its own zone's, now tested) and 5 server survivors (state stored under the raw path, the backend call, the reset routing, the state-conflict refusal: now tested; a read-only branch equivalent to the default, now deleted). All killed after the fixes. Steps 1–2 ran one test module per mutation run, so the bug didn't affect them.
+- `osc_mixer_test.py` against a local server named `FOH`: 22/22, including the destructive rename.
+
 ## 5. Open items
 
 - The board image needs the meter/Bonjour modules added to the `fpgamixer-osc` recipe (`osc_codec.py` is in since step 1), and `avahi-daemon` in the image (step 7).
-- `osc_mixer_test.py` still exercises `inputChannel`, which step 3 refuses (C2). Its tests move to advertised paths in step 3 and gain F1–F9 coverage in step 8.
+- `osc_mixer_test.py` gains F1–F9 coverage in step 8. It needs a matrix with at least 20 outputs for its default scratch output (pass `--scratch-output` otherwise).
+- `sampleRate` is reported as 48000 (nominal). The core actually runs ~+324 ppm fast unless disciplined (roadmap §4); the setting is the nominal rate, which is what the app shows.
 - **The board's current name.** The service starts with `--mixer-name mixer`; if the board's state file still has `mixer`, it is the factory name (fine). Renaming it is the user's call; the app works either way through the alias.
 - `MockProfile.hardwareToday` is 12 × 12 (Phase 8); the board on this branch is 20 × 20. The config JSON follows the PL's CONFIG register, so a comparison with the mock is by shape, not size.

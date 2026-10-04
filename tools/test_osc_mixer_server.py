@@ -12,6 +12,7 @@ the ones mutation-tested.
 """
 
 import json
+import math
 import os
 import shutil
 import socket
@@ -22,10 +23,12 @@ import tempfile
 import time
 import unittest
 
+from mixer_params import float32
 from osc_codec import (Len32Framer, TCPLink, UDPLink, encode_bundle, encode_message,
                        osc_string)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+SIM_MAX_DB = 20.0 * math.log10(((1 << 17) - 1) / (1 << 16))   # the simulator's Q2.16 ceiling
 XP = "/mixer/set/inputMatrix/{}_{}/level"
 
 
@@ -297,6 +300,229 @@ class Names(ServerCase):
         time.sleep(0.6)                      # past the batched save
         with open(os.path.join(self.dir, "state.json")) as f:
             self.assertEqual(json.load(f)["system"]["deviceName"], "Monitor")
+
+
+class ErrorsAndValues(ServerCase):
+    """Error reply (F8, amendment G) and value rules (F9, D37) on a 4 x 4
+    simulated matrix: inputMatrix with level only, plus system settings."""
+
+    def expect_error(self, link, path):
+        m = link.read_message()
+        self.assertEqual(m.address, "/mixer/error", m)
+        self.assertEqual(m.args[0], path)
+        self.assertEqual(len(m.args), 2)
+        self.assertIsInstance(m.args[1], str)
+        return m.args[1]
+
+    def test_unknown_paths_refused_for_set_and_get(self):
+        a, b = self.tcp(), self.tcp()
+        self.get(b, "system/deviceName")
+        for tail, path in [("inputChannel/0/level", "inputChannel/0/level"),     # zone not advertised
+                           ("inputMatrix/4_0/level", "inputMatrix/4_0/level"),   # out of range
+                           ("inputMatrix/0_0/delay/", "inputMatrix/0_0/delay"),  # module not there
+                           ("inputMatrix/0_0", "inputMatrix/0_0"),
+                           ("system/location", "system/location"),
+                           ("test", "test")]:
+            a.send_message(f"/mixer/set/{tail}", [-6.0])
+            self.expect_error(a, path)
+            a.send_message(f"/mixer/get/{tail}")              # no more 0.0 for a missing path
+            self.expect_error(a, path)
+        silent(self, b)                                        # nothing was broadcast
+
+    def test_wrong_kind_and_missing_value(self):
+        c = self.tcp()
+        c.send_message(XP.format(0, 1), ["-6"])
+        self.assertIn("string", self.expect_error(c, "inputMatrix/0_1/level"))
+        c.send_message(XP.format(0, 1), [b"\x01\x02"])
+        self.expect_error(c, "inputMatrix/0_1/level")
+        c.send_message(XP.format(0, 1))
+        self.assertIn("needs a value", self.expect_error(c, "inputMatrix/0_1/level"))
+        self.assertEqual(self.get(c, "inputMatrix/0_1/level"), -90.0)   # untouched
+
+    def test_read_only_and_enum(self):
+        c = self.tcp()
+        self.assertEqual(self.get(c, "system/sampleRate"), 48000.0)
+        c.send_message("/mixer/set/system/sampleRate", [48000.0])
+        self.assertIn("read-only", self.expect_error(c, "system/sampleRate"))
+
+    def test_clamping_is_not_an_error_and_the_echo_carries_the_applied_value(self):
+        c = self.tcp()
+        for sent, applied in ((-120.0, -90.0), (50.0, float32(SIM_MAX_DB)), (float("nan"), -90.0),
+                              (float("inf"), float32(SIM_MAX_DB)), (-3, -3.0), (True, 1.0)):
+            self.assertEqual(self.roundtrip(c, XP.format(1, 2), sent), applied, sent)
+        self.assertEqual(self.get(c, "inputMatrix/1_2/level"), 1.0)
+
+    def test_canonical_path_in_echo_get_and_state(self):
+        c = self.tcp()
+        c.send_message("/mixer/set/inputMatrix/01_002/level/", [-7.0])
+        m = c.read_message()
+        self.assertEqual((m.address, m.args), (XP.format(1, 2), [-7.0]))
+        c.send_message("/mixer/get/inputMatrix/1_2/level/")
+        self.assertEqual(c.read_message().address, XP.format(1, 2))
+        time.sleep(0.6)
+        with open(os.path.join(self.dir, "state.json")) as f:
+            matrix = json.load(f)["inputMatrix"]
+        self.assertEqual(matrix["1_2"], {"level": -7.0})
+        self.assertNotIn("01_002", matrix)
+
+    def test_fresh_start_has_the_reset_routing(self):
+        c = self.tcp()
+        self.assertEqual([self.get(c, f"inputMatrix/{i}_{o}/level") for i, o in ((0, 0), (3, 3), (0, 1), (3, 2))],
+                         [0.0, 0.0, -90.0, -90.0])
+
+    def test_udp_refusals_are_only_logged(self):
+        c = self.tcp()
+        self.get(c, "system/deviceName")
+        u = self.udp()
+        u.send_message("/mixer/set/inputChannel/0/level", [-6.0])
+        u.send_message(XP.format(0, 1), ["x"])
+        u.send_message("/mixer/set/system/sampleRate", [44100.0])
+        silent(self, c)
+        log = self.log()
+        for path in ("inputChannel/0/level", "inputMatrix/0_1/level", "system/sampleRate"):
+            self.assertIn(f"refused {path}", log)
+
+    def test_float32_echo(self):
+        c = self.tcp()
+        self.assertEqual(self.roundtrip(c, XP.format(2, 2), 2.39), float32(2.39))
+
+
+class OldStateFile(ServerCase):
+    """An old state file keeps loading; the format doesn't change (§4.2)."""
+
+    STATE = {"system": {"deviceName": "mixer"},
+             "inputChannel": {"0": {"level": -12.0}},
+             "inputMatrix": {"0_0": {"level": -99.9, "delay": 2.39},
+                             "0_1": {"level": 50.0},
+                             "1_0": {"level": "loud"},
+                             "1_1": {"level": -6.0}}}
+
+    def state(self):
+        time.sleep(0.6)                      # past the batched save
+        with open(os.path.join(self.dir, "state.json")) as f:
+            return json.load(f)
+
+    def test_values_brought_inside_the_rules_and_unadvertised_ones_kept(self):
+        c = self.tcp()
+        self.assertEqual(self.get(c, "inputMatrix/0_0/level"), -90.0)            # was -99.9
+        self.assertEqual(self.get(c, "inputMatrix/0_1/level"), float32(SIM_MAX_DB))  # was 50
+        self.assertEqual(self.get(c, "inputMatrix/1_0/level"), -90.0)            # unusable: reset routing
+        self.assertEqual(self.get(c, "inputMatrix/1_1/level"), -6.0)             # kept
+        c.send_message("/mixer/get/inputChannel/0/level")
+        self.assertEqual(c.read_message().address, "/mixer/error")               # unreachable...
+        tree = self.state()
+        self.assertEqual(tree["inputChannel"], {"0": {"level": -12.0}})          # ...but kept
+        self.assertEqual(tree["inputMatrix"]["0_0"]["delay"], 2.39)
+        self.assertEqual(tree["inputMatrix"]["0_0"]["level"], -90.0)
+        self.assertEqual(tree["inputMatrix"]["1_0"]["level"], -90.0)
+
+    def test_new_values_land_in_the_same_tree(self):
+        c = self.tcp()
+        self.roundtrip(c, XP.format(3, 2), -20.0)
+        self.assertEqual(self.state()["inputMatrix"]["3_2"], {"level": -20.0})
+
+
+class ConflictingStateFile(ServerCase):
+    """A hand-edited file with a value where the tree needs a branch: the
+    crosspoint can't be stored, so a set of it is refused, not lost."""
+
+    STATE = {"inputMatrix": {"0_1": -3.0}}
+
+    def test_set_refused_with_a_reason(self):
+        c = self.tcp()
+        c.send_message(XP.format(0, 1), [-6.0])
+        m = c.read_message()
+        self.assertEqual((m.address, m.args[0]), ("/mixer/error", "inputMatrix/0_1/level"))
+        self.assertIn("can't store", m.args[1])
+        self.assertEqual(self.roundtrip(c, XP.format(0, 2), -6.0), -6.0)   # the rest works
+
+
+class FakeMatrixHW:
+    """Records what a MatrixBackend writes; set_db clamps like mixer_hw."""
+
+    def __init__(self):
+        self.writes, self.banks = [], []
+
+    def set_db(self, out, inp, db):
+        self.writes.append((out, inp, db))
+        return max(db, -90.0)
+
+    def set_bank_db(self, levels):
+        self.banks.append(dict(levels))
+
+    def status(self):
+        return "fake"
+
+
+class InProcess(unittest.TestCase):
+    """Backend and server functions called directly (no sockets)."""
+
+    def setUp(self):
+        import osc_mixer_server as srv
+        from mixer_state import MixerState
+        self.srv = srv
+        self.state = MixerState("mixer", None, log=lambda m: None)
+        srv.log = lambda m: None
+
+    def test_matrix_backend_drives_hw_with_out_and_in_in_that_order(self):
+        hw = FakeMatrixHW()
+        b = self.srv.MatrixBackend("inputMatrix", hw, 3, 2, max_db=6.0)
+        self.assertEqual(b.apply("2_1", "level", -6.0), -6.0)
+        self.assertEqual(hw.writes, [(1, 2, -6.0)])                 # out 1, in 2
+
+    def test_seed_pushes_the_whole_bank_with_the_reset_routing(self):
+        hw = FakeMatrixHW()
+        self.state.set("inputMatrix/1_0/level", -12.0)
+        self.srv.MatrixBackend("inputMatrix", hw, 2, 2, max_db=6.0).seed_and_push(self.state)
+        self.assertEqual(hw.banks, [{(0, 0): 0.0, (1, 1): 0.0, (1, 0): -90.0, (0, 1): -12.0}])
+
+    def test_describe(self):
+        spec, modules = self.srv.MatrixBackend("inputMatrix", None, 3, 2, max_db=6.0).describe()
+        self.assertEqual((spec.kind, spec.rows, spec.cols, spec.modules), ("matrix", 3, 2, ("level",)))
+        self.assertEqual((modules["level"].min, modules["level"].max, modules["level"].default),
+                         (-90.0, 6.0, -90.0))
+
+    def test_hw_ceiling_comes_from_the_window_geometry(self):
+        self.assertAlmostEqual(self.srv.q_ceiling_db(18, 16), 6.02053, places=5)   # Q2.16
+        self.assertAlmostEqual(self.srv.q_ceiling_db(24, 16), 42.144, places=3)
+
+    def test_apply_set_goes_through_the_backend_and_echoes_its_value(self):
+        """The backend may adjust further (e.g. hardware quantisation): the
+        stored value and the echo are the backend's."""
+        srv = self.srv
+
+        class Quantising(srv.MatrixBackend):
+            def apply(self, index, module, value):
+                self.seen = (index, module, value)
+                return -6.5
+
+        sent = []
+
+        class Registry:
+            def broadcast(self, packet):
+                sent.append(packet)
+
+        b = Quantising("inputMatrix", None, 2, 2, max_db=6.0)
+        old = srv.BACKENDS.copy(), srv.MODEL
+        srv.BACKENDS.clear()
+        srv.BACKENDS["inputMatrix"] = b
+        srv.MODEL = srv.build_model(srv.BACKENDS, srv.SYSTEM_SETTINGS)
+        try:
+            srv.apply_set("inputMatrix/1_0/level", -6.4, self.state, Registry(), None, "test")
+        finally:
+            srv.BACKENDS.clear()
+            srv.BACKENDS.update(old[0])
+            srv.MODEL = old[1]
+        self.assertEqual(b.seen, ("1_0", "level", float32(-6.4)))
+        self.assertEqual(self.state.get("inputMatrix/1_0/level"), -6.5)
+        self.assertEqual(sent, [encode_message("/mixer/set/inputMatrix/1_0/level", [-6.5])])
+
+    def test_unset_parameter_reads_as_its_default(self):
+        from mixer_params import ModuleSpec, Param
+        p = Param("inputChannel", "0", "level", ModuleSpec("float", default=-12.0))
+        self.assertEqual(self.srv.current_value(p, self.state), -12.0)
+        self.state.set("inputChannel/0/level", -3.0)
+        self.assertEqual(self.srv.current_value(p, self.state), -3.0)
 
 
 class FactoryName(ServerCase):
