@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: step 0 drafted (merged OSC standard), waiting for the user's review.** No code changed yet.
+**Status: steps 0–1 done** (standard approved; shared codec and TCP framing, verified on the PC, not yet on the board). Next: step 2 (alias and name rules).
 
 ---
 
@@ -43,7 +43,7 @@ The persisted state format (`architecture_modules.md` §4.2) does not change; ol
 
 ## 4. Steps
 
-### Step 0: the merged standard (drafted, awaiting review)
+### Step 0: the merged standard (approved 2026-10-04)
 
 **What.** `docs/FPGA Mixer OSC Standard.md` rewritten as the single source of truth: the original text kept, amendments A–H folded in as sections (command kinds, transports, name and alias, values, set/get, `system`, config and connect ordering, error reply, metering, ping, framing, discovery), and the decisions above (C6–C8) written in. A change log at the end.
 
@@ -56,9 +56,38 @@ The persisted state format (`architecture_modules.md` §4.2) does not change; ol
 - The unnamed state is `mixer` (C6). Amendment B's example already had `"default": "mixer"`.
 - The standard's own `deviceName` example lost its trailing slash; both forms stay accepted.
 
-**After approval:** the user re-copies the standard into `../StudioRunner-controller/docs/protocol/OSC_Standard.md` and retires `OSC_Amendments_Proposed.md` (DECISIONS D52).
+**Approved by the user as drafted, 2026-10-04** (all six points kept). The user re-copies the standard into `../StudioRunner-controller/docs/protocol/OSC_Standard.md` and retires `OSC_Amendments_Proposed.md` (DECISIONS D52).
+
+### Step 1: shared codec and TCP framing (F6) — done, PC only
+
+**What.** `tools/osc_codec.py` is the one codec: messages (encode `f i s b`, decode `f i s b T F N I h d`), packets (a message or a bundle, nested, messages in order, time tags ignored), the two TCP framers behind one interface (`push(bytes) → [packets]`, `frame(packet) → bytes`), and the client links (`TCPLink`, `UDPLink`) the tools share. The server, `osc_mixer_test.py`, `osc_console.py` and `crosspoint_restore_test.py set` use it; their four copies of the codec are gone. Every tool has `--tcp-framing len32|none`, default `len32`.
+
+**Seam.** Transport, below the protocol layer: the server's protocol code only ever sees messages, and `ClientRegistry` frames every TCP send (`architecture_modules.md` §4.2, first bullet). The image recipe `fpgamixer-osc` installs `osc_codec.py` next to the server.
+
+**Behaviour, per framing:**
+
+| Input | `len32` | `none` (as before) |
+|---|---|---|
+| a packet that doesn't decode (truncated, bad type tag, bad bundle) | that packet is dropped and logged; the stream stays in step | truncated: corrupts what follows; malformed: buffer cleared |
+| a bundle | its messages run in order; a bad message drops the whole bundle | not possible |
+| an impossible size (> 4 MB) | the connection is closed (stream position lost); others unaffected | — |
+| an unframed controller on a `len32` port | `/mix` reads as an ~800 MB size: closed at once, never misparsed | — |
+
+UDP (either framing): one packet per datagram, so bundles work. **Changed:** two messages concatenated in one datagram are no longer half-applied (the first one used to be); the datagram isn't a valid packet and is dropped and logged.
+
+**Verified (PC, Windows, Python 3.14), measured:**
+
+- `test_osc_codec.py`: 32 tests (every truncation point, every split of a framed stream, bundles, bad sizes, the client link over a socket pair). Mutation-tested: 14 planted bugs, all caught; the two that survived the first run (a client silently dropping a bad packet; bundle element sizes checked only indirectly) got tests.
+- `test_osc_mixer_server.py` (new): the real server as a subprocess, 13 tests over its sockets in both framings and UDP. Mutation-tested: 9 planted bugs in the server's framing code, all caught.
+- `osc_mixer_test.py` against a local server: **len32 22/22** (21, then the destructive rename on its own), including `truncated_argument_then_recovery`, which never passed before, plus two new bundle tests. **none 21/22**: the truncated test fails by design, as it always has.
+- `crosspoint_restore_test.py set`: 400/400 crosspoints echoed as sent (len32). `osc_console.py`: sends and receives over len32.
+- `test_mixer_state.py`'s SIGTERM test now sends a framed message; it is skipped on Windows, so **not run**. `test_mixer_hw.py` shows 7 errors on Windows with or without this change (`os.O_SYNC`, `/dev/mem`).
+
+**Not verified:** anything on the board. The board's image still runs the unframed server; the board check is part of step 8 (deploy, `osc_mixer_test.py` from the Pi with `--tcp-framing len32`).
 
 ## 5. Open items
 
-- The board image needs `osc_codec.py` (and the meter/Bonjour modules) added to the `fpgamixer-osc` recipe's `SRC_URI`, and `avahi-daemon` to the image (step 7).
+- The board image needs the meter/Bonjour modules added to the `fpgamixer-osc` recipe (`osc_codec.py` is in since step 1), and `avahi-daemon` in the image (step 7).
+- `osc_mixer_test.py` still exercises `inputChannel`, which step 3 refuses (C2). Its tests move to advertised paths in step 3 and gain F1–F9 coverage in step 8.
+- `osc_console.py`'s help still shows `deviceName "FOH mixer"` (a space, invalid from step 2); fixed in step 2.
 - `MockProfile.hardwareToday` is 12 × 12 (Phase 8); the board on this branch is 20 × 20. The config JSON follows the PL's CONFIG register, so a comparison with the mock is by shape, not size.

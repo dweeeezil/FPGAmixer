@@ -71,6 +71,7 @@ There are four kinds of block:
 | Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`); one instance per link (`u_link_stat`, `u_link2_stat`) |
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW` (windows `linkstat` and `linkstat2`; `mixer_hw.py link` / `link2`), `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `MediaClockSteerHW` (ppm ↔ RATE, `mixer_hw.py steer`), `WINDOWS` (address map) |
 | Control plane (software) | `tools/osc_mixer_server.py` | OSC ↔ state tree; zone → `Backend` table (`BACKENDS`) |
+| Control plane (software) | `tools/osc_codec.py` | the one OSC codec (messages, bundles) and the TCP framers (`len32`, `none`), plus the client links the tools use; shared by the server and every tool (since 2026-10-04) |
 | Control plane (software) | `tools/mixer_state.py` | the parameter store: OSC-shaped tree, batched crash-safe saves, `.bak` / corrupt-file recovery (Phase 6) |
 | Front door (AVB, Linux half) | `yocto/meta-fpgamixer/recipes-apps/fpgamixer-gptp/` | Phase 9 (P9.1): ptp4l + phc2sys on `end0` at boot, gPTP profile, role by BMCA (`priority1 250`: follows a better clock, grandmaster by one config value). Knows nothing about audio; the media clock (P9.3/4) reads the PHC's time in the PL |
 | Platform (image) | `yocto/meta-fpgamixer/` | board DT fixes; `fpgamixer-osc` (server as a boot service); `fpgamixer-bench-network` (bench-only addressing, switchable); synced with `tools/` by `scripts/sync_buildhost.sh` |
@@ -176,6 +177,7 @@ Adding a block = one more SmartConnect master port, one more window, one more re
 
 ### 4.2 Software: OSC zone → backend → window
 
+- **Below the protocol: transport.** `tools/osc_codec.py` turns bytes into OSC messages and back. A TCP connection carries packets in one framing per port (`--tcp-framing len32|none`, default `len32`, the standard's "TCP framing"); a UDP datagram is one packet. A packet is a message or a bundle, and the protocol layer sees only messages, in order. Nothing above this layer knows the framing; `ClientRegistry` frames every TCP send.
 - The OSC address `/<name>/<set|get>/<zone>/<index>/<module>` selects a **zone**; each zone is served by one **backend** that knows one block type and one register window.
 - Today: zone `inputMatrix` → `MatrixBackend` (in `BACKENDS`, `tools/osc_mixer_server.py`) → `MatrixHW` (`tools/mixer_hw.py`) → window `matrix`, 0x8000_0000. Zones with no backend are stored and echoed generically.
 - Adding a block on the software side = a window entry in `mixer_hw.WINDOWS`, a `Backend` subclass, and one entry in `build_backends()`.

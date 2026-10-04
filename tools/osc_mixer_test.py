@@ -2,8 +2,8 @@
 """
 OSC bring-up / robustness test suite for the FPGA mixer's OSC control protocol.
 
-Implements the OSC wire format directly (no python-osc or other third-party
-dependency) so that:
+Implements the OSC wire format directly (osc_codec.py, shared with the
+server; no python-osc or other third-party dependency) so that:
   - it runs anywhere with a stock Python 3.8+ interpreter, and
   - the fault-injection tests can build deliberately malformed packets that a
     "correct" OSC library would refuse to construct in the first place.
@@ -17,12 +17,12 @@ PROTOCOL ASSUMPTIONS (per "FPGA Mixer OSC Standard.md", 18 Aug 2026):
     that's described as the sync/confirmation vehicle, or a 'get' prefix
     mirroring the request), so this suite accepts either and reports which
     one it sees (see get_reply_style_probe).
-  - TCP framing: the standard doesn't specify a length prefix or delimiter
-    (e.g. SLIP). This suite assumes messages are simply written back to back
-    on the stream and are self-delimiting from their own OSC structure
-    (address + type-tag string + args, each of which implies its own
-    length). If your firmware actually uses different framing, TCPLink's
-    read_message()/_fill() is the one place to change.
+  - TCP framing (--tcp-framing, matching the server's): len32 (default),
+    the standard's OSC 1.0 4-byte size prefix per packet, or none, the older
+    unframed stream. The codec, the framers and TCPLink/UDPLink are the
+    shared osc_codec.py, which must sit next to this file. Raw fault-
+    injection bytes go through ctx.frame() / link.send_packet() so they are
+    framed like everything else.
   - The system/deviceName example in the standard doc puts the new name in
     the <index> slot with an empty <module> ("/mixer/set/system/deviceName/
     <value>"), not in <module> as the rest of the doc's pattern would
@@ -38,191 +38,14 @@ No dependencies beyond the standard library.
 """
 
 import argparse
-import socket
-import struct
 import statistics
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-
-# ---------------------------------------------------------------------------
-# OSC wire format: encode/decode
-# ---------------------------------------------------------------------------
-
-class OSCIncomplete(Exception):
-    """Buffer doesn't yet hold a complete field. Caller should read more bytes."""
-
-
-class OSCMalformed(Exception):
-    """Buffer holds bytes that are not valid OSC. More bytes won't fix it."""
-
-
-def osc_string(s: str) -> bytes:
-    b = s.encode("ascii") + b"\x00"
-    pad = (-len(b)) % 4
-    return b + b"\x00" * pad
-
-
-def read_osc_string(data: bytes, offset: int):
-    if offset > len(data):
-        raise OSCIncomplete()
-    idx = data.find(b"\x00", offset)
-    if idx == -1:
-        if len(data) - offset > 1024:
-            raise OSCMalformed(f"no NUL terminator within 1024 bytes of offset {offset}")
-        raise OSCIncomplete()
-    length = idx - offset + 1
-    total = ((length + 3) // 4) * 4
-    if offset + total > len(data):
-        raise OSCIncomplete()
-    s = data[offset:idx].decode("ascii", errors="replace")
-    return s, offset + total
-
-
-@dataclass
-class OSCMessage:
-    address: str
-    args: list = field(default_factory=list)
-
-    def __repr__(self):
-        return f"OSCMessage({self.address!r}, {self.args!r})"
-
-
-def encode_message(address: str, args=()) -> bytes:
-    """Build a spec-correct OSC message. For malformed/fault-injection
-    packets, build the bytes directly instead of using this function."""
-    type_tags = ","
-    arg_bytes = b""
-    for a in args:
-        if isinstance(a, bool):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", int(a))
-        elif isinstance(a, float):
-            type_tags += "f"
-            arg_bytes += struct.pack(">f", a)
-        elif isinstance(a, int):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", a)
-        elif isinstance(a, str):
-            type_tags += "s"
-            arg_bytes += osc_string(a)
-        else:
-            raise TypeError(f"unsupported OSC arg type: {type(a)!r}")
-    return osc_string(address) + osc_string(type_tags) + arg_bytes
-
-
-def decode_message(data: bytes, offset: int = 0):
-    """Decode one OSC message starting at `offset`. Returns (message, length_consumed)."""
-    start = offset
-    address, offset = read_osc_string(data, offset)
-    if not address.startswith("/"):
-        raise OSCMalformed(f"address does not start with '/': {address!r}")
-    type_tag_str, offset = read_osc_string(data, offset)
-    if not type_tag_str.startswith(","):
-        raise OSCMalformed(f"type-tag string does not start with ',': {type_tag_str!r}")
-    args = []
-    for tag in type_tag_str[1:]:
-        if tag in ("f", "i"):
-            if offset + 4 > len(data):
-                raise OSCIncomplete()
-            (val,) = struct.unpack_from(">f" if tag == "f" else ">i", data, offset)
-            args.append(val)
-            offset += 4
-        elif tag == "s":
-            s, offset = read_osc_string(data, offset)
-            args.append(s)
-        else:
-            raise OSCMalformed(f"unsupported type tag {tag!r} in {type_tag_str!r}")
-    return OSCMessage(address, args), offset - start
-
-
-# ---------------------------------------------------------------------------
-# Transport
-# ---------------------------------------------------------------------------
-
-class TCPLink:
-    def __init__(self, host, port, timeout=2.0):
-        self.host, self.port, self.timeout = host, port, timeout
-        self.sock = None
-        self.buffer = b""
-
-    def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        self.sock.settimeout(self.timeout)
-        return self
-
-    def close(self):
-        if self.sock is not None:
-            try:
-                self.sock.close()
-            except OSError:
-                pass
-            self.sock = None
-
-    def send_raw(self, data: bytes):
-        self.sock.sendall(data)
-
-    def send_message(self, address, args=()):
-        self.send_raw(encode_message(address, args))
-
-    def _fill(self, timeout):
-        self.sock.settimeout(max(timeout, 0.001))
-        chunk = self.sock.recv(4096)
-        if chunk == b"":
-            raise ConnectionResetError("peer closed the connection")
-        self.buffer += chunk
-
-    def read_message(self, timeout=None) -> OSCMessage:
-        """Block until one complete OSC message can be parsed off the stream,
-        or raise TimeoutError / OSCMalformed."""
-        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
-        while True:
-            try:
-                msg, consumed = decode_message(self.buffer)
-                self.buffer = self.buffer[consumed:]
-                return msg
-            except OSCIncomplete:
-                pass
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"no complete OSC message within timeout "
-                    f"({len(self.buffer)} bytes buffered: {self.buffer[:64]!r})"
-                )
-            self._fill(remaining)
-
-    def drain(self, duration=0.3):
-        """Best-effort: absorb and discard whatever arrives for `duration`
-        seconds. Used to clear stray replies between tests, not to assert
-        anything."""
-        deadline = time.monotonic() + duration
-        self.sock.settimeout(0.05)
-        while time.monotonic() < deadline:
-            try:
-                chunk = self.sock.recv(4096)
-                if not chunk:
-                    break
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-        self.buffer = b""
-
-
-class UDPLink:
-    def __init__(self, host, port):
-        self.addr = (host, port)
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def send_message(self, address, args=()):
-        self.sock.sendto(encode_message(address, args), self.addr)
-
-    def send_raw(self, data: bytes):
-        self.sock.sendto(data, self.addr)
-
-    def close(self):
-        self.sock.close()
+# The codec and the client links are shared with the server (osc_codec.py).
+from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, TCPLink, UDPLink,
+                       encode_message, encode_bundle, make_framer, osc_string)
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +62,17 @@ class Context:
     epsilon: float
     inputs: int
     buses: int
+    framing: str = DEFAULT_FRAMING
 
     def new_tcp(self, timeout=None) -> TCPLink:
-        return TCPLink(self.host, self.tcp_port, timeout or self.timeout).connect()
+        return TCPLink(self.host, self.tcp_port, timeout or self.timeout, self.framing).connect()
 
     def new_udp(self) -> UDPLink:
         return UDPLink(self.host, self.udp_port)
+
+    def frame(self, packet: bytes) -> bytes:
+        """The bytes that carry `packet` on TCP in this run's framing."""
+        return make_framer(self.framing).frame(packet)
 
     def addr(self, kind, zone, index, module):
         return f"/{self.mixer_name}/{kind}/{zone}/{index}/{module}"
@@ -524,7 +352,7 @@ def test_concatenated_single_write(ctx):
     link = ctx.new_tcp()
     try:
         a1 = ctx.addr("set", "inputChannel", 0, "level")
-        blob = encode_message(a1, [-10.0]) + encode_message(a1, [-20.0])
+        blob = link.frame(encode_message(a1, [-10.0])) + link.frame(encode_message(a1, [-20.0]))
         link.send_raw(blob)  # one sendall() -> likely one TCP segment on the wire
         r1 = link.read_message(timeout=3.0)
         r2 = link.read_message(timeout=3.0)
@@ -541,7 +369,7 @@ def test_fragmented_message(ctx):
     over multiple delayed writes, to check the receiver waits for the rest
     rather than acting on a partial packet."""
     target = ctx.addr("set", "inputChannel", 0, "level")
-    full = encode_message(target, [-5.5])
+    full = ctx.frame(encode_message(target, [-5.5]))   # len32: split points 1 and 4 are in the size
     split_points = sorted(set([1, 4, len(full) // 2, len(full) - 1]))
     failures = []
     for split_at in split_points:
@@ -564,7 +392,7 @@ def test_fragmented_message(ctx):
 @suite.register("byte_at_a_time_extreme_fragmentation")
 def test_byte_at_a_time(ctx):
     target = ctx.addr("set", "inputChannel", 0, "level")
-    full = encode_message(target, [-1.5])
+    full = ctx.frame(encode_message(target, [-1.5]))
     link = ctx.new_tcp()
     try:
         for b in full:
@@ -584,7 +412,7 @@ def test_malformed_type_tag_recovery(ctx):
         bad_addr = ctx.addr("set", "inputChannel", 0, "level")
         # 'z' isn't a type tag this standard uses.
         bad_packet = osc_string(bad_addr) + osc_string(",z") + b"\x00\x00\x00\x00"
-        link.send_raw(bad_packet)
+        link.send_packet(bad_packet)
         time.sleep(0.2)
         link.drain(0.3)  # discard whatever (if anything) the device said about the bad packet
 
@@ -605,8 +433,11 @@ def test_truncated_arg_recovery(ctx):
     try:
         target = ctx.addr("set", "inputChannel", 0, "level")
         # Header claims a float follows, but only 2 of 4 bytes are ever sent.
+        # len32: the size prefix delimits the bad packet, so the device drops
+        # it and stays in step. none: the device can't tell where it ends, so
+        # this fails by design (the reason for framing).
         truncated = osc_string(target) + osc_string(",f") + b"\x00\x00"
-        link.send_raw(truncated)
+        link.send_packet(truncated)
         time.sleep(0.3)
         link.drain(0.3)
 
@@ -697,10 +528,11 @@ def test_connection_churn(ctx):
 
 @suite.register("udp_double_message_single_packet")
 def test_udp_double_message(ctx):
-    """Two OSC messages concatenated into ONE UDP datagram. Not a scenario the
-    standard defines (no bundle format is mentioned), so this is purely
-    informational — it reports what happened rather than asserting a
-    specific behavior."""
+    """Two OSC messages concatenated into ONE UDP datagram. Not a valid OSC
+    packet (a packet is one message or one bundle; see udp_bundle_...), so
+    this is informational: it reports what happened. Since the shared codec
+    (osc_codec.py) the reference server drops the whole datagram; before it,
+    it applied the first message."""
     udp = ctx.new_udp()
     try:
         addr1 = ctx.addr("set", "inputChannel", 3, "level")
@@ -729,6 +561,49 @@ def test_udp_double_message(ctx):
                 f"second message landed: {second_ok} (value={v2})")
     finally:
         tcp.close()
+
+
+@suite.register("tcp_bundle_messages_in_order")
+def test_tcp_bundle(ctx):
+    """A bundle of two sets in one framed packet: both applied, echoed in
+    order. Unframed TCP can't carry bundles, so this only runs with len32."""
+    if ctx.framing != "len32":
+        return f"not applicable with --tcp-framing {ctx.framing} (no bundles)"
+    link = ctx.new_tcp()
+    try:
+        a = ctx.addr("set", "inputChannel", 5, "level")
+        b = ctx.addr("set", "inputChannel", 6, "level")
+        link.send_packet(encode_bundle([encode_message(a, [-13.0]), encode_message(b, [-14.0])]))
+        r1 = link.read_message(timeout=3.0)
+        r2 = link.read_message(timeout=3.0)
+        assert r1.address == a and abs(r1.args[0] + 13.0) <= ctx.epsilon, f"first echo wrong: {r1}"
+        assert r2.address == b and abs(r2.args[0] + 14.0) <= ctx.epsilon, f"second echo wrong: {r2}"
+    finally:
+        link.close()
+    return "both messages of a bundle applied and echoed in order"
+
+
+@suite.register("udp_bundle_single_datagram")
+def test_udp_bundle(ctx):
+    udp = ctx.new_udp()
+    try:
+        a = ctx.addr("set", "inputChannel", 3, "level")
+        b = ctx.addr("set", "inputChannel", 4, "level")
+        udp.send_raw(encode_bundle([encode_message(a, [-15.0]), encode_message(b, [-16.0])]))
+        time.sleep(0.3)
+    finally:
+        udp.close()
+    tcp = ctx.new_tcp()     # opened after the send, as in udp_double_message_single_packet
+    try:
+        got = []
+        for ch in (3, 4):
+            tcp.send_message(ctx.addr("get", "inputChannel", ch, "level"))
+            got.append(tcp.read_message().args[0])
+        assert abs(got[0] + 15.0) <= ctx.epsilon and abs(got[1] + 16.0) <= ctx.epsilon, (
+            f"bundle over UDP not applied: got {got}, expected [-15.0, -16.0]")
+    finally:
+        tcp.close()
+    return "both messages of a UDP bundle applied"
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +704,8 @@ def build_arg_parser():
     p.add_argument("--tcp-port", type=int, help="TCP OSC port")
     p.add_argument("--udp-port", type=int, help="UDP OSC port")
     p.add_argument("--mixer-name", default="mixer", help="mixer name in the OSC address root (default: mixer)")
+    p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
+                   help="TCP framing the mixer uses: len32 (default) or none (older firmware)")
     p.add_argument("--timeout", type=float, default=2.0, help="default per-op timeout in seconds")
     p.add_argument("--epsilon", type=float, default=0.01, help="float round-trip tolerance")
     p.add_argument("--inputs", type=int, default=8, help="number of input channels, for picking safe test indices")
@@ -854,9 +731,10 @@ def main():
 
     ctx = Context(host=args.host, tcp_port=args.tcp_port, udp_port=args.udp_port,
                   mixer_name=args.mixer_name, timeout=args.timeout, epsilon=args.epsilon,
-                  inputs=args.inputs, buses=args.buses)
+                  inputs=args.inputs, buses=args.buses, framing=args.tcp_framing)
 
-    print(f"Target: {ctx.host}  TCP:{ctx.tcp_port}  UDP:{ctx.udp_port}  mixer name: {ctx.mixer_name!r}\n")
+    print(f"Target: {ctx.host}  TCP:{ctx.tcp_port} ({ctx.framing})  UDP:{ctx.udp_port}  "
+          f"mixer name: {ctx.mixer_name!r}\n")
     results = suite.run(ctx, only=args.only, include_destructive=args.include_destructive)
 
     passed = sum(1 for r in results if r.passed)

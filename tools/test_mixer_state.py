@@ -14,7 +14,6 @@ import os
 import shutil
 import signal
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -23,6 +22,7 @@ import unittest
 
 import mixer_state
 from mixer_state import MixerState
+from osc_codec import Len32Framer, encode_message
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -214,10 +214,7 @@ class ServerShutdown(Base):
             else:
                 self.fail("server did not start")
 
-            def osc(s):
-                b = s.encode() + b"\0"
-                return b + b"\0" * (-len(b) % 4)
-            c.sendall(osc("/mixer/set/inputChannel/5/level") + osc(",f") + struct.pack(">f", -7.5))
+            c.sendall(Len32Framer.frame(encode_message("/mixer/set/inputChannel/5/level", [-7.5])))
             c.settimeout(2)
             c.recv(256)                                  # the echo: it's in memory now
             proc.send_signal(signal.SIGTERM)             # well inside the batch delay

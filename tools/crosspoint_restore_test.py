@@ -2,7 +2,9 @@
 """
 Phase 8 bench test S4 (the Phase 6 follow-up): the power-cycle restore test
 with real audio on every crosspoint. Standard library only, so the same file
-runs on the Pi, the board and the Mac.
+runs on the Pi, the board and the Mac. `set` also needs the shared
+osc_codec.py next to it (TCP framing: --tcp-framing, default len32); the
+other subcommands run from this file alone.
 
 The idea: every one of the 400 crosspoints of the 20 x 20 core (Phase 9,
 P9.5: 4 Pmod + 8 USB (link #1) + 8 AVB (link #2) channels) gets its own
@@ -43,8 +45,7 @@ pass threshold is 0.5 dB.
 import argparse
 import json
 import math
-import socket
-import struct
+import os
 import sys
 import wave
 
@@ -131,67 +132,28 @@ PATTERN = build_pattern()
 
 # ----------------------------------------------------------------- OSC (set)
 
-def _osc_str(s):
-    b = s.encode() + b"\0"
-    return b + b"\0" * (-len(b) % 4)
-
-
-def _osc_msg(addr, value):
-    return _osc_str(addr) + _osc_str(",f") + struct.pack(">f", value)
-
-
-def _read_str(buf, off):
-    end = buf.index(b"\0", off)
-    s = buf[off:end].decode()
-    return s, off + ((end - off) // 4 + 1) * 4
-
-
-def _decode(buf):
-    """(address, [args], consumed) or None if incomplete."""
-    try:
-        addr, off = _read_str(buf, 0)
-        tags, off = _read_str(buf, off)
-    except ValueError:
-        return None
-    args = []
-    for t in tags[1:]:
-        if len(buf) < off + 4:
-            return None
-        if t == "f":
-            args.append(struct.unpack_from(">f", buf, off)[0])
-            off += 4
-        elif t == "i":
-            args.append(struct.unpack_from(">i", buf, off)[0])
-            off += 4
-        elif t == "s":
-            s, off = _read_str(buf, off)
-            args.append(s)
-    return addr, args, off
-
-
 def cmd_set(a):
-    sock = socket.create_connection((a.host, a.port), timeout=3)
-    buf = b""
+    # Only `set` speaks OSC, so only it needs the shared codec next to this
+    # file; analyze/compare/pattern still run from this file alone (the Mac).
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from osc_codec import TCPLink
+    link = TCPLink(a.host, a.port, timeout=3, framing=a.tcp_framing).connect()
     bad = 0
     for (i, o), db in sorted(PATTERN.items(), key=lambda x: (x[0][1], x[0][0])):
         addr = f"/{a.name}/set/inputMatrix/{i}_{o}/level"
-        sock.sendall(_osc_msg(addr, db))
+        link.send_message(addr, [float(db)])
         while True:                                  # wait for this echo
-            m = _decode(buf)
-            if m is None:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    sys.exit("connection closed by the server")
-                buf += chunk
-                continue
-            buf = buf[m[2]:]
-            if m[0] == addr:
+            try:
+                m = link.read_message()
+            except ConnectionResetError:
+                sys.exit("connection closed by the server")
+            if m.address == addr:
                 break
-        got = m[1][0] if m[1] else None
+        got = m.args[0] if m.args else None
         if got is None or abs(got - db) > 0.01:
             print(f"  {i}_{o}: sent {db}, echoed {got}")
             bad += 1
-    sock.close()
+    link.close()
     print(f"set: {len(PATTERN)} crosspoints sent, {len(PATTERN) - bad} echoed as sent, "
           f"{bad} differ")
     return 1 if bad else 0
@@ -329,6 +291,8 @@ def main():
     s.add_argument("--host", default="10.0.0.2")
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--name", default="mixer", help="mixer name (OSC address root)")
+    s.add_argument("--tcp-framing", choices=("len32", "none"), default="len32",
+                   help="TCP framing the mixer uses (default len32; none for older firmware)")
     s = sub.add_parser("check-hw")
     s.add_argument("--tools", default="/usr/lib/fpgamixer", help="where mixer_hw.py is")
     s = sub.add_parser("analyze")

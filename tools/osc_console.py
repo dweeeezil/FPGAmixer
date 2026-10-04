@@ -8,15 +8,14 @@ Incoming traffic (echoes, broadcasts from other controllers) prints
 asynchronously in a different color as it arrives, from a background thread,
 while you can keep typing.
 
-The OSC codec (osc_string / encode_message / decode_message /
-OSCIncomplete / OSCMalformed) and the TCPLink/UDPLink transport classes are
-copied verbatim from osc_mixer_test.py / osc_mixer_server.py so all three
-tools speak identically. If you extract a shared module later, this is the
-block to move.
+The OSC codec and the TCPLink/UDPLink transport classes are the shared
+osc_codec.py (next to this file), so every tool speaks identically. TCP
+framing must match the mixer's (--tcp-framing; the board's default is len32).
 
 Usage:
     python3 osc_console.py --host 192.168.1.50 --tcp-port 8000 --udp-port 8001
     python3 osc_console.py --host 127.0.0.1 --tcp-port 9000   # TCP only
+    python3 osc_console.py --host 127.0.0.1 --tcp-port 9000 --tcp-framing none   # older firmware
 
 At the prompt:
     /mixer/set/inputChannel/0/level -6.0     send a set (TCP by default, or
@@ -43,160 +42,13 @@ No dependencies beyond the standard library.
 
 import argparse
 import shlex
-import socket
-import struct
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
 
-
-# ---------------------------------------------------------------------------
-# OSC wire format (identical to osc_mixer_test.py / osc_mixer_server.py)
-# ---------------------------------------------------------------------------
-
-class OSCIncomplete(Exception):
-    """Buffer doesn't yet hold a complete field. Caller should read more bytes."""
-
-
-class OSCMalformed(Exception):
-    """Buffer holds bytes that are not valid OSC. More bytes won't fix it."""
-
-
-def osc_string(s: str) -> bytes:
-    b = s.encode("ascii") + b"\x00"
-    pad = (-len(b)) % 4
-    return b + b"\x00" * pad
-
-
-def read_osc_string(data: bytes, offset: int):
-    if offset > len(data):
-        raise OSCIncomplete()
-    idx = data.find(b"\x00", offset)
-    if idx == -1:
-        if len(data) - offset > 1024:
-            raise OSCMalformed(f"no NUL terminator within 1024 bytes of offset {offset}")
-        raise OSCIncomplete()
-    length = idx - offset + 1
-    total = ((length + 3) // 4) * 4
-    if offset + total > len(data):
-        raise OSCIncomplete()
-    s = data[offset:idx].decode("ascii", errors="replace")
-    return s, offset + total
-
-
-@dataclass
-class OSCMessage:
-    address: str
-    args: list = field(default_factory=list)
-
-    def __repr__(self):
-        return f"OSCMessage({self.address!r}, {self.args!r})"
-
-
-def encode_message(address: str, args=()) -> bytes:
-    type_tags = ","
-    arg_bytes = b""
-    for a in args:
-        if isinstance(a, bool):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", int(a))
-        elif isinstance(a, float):
-            type_tags += "f"
-            arg_bytes += struct.pack(">f", a)
-        elif isinstance(a, int):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", a)
-        elif isinstance(a, str):
-            type_tags += "s"
-            arg_bytes += osc_string(a)
-        else:
-            raise TypeError(f"unsupported OSC arg type: {type(a)!r}")
-    return osc_string(address) + osc_string(type_tags) + arg_bytes
-
-
-def decode_message(data: bytes, offset: int = 0):
-    start = offset
-    address, offset = read_osc_string(data, offset)
-    if not address.startswith("/"):
-        raise OSCMalformed(f"address does not start with '/': {address!r}")
-    type_tag_str, offset = read_osc_string(data, offset)
-    if not type_tag_str.startswith(","):
-        raise OSCMalformed(f"type-tag string does not start with ',': {type_tag_str!r}")
-    args = []
-    for tag in type_tag_str[1:]:
-        if tag in ("f", "i"):
-            if offset + 4 > len(data):
-                raise OSCIncomplete()
-            (val,) = struct.unpack_from(">f" if tag == "f" else ">i", data, offset)
-            args.append(val)
-            offset += 4
-        elif tag == "s":
-            s, offset = read_osc_string(data, offset)
-            args.append(s)
-        else:
-            raise OSCMalformed(f"unsupported type tag {tag!r} in {type_tag_str!r}")
-    return OSCMessage(address, args), offset - start
-
-
-# ---------------------------------------------------------------------------
-# Transport
-# ---------------------------------------------------------------------------
-
-class TCPLink:
-    def __init__(self, host, port, timeout=5.0):
-        self.host, self.port, self.timeout = host, port, timeout
-        self.sock = None
-        self.buffer = b""
-
-    def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        self.sock.settimeout(self.timeout)
-        return self
-
-    def close(self):
-        if self.sock is not None:
-            try:
-                self.sock.close()
-            except OSError:
-                pass
-            self.sock = None
-
-    def send_raw(self, data: bytes):
-        self.sock.sendall(data)
-
-    def _fill(self, timeout):
-        self.sock.settimeout(max(timeout, 0.001))
-        chunk = self.sock.recv(4096)
-        if chunk == b"":
-            raise ConnectionResetError("peer closed the connection")
-        self.buffer += chunk
-
-    def read_message(self, timeout=None) -> OSCMessage:
-        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
-        while True:
-            try:
-                msg, consumed = decode_message(self.buffer)
-                self.buffer = self.buffer[consumed:]
-                return msg
-            except OSCIncomplete:
-                pass
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("no complete OSC message within timeout")
-            self._fill(remaining)
-
-
-class UDPLink:
-    def __init__(self, host, port):
-        self.addr = (host, port)
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def send_raw(self, data: bytes):
-        self.sock.sendto(data, self.addr)
-
-    def close(self):
-        self.sock.close()
+# The codec and the client links are shared with the server (osc_codec.py).
+from osc_codec import (FRAMINGS, DEFAULT_FRAMING, FramingLost, OSCMalformed, TCPLink,
+                       UDPLink, encode_message)
 
 
 # ---------------------------------------------------------------------------
@@ -248,19 +100,20 @@ DIM = "\033[2m"       # help text
 class Console:
     PROMPT = "> "
 
-    def __init__(self, host, tcp_port, udp_port, color=True):
+    def __init__(self, host, tcp_port, udp_port, color=True, framing=DEFAULT_FRAMING):
         self.host = host
         self.tcp_port = tcp_port
         self.udp_port = udp_port
+        self.framing = framing
         self.color = color
         self._lock = threading.Lock()
         self.tcp = None
         self.udp = None
 
         if tcp_port:
-            print(f"Connecting to {host}:{tcp_port} (TCP)...")
+            print(f"Connecting to {host}:{tcp_port} (TCP, framing {framing})...")
             try:
-                self.tcp = TCPLink(host, tcp_port, timeout=5.0).connect()
+                self.tcp = TCPLink(host, tcp_port, timeout=5.0, framing=framing).connect()
             except OSError as e:
                 print(f"Could not connect: {e}", file=sys.stderr)
                 sys.exit(1)
@@ -331,11 +184,10 @@ class Console:
                 msg = link.read_message(timeout=1.0)
             except TimeoutError:
                 continue
-            except OSCMalformed as e:
-                link.buffer = b""
-                self._print_async(self._c(f"! malformed data received, discarding buffer: {e}", RED))
+            except OSCMalformed as e:   # the link already dropped the bad bytes
+                self._print_async(self._c(f"! malformed data received and dropped: {e}", RED))
                 continue
-            except (OSError, ConnectionResetError) as e:
+            except (OSError, ConnectionResetError, FramingLost) as e:
                 self._print_async(self._c(f"TCP connection lost: {e}", YELLOW))
                 return
             self._print_received(msg)
@@ -347,7 +199,7 @@ class Console:
         if self.tcp:
             self.tcp.close()
         try:
-            new_link = TCPLink(self.host, self.tcp_port, timeout=5.0).connect()
+            new_link = TCPLink(self.host, self.tcp_port, timeout=5.0, framing=self.framing).connect()
         except OSError as e:
             self._print_error(f"reconnect failed: {e}")
             return
@@ -367,7 +219,7 @@ class Console:
             self._print_error(f"couldn't encode message: {e}")
             return
         try:
-            link.send_raw(data)
+            link.send_packet(data)      # framed on TCP (--tcp-framing), as is on UDP
         except OSError as e:
             hint = " — try :reconnect" if via == "TCP" else ""
             self._print_error(f"send failed ({via}): {e}{hint}")
@@ -458,6 +310,8 @@ def build_arg_parser():
     p.add_argument("--host", required=True, help="IP or hostname of the mixer")
     p.add_argument("--tcp-port", type=int, help="TCP OSC port (two-way; default transport if given)")
     p.add_argument("--udp-port", type=int, help="UDP OSC port (write-only; default transport if --tcp-port isn't given)")
+    p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
+                   help="TCP framing the mixer uses: len32 (default) or none (older firmware)")
     p.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     return p
 
@@ -468,7 +322,7 @@ def main():
         print("error: give at least one of --tcp-port or --udp-port", file=sys.stderr)
         return 2
     color = (not args.no_color) and sys.stdout.isatty()
-    console = Console(args.host, args.tcp_port, args.udp_port, color=color)
+    console = Console(args.host, args.tcp_port, args.udp_port, color=color, framing=args.tcp_framing)
     return console.run()
 
 

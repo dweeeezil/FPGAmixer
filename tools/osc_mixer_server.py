@@ -9,10 +9,8 @@ multi-controller broadcast sync, and the same save-on-change/restore-on-boot
 persistence described in your other project docs. Point your control
 software at this instead of hardware and develop against it.
 
-The OSC codec (osc_string / encode_message / decode_message /
-OSCIncomplete / OSCMalformed) is copied verbatim from osc_mixer_test.py so
-both tools speak identically. If you extract a shared module later, this is
-the block to move.
+The OSC codec and the TCP framers are osc_codec.py, shared with every other
+tool in tools/, so they all speak identically.
 
 DESIGN DECISIONS (the standard doc leaves these open; documenting the calls
 made here so you can compare against the real firmware once it exists):
@@ -32,16 +30,21 @@ made here so you can compare against the real firmware once it exists):
     the address the request arrived on), and every message after that must
     use the NEW root — messages still addressed to the old root are logged
     and ignored, exactly the footgun the doc describes.
-  - TCP framing: naive and self-delimiting, same assumption as the test
-    client — no length prefix, no reassembly timeout. That means a message
-    left truncated mid-argument (as osc_mixer_test.py's
-    truncated_argument_then_recovery test deliberately does) will corrupt
-    the parse of whatever arrives after it. This is deliberately NOT
-    papered over with a timeout-based buffer reset: it's a real risk of the
-    "no explicit framing" design, and this simulator is meant to let you
-    feel it rather than hide it. A genuinely malformed message (bad type
-    tag, bad address) DOES clear the buffer and recover, since more bytes
-    can never fix those.
+  - TCP framing (--tcp-framing, one per port, rules in osc_codec.py):
+      * len32 (default): OSC 1.0 stream framing, a 4-byte big-endian size
+        before each packet; packets may be bundles, whose messages are
+        handled in order. A packet that doesn't decode (truncated, bad type
+        tag) is dropped on its own and the stream stays in step. An
+        impossible size (> 4 MB) loses the stream position, so the
+        connection is closed.
+      * none: the older unframed stream, messages back to back. A message
+        left truncated mid-argument (as osc_mixer_test.py's
+        truncated_argument_then_recovery test does) corrupts the parse of
+        whatever arrives after it; there is deliberately no timeout-based
+        reset. A malformed message (bad type tag, bad address) clears the
+        buffer, since more bytes can never fix it.
+    Every reply, echo and broadcast is framed the same way.
+  - UDP: one packet per datagram (a message or a bundle), never framed.
   - Unknown addresses aren't validated — anything under the current
     address root is accepted, stored, and echoed back generically. The one
     exception is the crosspoint level, which drives real hardware (below).
@@ -68,6 +71,8 @@ made here so you can compare against the real firmware once it exists):
 
 Usage:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --mixer-name mixer
+    # older controllers that send unframed TCP:
+    python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --tcp-framing none
     # on the board (root), driving the PL matrix; mixer_hw.py must sit
     # next to this script:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --hw
@@ -90,102 +95,13 @@ echoed, logged. A get on a missing path or a branch replies 0.0.
 
 import argparse
 import math
-import os
 import signal
 import socket
-import struct
 import sys
 import threading
-import time
-from dataclasses import dataclass, field
 
-
-# ---------------------------------------------------------------------------
-# OSC wire format (identical to osc_mixer_test.py)
-# ---------------------------------------------------------------------------
-
-class OSCIncomplete(Exception):
-    """Buffer doesn't yet hold a complete field. Caller should read more bytes."""
-
-
-class OSCMalformed(Exception):
-    """Buffer holds bytes that are not valid OSC. More bytes won't fix it."""
-
-
-def osc_string(s: str) -> bytes:
-    b = s.encode("ascii") + b"\x00"
-    pad = (-len(b)) % 4
-    return b + b"\x00" * pad
-
-
-def read_osc_string(data: bytes, offset: int):
-    if offset > len(data):
-        raise OSCIncomplete()
-    idx = data.find(b"\x00", offset)
-    if idx == -1:
-        if len(data) - offset > 1024:
-            raise OSCMalformed(f"no NUL terminator within 1024 bytes of offset {offset}")
-        raise OSCIncomplete()
-    length = idx - offset + 1
-    total = ((length + 3) // 4) * 4
-    if offset + total > len(data):
-        raise OSCIncomplete()
-    s = data[offset:idx].decode("ascii", errors="replace")
-    return s, offset + total
-
-
-@dataclass
-class OSCMessage:
-    address: str
-    args: list = field(default_factory=list)
-
-    def __repr__(self):
-        return f"OSCMessage({self.address!r}, {self.args!r})"
-
-
-def encode_message(address: str, args=()) -> bytes:
-    type_tags = ","
-    arg_bytes = b""
-    for a in args:
-        if isinstance(a, bool):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", int(a))
-        elif isinstance(a, float):
-            type_tags += "f"
-            arg_bytes += struct.pack(">f", a)
-        elif isinstance(a, int):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", a)
-        elif isinstance(a, str):
-            type_tags += "s"
-            arg_bytes += osc_string(a)
-        else:
-            raise TypeError(f"unsupported OSC arg type: {type(a)!r}")
-    return osc_string(address) + osc_string(type_tags) + arg_bytes
-
-
-def decode_message(data: bytes, offset: int = 0):
-    start = offset
-    address, offset = read_osc_string(data, offset)
-    if not address.startswith("/"):
-        raise OSCMalformed(f"address does not start with '/': {address!r}")
-    type_tag_str, offset = read_osc_string(data, offset)
-    if not type_tag_str.startswith(","):
-        raise OSCMalformed(f"type-tag string does not start with ',': {type_tag_str!r}")
-    args = []
-    for tag in type_tag_str[1:]:
-        if tag in ("f", "i"):
-            if offset + 4 > len(data):
-                raise OSCIncomplete()
-            (val,) = struct.unpack_from(">f" if tag == "f" else ">i", data, offset)
-            args.append(val)
-            offset += 4
-        elif tag == "s":
-            s, offset = read_osc_string(data, offset)
-            args.append(s)
-        else:
-            raise OSCMalformed(f"unsupported type tag {tag!r} in {type_tag_str!r}")
-    return OSCMessage(address, args), offset - start
+from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
+                       encode_message, decode_packet, make_framer)
 
 
 # ---------------------------------------------------------------------------
@@ -209,11 +125,19 @@ def log(msg):
 
 
 class ClientRegistry:
-    """Connected TCP controller sockets, for broadcasting set/echo/sync messages."""
+    """Connected TCP controller sockets, for broadcasting set/echo/sync
+    messages. Every TCP send goes through here (send() or broadcast()), so
+    each packet is framed with the port's framing (--tcp-framing)."""
 
-    def __init__(self):
+    def __init__(self, framing=DEFAULT_FRAMING):
         self.lock = threading.Lock()
         self.clients = set()
+        self.framing = framing
+        self.frame = make_framer(framing).frame
+
+    def send(self, sock, packet: bytes):
+        """One packet to one controller (get replies)."""
+        sock.sendall(self.frame(packet))
 
     def add(self, sock):
         with self.lock:
@@ -223,7 +147,8 @@ class ClientRegistry:
         with self.lock:
             self.clients.discard(sock)
 
-    def broadcast(self, data: bytes):
+    def broadcast(self, packet: bytes):
+        data = self.frame(packet)
         with self.lock:
             targets = list(self.clients)
         dead = []
@@ -414,11 +339,11 @@ def handle_set(tail, args, state, registry, via):
     apply_set(tail, value, state, registry, via)
 
 
-def handle_get(tail, state, reply_sock, via):
+def handle_get(tail, state, registry, reply_sock, via):
     value = state.get(tail, default=0.0)
     if VERBOSE:
         log(f"    [{via}] GET {tail} -> {value!r}")
-    reply_sock.sendall(encode_message(f"/{state.mixer_name}/set/{tail}", [value]))
+    registry.send(reply_sock, encode_message(f"/{state.mixer_name}/set/{tail}", [value]))
 
 
 def handle_tcp_message(msg, state, registry, reply_sock, via):
@@ -430,9 +355,21 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
     if kind == "set":
         handle_set(tail, msg.args, state, registry, via)
     elif kind == "get":
-        handle_get(tail, state, reply_sock, via)
+        handle_get(tail, state, registry, reply_sock, via)
     else:
         log(f"    [{via}] ignoring unknown command kind {kind!r} in {msg.address!r}")
+
+
+def handle_packet(packet, state, registry, reply_sock, via):
+    """One TCP packet: a message, or a bundle whose messages run in order.
+    A packet that doesn't decode is dropped whole; nothing in it runs."""
+    try:
+        messages = decode_packet(packet)
+    except OSCMalformed as e:
+        log(f"    [{via}] malformed OSC packet ({e}); dropped {len(packet)} byte(s)")
+        return
+    for msg in messages:
+        handle_tcp_message(msg, state, registry, reply_sock, via)
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +379,7 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
 def handle_tcp_client(conn, addr, state, registry):
     via = f"TCP {addr[0]}:{addr[1]}"
     log(f"[+] {via} connected")   # already in the registry (tcp_accept_loop)
-    buffer = b""
+    framer = make_framer(registry.framing)
     conn.settimeout(120.0)  # only to reap a truly dead/idle connection eventually
     try:
         while True:
@@ -452,18 +389,18 @@ def handle_tcp_client(conn, addr, state, registry):
                 continue
             if not chunk:
                 break  # client closed
-            buffer += chunk
-            while True:
-                try:
-                    msg, consumed = decode_message(buffer)
-                except OSCIncomplete:
-                    break  # wait for more bytes
-                except OSCMalformed as e:
-                    log(f"    [{via}] malformed OSC ({e}); dropping {len(buffer)} buffered byte(s)")
-                    buffer = b""
-                    break
-                buffer = buffer[consumed:]
-                handle_tcp_message(msg, state, registry, conn, via)
+            unframed_error = None
+            try:
+                packets = framer.push(chunk)
+            except OSCMalformed as e:   # unframed only: the buffer was cleared
+                packets, unframed_error = e.packets, e
+            except FramingLost as e:    # len32 only: stream position lost
+                log(f"    [{via}] {e}; closing the connection")
+                break
+            for packet in packets:
+                handle_packet(packet, state, registry, conn, via)
+            if unframed_error is not None:
+                log(f"    [{via}] malformed OSC ({unframed_error}); dropped the buffered bytes")
     except (ConnectionResetError, OSError) as e:
         log(f"    [{via}] connection error: {e}")
     finally:
@@ -503,38 +440,39 @@ def udp_serve(host, port, state, registry):
     log(f"UDP OSC server listening on {host}:{port}")
     while True:
         try:
-            data, addr = sock.recvfrom(4096)
+            data, addr = sock.recvfrom(65535)
         except OSError:
             break
         via = f"UDP {addr[0]}:{addr[1]}"
         try:
-            msg, consumed = decode_message(data)
-        except (OSCIncomplete, OSCMalformed) as e:
+            messages = decode_packet(data)   # a message or a bundle; nothing else
+        except OSCMalformed as e:
             log(f"    [{via}] malformed datagram, ignoring: {e}")
             continue
-        if consumed < len(data):
-            log(f"    [{via}] {len(data) - consumed} trailing byte(s) after the first "
-                  f"message in this datagram — ignored (no bundle/multi-message support)")
+        for msg in messages:
+            handle_udp_message(msg, state, registry, via)
 
-        kind, tail = split_after_mixer_name(msg.address, state.mixer_name)
-        if kind is None:
-            log(f"    [{via}] ignoring message under unknown root: {msg.address!r}")
-            continue
-        if kind != "set":
-            log(f"    [{via}] ignoring non-set command over UDP (write-only): {msg.address!r}")
-            continue
-        if not msg.args:
-            continue
-        value = msg.args[0]
 
-        if is_device_name(tail):
-            if isinstance(value, str):
-                handle_devicename_change(value, state, registry, via)
-            else:
-                log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
-            continue
+def handle_udp_message(msg, state, registry, via):
+    kind, tail = split_after_mixer_name(msg.address, state.mixer_name)
+    if kind is None:
+        log(f"    [{via}] ignoring message under unknown root: {msg.address!r}")
+        return
+    if kind != "set":
+        log(f"    [{via}] ignoring non-set command over UDP (write-only): {msg.address!r}")
+        return
+    if not msg.args:
+        return
+    value = msg.args[0]
 
-        apply_set(tail, value, state, registry, via)
+    if is_device_name(tail):
+        if isinstance(value, str):
+            handle_devicename_change(value, state, registry, via)
+        else:
+            log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
+        return
+
+    apply_set(tail, value, state, registry, via)
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +498,9 @@ def main():
                    help="simulated matrix size N (NxN) without --hw (default: 20, the "
                         "Phase 9 hardware: 4 Pmod + 8 link #1 (USB) + 8 link #2 (AVB) "
                         "channels)")
+    p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
+                   help="TCP stream framing: len32 = OSC 1.0 4-byte size prefix per packet "
+                        "(default); none = unframed messages back to back (older controllers)")
     args = p.parse_args()
     VERBOSE = args.verbose
 
@@ -567,7 +508,8 @@ def main():
     BACKENDS.update(build_backends(args.hw, args.matrix_size))
     for backend in BACKENDS.values():
         backend.seed_and_push(state)
-    registry = ClientRegistry()
+    registry = ClientRegistry(args.tcp_framing)
+    log(f"TCP framing: {args.tcp_framing}")
 
     threading.Thread(target=udp_serve, args=(args.host, args.udp_port, state, registry), daemon=True).start()
 
