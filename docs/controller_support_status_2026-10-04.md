@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: steps 0–5 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules; config reply and snapshot ordering; ping), verified on the PC. **Next: the first board run with the app** (user's request 2026-10-04, ahead of steps 6–7: §6), then metering and Bonjour.
+**Status: steps 0–5 and 7 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules; config reply and snapshot ordering; ping; Bonjour through systemd-resolved), verified on the PC. **Image with all of it: §5** (the Pi is gone, C9). Then the first Mac run, metering (step 6) and the step 8 checks.
 
 ---
 
@@ -17,7 +17,8 @@ The StudioRunner controller app (`../StudioRunner-controller`) speaks the OSC st
 | C1 | Framing transition | `--tcp-framing len32\|none`, default `len32`, advertised in Bonjour TXT `framing`. The repo's tools move to a shared codec and get the same flag. TouchDesigner / Ableton are not in use now, so they don't constrain it. |
 | C2 | Paths the config doesn't advertise | **Refused** with an error reply (set and get). A zone becomes reachable when it has a backend (or a declared store-only description). Values for such paths already in old state files stay in the file, untouched and unreachable. |
 | C3 | Meter source (F4) | Subscription, lease and UDP stream behind a `MeterSource` interface; tested with a synthetic source enabled only by a server flag. The real source waits for F4a and channel zones. |
-| C4 | Bonjour (F5) | `avahi-daemon` in the image; the server writes `/etc/avahi/services/studiorunner.service` and rewrites it on rename. Bench check with `avahi-browse` on the Pi; Mac discovery later, when the Mac is on the board's segment. |
+| C4 | Bonjour (F5) | ~~`avahi-daemon` in the image~~. **Revised by the user 2026-10-04:** systemd-resolved, which the image already runs (missed when C4 was asked): its mDNS on (global drop-in + `MulticastDNS=yes` on `end0`), and the server writes `/etc/systemd/dnssd/studiorunner.dnssd`, restarting resolved when it changes. No Avahi (it would fight resolved for port 5353). |
+| C9 | The bench without the Pi (user, 2026-10-04) | The Pi is gone; **only the Mac reaches the board**, on a direct cable. The next step is an image with everything so far, not a hand deploy. In it: steps 1–5, step 7 (Bonjour), and Mac access: IPv4 link-local + mDNS on `end0`, so the Mac reaches `amd-edf.local` with no IP settings. Metering (step 6) comes later as server files copied from the Mac. |
 | C5 | Base branch | `phase9/time-shared-core`: what the board runs (20 × 20 core). The server reads the matrix size from the PL, so the code doesn't depend on it. |
 | C6 | The name `mixer` | The factory (unnamed) state: reported as `deviceName` `mixer`, answers to `/mixer/` only. Renaming **to** `mixer` is refused. A stored name that breaks today's rules loads as it is but can't be set again. (Today's board service starts with the default `--mixer-name mixer`.) |
 | C7 | Refusals over UDP | Logged only. UDP control stays write-only: nothing is ever sent back over it. |
@@ -172,7 +173,23 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 
 **What the app sends that the board now handles** (controller DECISIONS): `get system/config` through `/mixer/` (D2, D60), a ping every 2 s (D58), crosspoint sets as floats (D6). No `meter/subscribe`: the config advertises no channel zones, and the app subscribes only to those (D55). So the app can run against the board before steps 6–7.
 
-## 5. Open items
+### Step 7: Bonjour through systemd-resolved (F5, C4 revised) — done, PC only
+
+**What.** `tools/osc_discovery.py` (new): an advertiser the server calls at startup and after every accepted rename (outside the ordering lock). `DnssdAdvertiser` writes `/etc/systemd/dnssd/studiorunner.dnssd` atomically (`Name=<mixer name>`, `Type=_studiorunner._tcp`, `Port=<TCP port>`, `TxtText=name=<mixer name> v=1 framing=<len32|none>`) and, only if the contents changed, restarts systemd-resolved in a background thread; a failure is logged, never fatal. A stored name from before the rules (a space, `%`) is escaped (`%%` in `Name=`, one quoted TXT word). `NoAdvertiser` for everything else. Server option `--advertise none|dnssd` (default none), `--dnssd-file`, `--dnssd-reload`; the board's unit passes `--advertise dnssd`.
+
+**Image side.** `fpgamixer-osc` installs `/etc/systemd/resolved.conf.d/fpgamixer-mdns.conf` (`MulticastDNS=yes`: Yocto builds systemd with `-Ddefault-mdns=no`, checked on the VM) and creates `/etc/systemd/dnssd/`. `10-end0-bench.network` adds `MulticastDNS=yes` (per link; systemd 255's man page: "Defaults to false") and `LinkLocalAddressing=yes` (IPv4 link-local "when DHCPv4 autoconfiguration has been unsuccessful for some time", i.e. on a Mac cable with no DHCP server; the same man page, read from the image's systemd-stable revision `70500d3`).
+
+**Seam.** Discovery is its own module behind `advertise(name)`; the server knows nothing about resolved. Avahi, or the final server's own mechanism, would be another advertiser.
+
+**Verified (PC):** `test_osc_discovery.py` (new, 10 tests: the file's lines, port and framing from the server, a reload only when the contents change, escaping, a reload that can't start or exits non-zero is logged, an unwritable path is logged, no reload command); 2 server tests (advertised at startup and after a rename, not after a refused one; off by default). Mutation test: 13 planted bugs (12 in the module, 1 in the server's call), all caught after one survivor (a non-zero exit wasn't tested) got its test. **Not verified:** resolved actually publishing, and the Mac seeing it. That is the board's first boot.
+
+## 5. The image without the Pi (C9)
+
+**Content:** this branch at the build commit: Phases 9–10 (as `p10e`), Phase 11 (docs only, nothing built), and controller support steps 1–5 and 7, plus Mac access (link-local, mDNS). No hardware change, so no new SDT or bitstream (`p95`, as `p10e`).
+
+**Build:** commit, `scripts/sync_buildhost.sh` (clean tree, so `VERSION` = the commit), then on the VM `bitbake edf-linux-disk-image xilinx-bootbin`, copy to `build/sd/`. (Plan from the earlier hand deploy via the Pi, superseded.)
+
+## 6. Open items
 
 - The board image needs the meter/Bonjour modules added to the `fpgamixer-osc` recipe (`osc_codec.py` is in since step 1), and `avahi-daemon` in the image (step 7).
 - `osc_mixer_test.py` gains F1–F9 coverage in step 8. It needs a matrix with at least 20 outputs for its default scratch output (pass `--scratch-output` otherwise).

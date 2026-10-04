@@ -89,6 +89,10 @@ made here so you can compare against the real firmware once it exists):
     schemaVersion 1, deviceName, firmware (firmware_version: VERSION from
     the image, else git, else 'dev'), sampleRate, zones, modules, system,
     and values (sparse: non-defaults, plus system/deviceName).
+  - Discovery (amendment E, F5): --advertise dnssd publishes
+    _studiorunner._tcp (instance = the mixer name; TXT name, v=1, framing)
+    through systemd-resolved (osc_discovery.py), at startup and after every
+    rename. The board service uses it; the default is none.
   - Ping (amendment H, F7): '/<root>/ping <int>' -> '/<name>/pong <int>',
     same token, to the sender (TCP only; UDP never replies).
   - Ordering (F3): ClientRegistry.lock is held while a change is applied,
@@ -141,6 +145,7 @@ from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
 
 from mixer_state import MixerState, split_path, is_device_name  # noqa: E402
 from mixer_params import Model, ModuleSpec, Refused, ZoneSpec, float32  # noqa: E402
+from osc_discovery import DNSSD_FILE, DNSSD_RELOAD, NoAdvertiser, make_advertiser  # noqa: E402
 
 DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
@@ -422,6 +427,7 @@ def firmware_version(here=os.path.dirname(os.path.abspath(__file__))):
 
 
 FIRMWARE = "dev"     # set once in main()
+ADVERTISER = NoAdvertiser()   # discovery (osc_discovery); set in main() from --advertise
 
 
 def reply_config(state, registry, reply_sock, via):
@@ -501,6 +507,7 @@ def handle_devicename_change(new_name, state, registry, reply, via):
             return
         registry.broadcast(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [new_name]))
         state.rename(new_name)
+    ADVERTISER.advertise(new_name)   # outside the lock: may write a file and restart a service
     log(f"    *** [{via}] device name changed: {old_name!r} -> {new_name!r}. "
           f"Address root is now /{new_name}/ (and /{ALIAS}/); /{old_name}/ is ignored. ***")
 
@@ -674,7 +681,7 @@ def handle_udp_message(msg, state, registry, via):
 # ---------------------------------------------------------------------------
 
 def main():
-    global VERBOSE, MODEL, FIRMWARE
+    global VERBOSE, MODEL, FIRMWARE, ADVERTISER
     p = argparse.ArgumentParser(description="Reference/simulator server for the FPGA mixer OSC protocol.")
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
@@ -695,6 +702,12 @@ def main():
     p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
                    help="TCP stream framing: len32 = OSC 1.0 4-byte size prefix per packet "
                         "(default); none = unframed messages back to back (older controllers)")
+    p.add_argument("--advertise", choices=("none", "dnssd"), default="none",
+                   help="discovery: dnssd = publish _studiorunner._tcp through systemd-resolved "
+                        "(the board service); none = don't (default)")
+    p.add_argument("--dnssd-file", default=DNSSD_FILE, help=f"(dnssd) the file to write (default {DNSSD_FILE})")
+    p.add_argument("--dnssd-reload", default=DNSSD_RELOAD,
+                   help=f"(dnssd) command run after the file changes (default '{DNSSD_RELOAD}'; '' = none)")
     args = p.parse_args()
     VERBOSE = args.verbose
 
@@ -707,6 +720,9 @@ def main():
         backend.seed_and_push(state)
     registry = ClientRegistry(args.tcp_framing)
     log(f"TCP framing: {args.tcp_framing}")
+    ADVERTISER = make_advertiser(args.advertise, args.tcp_port, args.tcp_framing,
+                                 args.dnssd_file, args.dnssd_reload, log)
+    ADVERTISER.advertise(state.mixer_name)
 
     threading.Thread(target=udp_serve, args=(args.host, args.udp_port, state, registry), daemon=True).start()
 

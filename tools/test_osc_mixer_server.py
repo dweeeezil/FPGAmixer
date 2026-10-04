@@ -907,6 +907,44 @@ class Ping(ServerCase):
         self.assertEqual(c.read_message().args, [9])
 
 
+class Discovery(ServerCase):
+    """F5 through the server: the advertisement follows the name (the file
+    only; resolved itself is the board's, checked on the bench)."""
+
+    def setUp(self):
+        self.dnssd = os.path.join(tempfile.mkdtemp(prefix="dnssd-"), "studiorunner.dnssd")
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.dnssd), True)
+        self.SERVER_ARGS = ["--mixer-name", "FOH", "--tcp-framing", "len32", "--advertise", "dnssd",
+                            "--dnssd-file", self.dnssd, "--dnssd-reload", ""]
+        super().setUp()
+
+    def advertised(self):
+        with open(self.dnssd) as f:
+            return [l for l in f.read().splitlines() if l.startswith(("Name=", "Port=", "TxtText="))]
+
+    def test_advertised_at_startup_and_after_a_rename_not_after_a_refused_one(self):
+        self.assertEqual(self.advertised(), ["Name=FOH", f"Port={self.tcp_port}",
+                                             "TxtText=name=FOH v=1 framing=len32"])
+        c = self.tcp()
+        c.send_message("/mixer/set/system/deviceName", ["two words"])
+        c.read_message()
+        c.read_message()                                    # name + error: refused
+        self.assertEqual(self.advertised()[0], "Name=FOH")
+        c.send_message("/mixer/set/system/deviceName", ["Stage"])
+        c.read_message()
+        self.get(c, "system/deviceName")                    # the rename is done by now
+        self.assertEqual(self.advertised()[0], "Name=Stage")
+        self.assertIn("TxtText=name=Stage v=1 framing=len32", self.advertised())
+
+
+
+class DiscoveryOffByDefault(ServerCase):
+    def test_nothing_advertised_without_the_option(self):
+        c = self.tcp()
+        self.get(c, "system/deviceName")                    # started and serving
+        self.assertNotIn("Discovery:", self.log())
+
+
 class SnapshotOrdering(ServerCase):
     """F3, end to end: one controller sets values in a tight loop while others
     connect and sync. Every set a syncing controller receives after its
