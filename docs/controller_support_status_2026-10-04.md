@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: steps 0–4 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules; config reply and snapshot ordering), verified on the PC, not yet on the board or in the app. Next: step 5 (ping).
+**Status: steps 0–5 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules; config reply and snapshot ordering; ping), verified on the PC. **Next: the first board run with the app** (user's request 2026-10-04, ahead of steps 6–7: §6), then metering and Bonjour.
 
 ---
 
@@ -161,6 +161,16 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 - Mutation test: 10 server mutants, 10 config-builder mutants, 1 codec mutant. **Two false kills found and fixed in the method:** the runner's temp folder isn't a git checkout, so two new tests that assumed one failed for every mutant. The tests now check git only in a checkout, and the runner runs the unmutated baseline first and stops if it fails. Re-run with the baseline check: the config builder 10/10; the server 5/10 at first. Survivors: the lock in `apply_set` (the test slowed the backend, before the store, not the store-to-echo window), `send` without the lock (no test of interleaved writes), `broadcast` without its own lock (only one order tested), no shutdown on drop (only the client list checked), `firmware` hard-coded (equal to `dev` in the temp folder). Each got a test; all 21 killed after.
 
 **Not verified:** the recipe change (the `VERSION` install and `file-checksums`) has not been built; the app hasn't decoded a real reply.
+
+### Step 5: ping (F7) — done, PC only
+
+**What.** `/<root>/ping <int>` → `/<name>/pong <int>`, the same token as an OSC int, to the sender only, through the alias or the name. Anything else (no token, a float, a string, an OSC true, two tokens, `/ping/x`) is ignored and logged, as the mock does; a ping is optional, so it gets no error reply. Over UDP nothing (write-only).
+
+**Seam.** The protocol layer's command dispatch (`handle_tcp_message`), beside `set` and `get`.
+
+**Verified (PC):** 3 new server tests (tokens 0, ±2³¹ edges, both roots; the reply is an OSC `i`; the ignored forms, then still answering). Mutation test: 6 planted bugs, 6 caught, with the runner's baseline check (which, on the first try, correctly refused to report while a test of mine was wrong: Python's `True` encodes as an OSC int, so that case was a valid ping; it now sends a real OSC `T`).
+
+**What the app sends that the board now handles** (controller DECISIONS): `get system/config` through `/mixer/` (D2, D60), a ping every 2 s (D58), crosspoint sets as floats (D6). No `meter/subscribe`: the config advertises no channel zones, and the app subscribes only to those (D55). So the app can run against the board before steps 6–7.
 
 ## 5. Open items
 

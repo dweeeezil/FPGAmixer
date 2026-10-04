@@ -875,6 +875,38 @@ class Config(ServerCase):
 
 
 
+class Ping(ServerCase):
+    """F7, amendment H: /<name>/ping <int> -> /<name>/pong <int>, to the sender."""
+
+    SERVER_ARGS = ["--mixer-name", "FOH"]
+
+    def test_pong_carries_the_token_to_the_sender_only(self):
+        a, b = self.tcp(), self.tcp()
+        self.get(b, "system/deviceName")
+        for root, token in (("mixer", 7), ("FOH", -2147483648), ("FOH", 2147483647), ("mixer", 0)):
+            a.send_message(f"/{root}/ping", [token])
+            m = a.read_message()
+            self.assertEqual((m.address, m.args), ("/FOH/pong", [token]), root)
+        silent(self, b)
+
+    def test_pong_is_an_osc_int(self):
+        c = self.tcp()
+        c.send_message("/mixer/ping", [42])
+        c.sock.settimeout(2)
+        self.assertEqual(c.sock.recv(100), Len32Framer.frame(encode_message("/FOH/pong", [42])))
+
+    def test_anything_else_is_ignored(self):
+        c = self.tcp()
+        for args in ([], [1.0], ["7"], [1, 2]):
+            c.send_message("/mixer/ping", args)
+        c.send_packet(osc_string("/mixer/ping") + osc_string(",T"))   # an OSC true, not an int
+        c.send_message("/mixer/ping/x", [1])
+        self.udp().send_message("/mixer/ping", [5])
+        silent(self, c)
+        c.send_message("/mixer/ping", [9])                     # still answering
+        self.assertEqual(c.read_message().args, [9])
+
+
 class SnapshotOrdering(ServerCase):
     """F3, end to end: one controller sets values in a tight loop while others
     connect and sync. Every set a syncing controller receives after its

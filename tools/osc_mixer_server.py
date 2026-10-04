@@ -89,6 +89,8 @@ made here so you can compare against the real firmware once it exists):
     schemaVersion 1, deviceName, firmware (firmware_version: VERSION from
     the image, else git, else 'dev'), sampleRate, zones, modules, system,
     and values (sparse: non-defaults, plus system/deviceName).
+  - Ping (amendment H, F7): '/<root>/ping <int>' -> '/<name>/pong <int>',
+    same token, to the sender (TCP only; UDP never replies).
   - Ordering (F3): ClientRegistry.lock is held while a change is applied,
     stored and echoed, while any packet is sent, and while the config
     snapshot is read and sent. Echoes therefore follow the store order, two
@@ -546,8 +548,20 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
         reply_config(state, registry, reply_sock, via)
     elif kind == "get":
         handle_get(tail, state, reply, via)
+    elif kind == "ping" and not tail:
+        handle_ping(msg.args, state, reply, via)
     else:
         log(f"    [{via}] ignoring unknown command kind {kind!r} in {msg.address!r}")
+
+
+def handle_ping(args, state, reply, via):
+    """Amendment H (F7): /<name>/ping <token:int> -> /<name>/pong <token:int>,
+    the same token, to the sender. Anything but one int token is ignored, as
+    the mock does (a ping is optional; no error reply)."""
+    if len(args) != 1 or not isinstance(args[0], int) or isinstance(args[0], bool):
+        log(f"    [{via}] ping without one int token {args!r}; ignored")
+        return
+    reply(encode_message(f"/{state.mixer_name}/pong", [args[0]]))
 
 
 def handle_packet(packet, state, registry, reply_sock, via):
