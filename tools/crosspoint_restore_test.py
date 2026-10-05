@@ -19,8 +19,15 @@ ear. The 144 levels of the Phase 8 (12 x 12) test are unchanged; the 256 AVB
 crosspoints use level ranges of their own (build_pattern), so a bank written
 to the wrong place can't match by accident.
 
-    set      (Pi)     send all 400 levels over OSC, check each echo
-    check-hw (board)  read all 400 gain registers, compare with PATTERN
+Phase 12 adds the bus layer: input levels -> inputMatrix (now input -> bus)
+-> bus levels -> busMatrix -> output levels. BUS_PATTERN gives 32 of those
+parameters their own levels, on the AVB channels only, so everything above
+still holds (input k -> bus k -> output k at 0 dB elsewhere); check-hw reads
+all four bus-layer windows too (860 registers in all). --no-bus-layer: the
+old 400 only.
+
+    set      (Mac)    send all 400 (+32) levels over OSC, check each echo
+    check-hw (board)  read all gain registers, compare with the patterns
     analyze  (Mac)    measure the 64 USB crosspoints from a recording
     compare  (any)    two analyze results (before / after the power pull)
     pattern  (any)    print the table
@@ -130,6 +137,44 @@ def build_pattern():
 PATTERN = build_pattern()
 
 
+def build_bus_pattern():
+    """Phase 12: {OSC tail: dB} for the bus layer, ON THE AVB CHANNELS ONLY
+    (they have no source on the bench), so the USB audio analysis and the
+    Pmods by ear still see input k -> bus k -> output k at 0 dB. Ranges
+    disjoint from each other: input levels -1.0 .. -2.75, bus levels
+    -3.0 .. -4.75, output levels -5.0 .. -6.75, and AVB bus b -> AVB output
+    b+1 (wrapping) at -20.0 .. -21.75 in the bus matrix."""
+    p = {}
+    for n, c in enumerate(AVB):
+        p[f"inputChannel/{c}/level"] = -1.0 - 0.25 * n
+        p[f"busChannel/{c}/level"] = -3.0 - 0.25 * n
+        p[f"outputChannel/{c}/level"] = -5.0 - 0.25 * n
+        p[f"busMatrix/{c}_{AVB[(n + 1) % len(AVB)]}/level"] = -20.0 - 0.25 * n
+    return p
+
+
+BUS_PATTERN = build_bus_pattern()
+
+
+def bus_layer_expected():
+    """What the four bus-layer windows must hold after `set`: the reset state
+    (bus matrix identity, levels 0 dB) with BUS_PATTERN on top.
+    {window: {index: dB}}, index (out, bus) for the bus matrix, else channel."""
+    exp = {"busmatrix": {(o, b): (0.0 if o == b else OFF_DB) for o in range(N) for b in range(N)},
+           "inlevel": {c: 0.0 for c in range(N)},
+           "buslevel": {c: 0.0 for c in range(N)},
+           "outlevel": {c: 0.0 for c in range(N)}}
+    window = {"inputChannel": "inlevel", "busChannel": "buslevel", "outputChannel": "outlevel"}
+    for tail, db in BUS_PATTERN.items():
+        zone, index, _module = tail.split("/")
+        if zone == "busMatrix":
+            b, o = (int(x) for x in index.split("_"))
+            exp["busmatrix"][(o, b)] = db
+        else:
+            exp[window[zone]][int(index)] = db
+    return exp
+
+
 # ----------------------------------------------------------------- OSC (set)
 
 def cmd_set(a):
@@ -138,24 +183,31 @@ def cmd_set(a):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from osc_codec import TCPLink
     link = TCPLink(a.host, a.port, timeout=3, framing=a.tcp_framing).connect()
+    params = [(f"inputMatrix/{i}_{o}/level", db)
+              for (i, o), db in sorted(PATTERN.items(), key=lambda x: (x[0][1], x[0][0]))]
+    if not a.no_bus_layer:
+        params += sorted(BUS_PATTERN.items())
     bad = 0
-    for (i, o), db in sorted(PATTERN.items(), key=lambda x: (x[0][1], x[0][0])):
-        addr = f"/{a.name}/set/inputMatrix/{i}_{o}/level"
+    for tail, db in params:
+        addr = f"/{a.name}/set/{tail}"
         link.send_message(addr, [float(db)])
-        while True:                                  # wait for this echo
+        while True:                                  # wait for this echo (or its refusal)
             try:
                 m = link.read_message()
             except ConnectionResetError:
                 sys.exit("connection closed by the server")
-            if m.address == addr:
+            if m.address == addr or (m.address.endswith("/error") and m.args and m.args[0] == tail):
                 break
+        if m.address != addr:
+            print(f"  {tail}: refused ({m.args[1] if len(m.args) > 1 else '?'})")
+            bad += 1
+            continue
         got = m.args[0] if m.args else None
         if got is None or abs(got - db) > 0.01:
-            print(f"  {i}_{o}: sent {db}, echoed {got}")
+            print(f"  {tail}: sent {db}, echoed {got}")
             bad += 1
     link.close()
-    print(f"set: {len(PATTERN)} crosspoints sent, {len(PATTERN) - bad} echoed as sent, "
-          f"{bad} differ")
+    print(f"set: {len(params)} levels sent, {len(params) - bad} echoed as sent, {bad} differ")
     return 1 if bad else 0
 
 
@@ -167,14 +219,25 @@ def cmd_check_hw(a):
     m = mixer_hw.open_window("matrix")
     if (m.n_in, m.n_out) != (N, N):
         sys.exit(f"matrix is {m.n_in}x{m.n_out}, expected {N}x{N}")
-    bad = 0
+    bad = total = 0
     for (i, o), db in sorted(PATTERN.items()):
         want = mixer_hw.db_to_code(db, m.gain_frac, m.gain_width)[0]
         got = m.read_coef(o * m.n_in + i)
+        total += 1
         if got != want:
-            print(f"  {i}_{o}: register {got:#x}, expected {want:#x} ({db} dB)")
+            print(f"  inputMatrix {i}_{o}: register {got:#x}, expected {want:#x} ({db} dB)")
             bad += 1
-    print(f"check-hw: {len(PATTERN) - bad}/{len(PATTERN)} gain registers match the pattern")
+    if not a.no_bus_layer:                           # Phase 12: the four bus-layer windows
+        for name, levels in bus_layer_expected().items():
+            w = mixer_hw.open_window(name)
+            for index, db in sorted(levels.items()):
+                want = mixer_hw.db_to_code(db, w.gain_frac, w.gain_width)[0]
+                got = w.read_coef(index[0] * w.n_in + index[1] if name == "busmatrix" else index)
+                total += 1
+                if got != want:
+                    print(f"  {name} {index}: register {got:#x}, expected {want:#x} ({db} dB)")
+                    bad += 1
+    print(f"check-hw: {total - bad}/{total} gain registers match the pattern")
     return 1 if bad else 0
 
 
@@ -293,8 +356,12 @@ def main():
     s.add_argument("--name", default="mixer", help="mixer name (OSC address root)")
     s.add_argument("--tcp-framing", choices=("len32", "none"), default="len32",
                    help="TCP framing the mixer uses (default len32; none for older firmware)")
+    s.add_argument("--no-bus-layer", action="store_true",
+                   help="inputMatrix only (a mixer from before Phase 12)")
     s = sub.add_parser("check-hw")
     s.add_argument("--tools", default="/usr/lib/fpgamixer", help="where mixer_hw.py is")
+    s.add_argument("--no-bus-layer", action="store_true",
+                   help="the input matrix only (a bitstream from before Phase 12)")
     s = sub.add_parser("analyze")
     s.add_argument("wav", nargs="+")
     s.add_argument("--save")

@@ -2,7 +2,7 @@
 
 *Opening prompt: `prompt_phase12_channels_buses.md`. Branch `phase12-levels-buses`, from `controller-support` at `6e70512`.*
 
-**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 done in simulation (§6.1–§6.3), step 4 built clean (§6.4, `p12`); step 5 (software) next.**
+**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 done in simulation (§6.1–§6.3), step 4 built clean (§6.4, `p12`), step 5 software done (§6.5); step 6 (image + bench) next.**
 
 ---
 
@@ -193,6 +193,29 @@ Icarus not run (not installed on this PC).
 **SDT** (`sdtgen` on `fpgamixer_p12.xsa` → `build/sdt`; the P9.5 one kept as `build/sdt.p95`): **`psu_init.tcl`, `psu_init.c`, `psu_init.h`, `zynqmp.dtsi`, `zynqmp-clk-ccf.dtsi`, `zynqmp-u-boot.dtsi` identical**: no PS setting changed. `pcw.dtsi` adds exactly `M_AXI_BUSMX@80005000`, `M_AXI_INLVL@80006000`, `M_AXI_BUSLVL@80007000`, `M_AXI_OUTLVL@80008000` (the nodes `mixer_hw`'s presence guard needs); `system-top.dts` only their address-map entries; `pl.dtsi` only `firmware-name` (`fpgamixer_p12.bit.bin`).
 
 Not done yet: copying the SDT to the VM and `gen-machine-conf` (with the image, step 6).
+
+### 6.5 Step 5: software (PC and VM): PASS
+
+| File | What |
+|---|---|
+| `tools/mixer_hw.py` | `WindowAbsent` (the device-tree guard's refusal, a `RuntimeError`, so `info` still reports it); **`GainHW`** (ID `0x474E_5001`; N, TAP, width, frac from CONFIG; `set_db` / `read_db` / `set_bank_db` per channel) with **`InputLevelHW` / `BusLevelHW` / `OutputLevelHW`** refusing a window whose TAP isn't theirs; `WINDOWS` + `busmatrix` 0x8000_5000, `inlevel` 0x8000_6000, `buslevel` 0x8000_7000, `outlevel` 0x8000_8000; `BUS_LAYER`. CLI: `dump [window]`, `set <out> <in> <dB> [window]`, `identity [window]`, new `level <window> <ch> <dB>` |
+| `tools/osc_mixer_server.py` | `level_module()` (the one `level`, D77) used by every backend; **`GainBackend`** (channel zones; seeds missing levels at **0 dB**, normalises stored ones, pushes one bank); `MatrixBackend` serves `busMatrix` too; **`build_backends`**: with `--hw` the input matrix plus the four bus-layer windows, **all or none** (none = an older bitstream: `inputMatrix` only, input → output, logged), refusing a partial set, sizes that don't chain (input levels = matrix inputs, matrix outputs = buses = bus levels, output levels = bus-matrix outputs) or a different gain format; without `--hw` the same five zones at `--matrix-size`, or the old one with **`--no-bus-layer`**. Zones in signal-flow order. Docstring: the "bus = output for now" paragraph rewritten |
+| `tools/crosspoint_restore_test.py` | **`BUS_PATTERN`**: 32 bus-layer parameters with their own levels, **on the AVB channels only** (input / bus / output levels, AVB bus → next AVB output), so the USB tone analysis and the Pmods by ear are unchanged (input k → bus k → output k at 0 dB elsewhere). `set` sends 400 + 32 and treats an error reply as a refusal instead of waiting forever; `check-hw` reads all five windows: **860 registers**. `--no-bus-layer` for older mixers |
+| `tools/test_osc_mixer_server.py` | four tests moved to the new topology on purpose (an unadvertised zone is now `auxChannel`, out-of-range channels and bus crosspoints refused; the old-state test now shows a stored `inputChannel` level coming live; fresh start includes the bus matrix identity and unity levels; the config shape is now `MockProfile.standard`'s five zones, in signal-flow order, with all 3 × 4 levels and both diagonals listed). New: `ConfigWithoutBusLayer` (the whole `Config` class again on `--no-bus-layer`, plus the old `hardwareToday` shape), `BusLayer` (set / echo / broadcast / store in every new zone, canonical channel index), **`StateFromBeforeBuses`** (decision L3 end to end: a pre-Phase-12 state loads unchanged, bus matrix seeded identity, levels 0 dB, file format unchanged), in-process `GainBackend` tests (drives hw by channel; seed is unity, keeps and normalises stored values, one bank; shares the `level` module with the matrix; the simulated model builds) |
+| `tools/test_mixer_hw.py` | new `BusLayer` class over fake 20-channel windows: GainHW header and TAP, wrong TAP refused, a matrix ID refused as a gain window, addressing / clamp / commit; `build_backends` with all five windows (zones, seeding, one commit per window, a stored bus level and bus crosspoint pushed at the right places), sets reaching the right window, an older bitstream (matrix only), a partial set, sizes that don't chain, a different gain format. `test_windows_map` covers the new entries. The three migration tests now say what they are (`only_matrix`: a pre-Phase-12 bitstream) |
+
+**A pre-existing failure, fixed (test only):** `test_state_from_4x4_migrates_onto_12x12` and `…_12x12_…_20x20` failed **at HEAD** on Linux (checked on the VM with an untouched copy): since controller-support step 3 the store holds every level at float32 precision, and these two compared with the double −6.0206. They now compare with `float32(-6.0206)`. (The controller-support doc's "138/138 on the VM" can't have included this file.) Also at HEAD, **on Windows only**, 7 `MediaClock`/`MediaClockSteer` tests in `test_mixer_hw` error (Linux mmap flags, no `skipIf` like the other classes); not touched here, they pass on the VM.
+
+**Results:**
+- **Windows** (`test_osc_mixer_server`, `test_mixer_params`): **94 / 94** (1 skip: the five-zone shape test inherited by `ConfigWithoutBusLayer`).
+- **VM** (Python 3.12.3, as the board): `test_mixer_hw`, `test_mixer_state`, `test_osc_mixer_server`, `test_mixer_params`, `test_mediaclock`: **150 / 150** (same skip). The whole `tools` suite: 254, of which the 20 `test_avb_net` tests error only because the copy lacked the Yocto layer's `avb.conf` they read; not related.
+- **Restore tool:** `set` against a simulated 20-channel server: **432 sent, 432 echoed**; `check-hw` against fake windows filled through the real backends: **860 / 860**, and with one planted wrong register **859 / 860**, naming it (`outlevel 15`).
+
+**Mutation test (on the VM): 12 of 12 killed**, after the runner's baseline check caught a race in one of my new tests (`BusLayer`: the second client wasn't registered before the first set; fixed with the `get` the other broadcast tests use, then 3 clean reruns). Killed: channel levels seeded off instead of unity (6 failures), a partial bus layer accepted, chain sizes unchecked, bus and output level windows swapped, gain apply one channel off, the gain zones' `level` described differently (the model refuses: 51 failures), the simulator without the bus layer by default, `--no-bus-layer` ignored, TAP unchecked, input/output level addresses swapped, TAP or N read from the wrong CONFIG byte.
+
+**What the app will see on a Phase 12 board** (20 channels): five zones, `inputChannel` / `busChannel` / `outputChannel` with `count` 20 and `inputMatrix` / `busMatrix` 20 × 20, one `level` module (−90 … +6.02, default −90), and `values` listing the 60 channel levels and both diagonals at 0 dB. That is `MockProfile.standard`'s shape at 20, which the app was built against; nothing in the app changes. Matrix axes get labelled from the channel zones (D76).
+
+**Note for the bench:** a state file written by a server before 2026-10-04 could hold `inputChannel/…` values stored generically (the `ctl1` SIGTERM test once set `inputChannel/5/level`). With this server they become live levels. Flashing the image erases the state, so it doesn't arise on the bench.
 
 ## 7. Not in this phase
 

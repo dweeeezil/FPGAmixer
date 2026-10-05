@@ -328,8 +328,10 @@ class ErrorsAndValues(ServerCase):
     def test_unknown_paths_refused_for_set_and_get(self):
         a, b = self.tcp(), self.tcp()
         self.get(b, "system/deviceName")
-        for tail, path in [("inputChannel/0/level", "inputChannel/0/level"),     # zone not advertised
+        for tail, path in [("auxChannel/0/level", "auxChannel/0/level"),         # zone not advertised
+                           ("inputChannel/4/level", "inputChannel/4/level"),     # channel out of range
                            ("inputMatrix/4_0/level", "inputMatrix/4_0/level"),   # out of range
+                           ("busMatrix/0_4/level", "busMatrix/0_4/level"),
                            ("inputMatrix/0_0/delay/", "inputMatrix/0_0/delay"),  # module not there
                            ("inputMatrix/0_0", "inputMatrix/0_0"),
                            ("system/location", "system/location"),
@@ -380,17 +382,22 @@ class ErrorsAndValues(ServerCase):
         c = self.tcp()
         self.assertEqual([self.get(c, f"inputMatrix/{i}_{o}/level") for i, o in ((0, 0), (3, 3), (0, 1), (3, 2))],
                          [0.0, 0.0, -90.0, -90.0])
+        # Phase 12 (L7): bus matrix identity, every channel level at unity
+        self.assertEqual([self.get(c, f"busMatrix/{b}_{o}/level") for b, o in ((0, 0), (3, 3), (1, 0), (2, 3))],
+                         [0.0, 0.0, -90.0, -90.0])
+        for zone in ("inputChannel", "busChannel", "outputChannel"):
+            self.assertEqual([self.get(c, f"{zone}/{n}/level") for n in range(4)], [0.0] * 4, zone)
 
     def test_udp_refusals_are_only_logged(self):
         c = self.tcp()
         self.get(c, "system/deviceName")
         u = self.udp()
-        u.send_message("/mixer/set/inputChannel/0/level", [-6.0])
+        u.send_message("/mixer/set/inputChannel/9/level", [-6.0])
         u.send_message(XP.format(0, 1), ["x"])
         u.send_message("/mixer/set/system/sampleRate", [44100.0])
         silent(self, c)
         log = self.log()
-        for path in ("inputChannel/0/level", "inputMatrix/0_1/level", "system/sampleRate"):
+        for path in ("inputChannel/9/level", "inputMatrix/0_1/level", "system/sampleRate"):
             self.assertIn(f"refused {path}", log)
 
     def test_float32_echo(self):
@@ -403,6 +410,7 @@ class OldStateFile(ServerCase):
 
     STATE = {"system": {"deviceName": "mixer"},
              "inputChannel": {"0": {"level": -12.0}},
+             "auxChannel": {"0": {"level": -3.0}},
              "inputMatrix": {"0_0": {"level": -99.9, "delay": 2.39},
                              "0_1": {"level": 50.0},
                              "1_0": {"level": "loud"},
@@ -419,10 +427,15 @@ class OldStateFile(ServerCase):
         self.assertEqual(self.get(c, "inputMatrix/0_1/level"), float32(SIM_MAX_DB))  # was 50
         self.assertEqual(self.get(c, "inputMatrix/1_0/level"), -90.0)            # unusable: reset routing
         self.assertEqual(self.get(c, "inputMatrix/1_1/level"), -6.0)             # kept
-        c.send_message("/mixer/get/inputChannel/0/level")
+        # Phase 12: inputChannel is served now, so a stored level is live
+        # (and not reseeded); a zone the mixer doesn't have stays unreachable
+        self.assertEqual(self.get(c, "inputChannel/0/level"), -12.0)
+        self.assertEqual(self.get(c, "inputChannel/1/level"), 0.0)               # seeded: unity
+        c.send_message("/mixer/get/auxChannel/0/level")
         self.assertEqual(c.read_message().address, "/mixer/error")               # unreachable...
         tree = self.state()
-        self.assertEqual(tree["inputChannel"], {"0": {"level": -12.0}})          # ...but kept
+        self.assertEqual(tree["auxChannel"], {"0": {"level": -3.0}})             # ...but kept
+        self.assertEqual(tree["inputChannel"]["0"], {"level": -12.0})
         self.assertEqual(tree["inputMatrix"]["0_0"]["delay"], 2.39)
         self.assertEqual(tree["inputMatrix"]["0_0"]["level"], -90.0)
         self.assertEqual(tree["inputMatrix"]["1_0"]["level"], -90.0)
@@ -465,6 +478,23 @@ class FakeMatrixHW:
         return "fake"
 
 
+class FakeGainHW:
+    """Records what a GainBackend writes; set_db clamps like mixer_hw."""
+
+    def __init__(self):
+        self.writes, self.banks = [], []
+
+    def set_db(self, ch, db):
+        self.writes.append((ch, db))
+        return max(db, -90.0)
+
+    def set_bank_db(self, levels):
+        self.banks.append(dict(levels))
+
+    def status(self):
+        return "fake"
+
+
 class InProcess(unittest.TestCase):
     """Backend and server functions called directly (no sockets)."""
 
@@ -492,6 +522,35 @@ class InProcess(unittest.TestCase):
         self.assertEqual((spec.kind, spec.rows, spec.cols, spec.modules), ("matrix", 3, 2, ("level",)))
         self.assertEqual((modules["level"].min, modules["level"].max, modules["level"].default),
                          (-90.0, 6.0, -90.0))
+
+    def test_gain_backend_drives_hw_by_channel(self):
+        hw = FakeGainHW()
+        b = self.srv.GainBackend("busChannel", hw, 4, max_db=6.0)
+        self.assertEqual(b.apply("3", "level", -6.0), -6.0)
+        self.assertEqual(hw.writes, [(3, -6.0)])
+
+    def test_gain_seed_is_unity_keeps_stored_and_normalises(self):
+        hw = FakeGainHW()
+        self.state.set("outputChannel/1/level", -12.0)
+        self.state.set("outputChannel/2/level", -120.0)           # an older server's -inf
+        self.srv.GainBackend("outputChannel", hw, 3, max_db=6.0).seed_and_push(self.state)
+        self.assertEqual(hw.banks, [{0: 0.0, 1: -12.0, 2: -90.0}])  # one bank, one commit
+        self.assertEqual(self.state.get("outputChannel/0/level"), 0.0)   # seeded into the store
+        self.assertEqual(self.state.get("outputChannel/2/level"), -90.0)
+
+    def test_gain_describe_shares_the_level_module(self):
+        spec, modules = self.srv.GainBackend("inputChannel", None, 5, max_db=6.0).describe()
+        self.assertEqual((spec.kind, spec.count, spec.modules), ("channels", 5, ("level",)))
+        _mspec, mmodules = self.srv.MatrixBackend("inputMatrix", None, 5, 5, max_db=6.0).describe()
+        self.assertEqual(modules["level"], mmodules["level"])     # one module (D77)
+
+    def test_simulated_bus_layer_builds_one_model(self):
+        backends = self.srv.build_backends(False, 6)
+        self.assertEqual(list(backends), ["inputChannel", "inputMatrix", "busChannel",
+                                          "busMatrix", "outputChannel"])
+        model = self.srv.build_model(backends, self.srv.SYSTEM_SETTINGS)
+        self.assertEqual(set(model.zones), set(backends))
+        self.assertEqual(list(self.srv.build_backends(False, 6, bus_layer=False)), ["inputMatrix"])
 
     def test_hw_ceiling_comes_from_the_window_geometry(self):
         self.assertAlmostEqual(self.srv.q_ceiling_db(18, 16), 6.02053, places=5)   # Q2.16
@@ -829,18 +888,32 @@ class Config(ServerCase):
         d = self.config(self.tcp())
         self.assertEqual(app_config_problems(d), [])
 
-    def test_shape_matches_the_mocks_hardware_today_profile(self):
+    def test_shape_matches_the_mocks_standard_profile(self):
+        """Phase 12: the five zones of MockProfile.standard (8 there, 4 here),
+        level only, the shared level module as the large profiles have it
+        (default off, D77), and the reset state listed explicitly: both
+        diagonals and every channel level at 0 dB."""
         d = self.config(self.tcp())
         self.assertEqual(set(d), {"schemaVersion", "deviceName", "firmware", "sampleRate", "zones",
                                   "modules", "system", "values"})
-        self.assertEqual(d["zones"], {"inputMatrix": {"rows": 4, "cols": 4, "modules": ["level"]}})
+        ch = {"count": 4, "modules": ["level"]}
+        mx = {"rows": 4, "cols": 4, "modules": ["level"]}
+        self.assertEqual(d["zones"], {"inputChannel": ch, "inputMatrix": mx, "busChannel": ch,
+                                      "busMatrix": mx, "outputChannel": ch})
+        self.assertEqual(list(d["zones"]), ["inputChannel", "inputMatrix", "busChannel",
+                                            "busMatrix", "outputChannel"])   # signal-flow order
+        self.assertEqual(set(d["modules"]), {"level"})
         level = d["modules"]["level"]
         self.assertEqual(set(level), set(HARDWARE_TODAY_LEVEL))
         for key in ("type", "unit", "min", "default", "group"):
             self.assertEqual(level[key], HARDWARE_TODAY_LEVEL[key], key)
         self.assertAlmostEqual(level["max"], 6.02, places=2)     # the real ceiling, 6.0205
         self.assertEqual(d["values"], {**{f"inputMatrix/{i}_{i}/level": 0.0 for i in range(4)},
-                                       "system/deviceName": "FOH"})   # unity diagonal, as the profile
+                                       **{f"busMatrix/{i}_{i}/level": 0.0 for i in range(4)},
+                                       **{f"{z}/{n}/level": 0.0 for z in ("inputChannel", "busChannel",
+                                                                          "outputChannel")
+                                          for n in range(4)},
+                                       "system/deviceName": "FOH"})
         logged = re.search(r"Firmware (\S+);", self.log())      # sources: test_firmware_version_sources
         self.assertEqual(d["firmware"], logged.group(1))
 
@@ -873,6 +946,88 @@ class Config(ServerCase):
         self.udp().send_message("/mixer/get/system/config")
         silent(self, c)
 
+
+
+class ConfigWithoutBusLayer(Config):
+    """A bitstream from before Phase 12 (simulated: --no-bus-layer): the
+    config is exactly what the app's MockProfile.hardwareToday was built
+    against, one matrix, input -> output."""
+
+    SERVER_ARGS = ["--mixer-name", "FOH", "--no-bus-layer"]
+
+    def test_shape_matches_the_mocks_standard_profile(self):
+        self.skipTest("the five-zone shape is Config's")
+
+    def test_shape_matches_the_mocks_hardware_today_profile(self):
+        d = self.config(self.tcp())
+        self.assertEqual(d["zones"], {"inputMatrix": {"rows": 4, "cols": 4, "modules": ["level"]}})
+        self.assertEqual(d["values"], {**{f"inputMatrix/{i}_{i}/level": 0.0 for i in range(4)},
+                                       "system/deviceName": "FOH"})   # unity diagonal, as the profile
+
+
+class BusLayer(ServerCase):
+    """Phase 12: the channel zones and busMatrix take sets like inputMatrix:
+    applied with the same rules, echoed, stored under their own zones."""
+
+    def state(self):
+        time.sleep(0.6)
+        with open(os.path.join(self.dir, "state.json")) as f:
+            return json.load(f)
+
+    def test_sets_echo_and_store_in_every_zone(self):
+        a, b = self.tcp(), self.tcp()
+        self.get(b, "system/deviceName")                        # b is registered before a sets
+        cases = [("inputChannel/2/level", -6.0, -6.0), ("busChannel/3/level", 50.0, float32(SIM_MAX_DB)),
+                 ("outputChannel/0/level", -200.0, -90.0), ("busMatrix/1_3/level", -12.5, -12.5)]
+        for tail, sent, applied in cases:
+            self.assertEqual(self.roundtrip(a, f"/mixer/set/{tail}", sent), applied, tail)
+            m = b.read_message()                                    # broadcast to everyone
+            self.assertEqual((m.address, m.args), (f"/mixer/set/{tail}", [applied]))
+        tree = self.state()
+        self.assertEqual(tree["inputChannel"]["2"], {"level": -6.0})
+        self.assertEqual(tree["busChannel"]["3"], {"level": float32(SIM_MAX_DB)})
+        self.assertEqual(tree["outputChannel"]["0"], {"level": -90.0})
+        self.assertEqual(tree["busMatrix"]["1_3"], {"level": -12.5})
+
+    def test_channel_index_is_canonical(self):
+        c = self.tcp()
+        c.send_message("/mixer/set/busChannel/02/level", [-3.0])
+        m = c.read_message()
+        self.assertEqual((m.address, m.args), ("/mixer/set/busChannel/2/level", [-3.0]))
+
+
+class StateFromBeforeBuses(ServerCase):
+    """Decision L3: a state file from before Phase 12 (inputMatrix only, then
+    input -> output) loads unchanged onto the bus layer. Its crosspoints keep
+    their values; the bus matrix is seeded at identity and every level at
+    0 dB, so input -> bus k -> output k sounds as input -> output k did."""
+
+    STATE = {"system": {"deviceName": "mixer"},
+             "inputMatrix": {f"{i}_{o}": {"level": (0.0 if i == o else -90.0)}
+                             for i in range(4) for o in range(4)}}
+
+    def setUp(self):
+        self.STATE = json.loads(json.dumps(self.STATE))
+        self.STATE["inputMatrix"]["1_0"] = {"level": -6.0}        # in 1 -> out 0, as on the bench
+        self.STATE["inputMatrix"]["0_0"] = {"level": -90.0}
+        super().setUp()
+
+    def test_old_crosspoints_kept_and_the_rest_seeded_transparent(self):
+        c = self.tcp()
+        self.assertEqual(self.get(c, "inputMatrix/1_0/level"), -6.0)
+        self.assertEqual(self.get(c, "inputMatrix/0_0/level"), -90.0)
+        self.assertEqual(self.get(c, "inputMatrix/2_2/level"), 0.0)
+        for b in range(4):
+            for o in range(4):
+                self.assertEqual(self.get(c, f"busMatrix/{b}_{o}/level"), 0.0 if b == o else -90.0)
+        for zone in ("inputChannel", "busChannel", "outputChannel"):
+            self.assertEqual(self.get(c, f"{zone}/3/level"), 0.0)
+        time.sleep(0.6)
+        with open(os.path.join(self.dir, "state.json")) as f:
+            tree = json.load(f)
+        self.assertEqual(tree["inputMatrix"]["1_0"], {"level": -6.0})   # the format didn't change
+        self.assertEqual(set(tree), {"system", "inputMatrix", "inputChannel", "busChannel",
+                                     "busMatrix", "outputChannel"})
 
 
 class Ping(ServerCase):

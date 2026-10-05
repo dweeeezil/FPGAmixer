@@ -38,9 +38,13 @@ when the bitstream has the window. No node -> refuse, without touching the bus.
 
 As a bring-up CLI, on the board:
     python3 mixer_hw.py info                  # every window: ID, CONFIG, CTRL
-    python3 mixer_hw.py dump                  # matrix gains, in dB
-    python3 mixer_hw.py set <out> <in> <dB>   # one crosspoint, then COMMIT
-    python3 mixer_hw.py identity              # unity diagonal, rest off
+    python3 mixer_hw.py dump [window]         # gains in dB: matrix (default),
+                                              # busmatrix, inlevel, buslevel, outlevel
+    python3 mixer_hw.py set <out> <in> <dB> [window]   # one crosspoint, then COMMIT
+                                              # (window: matrix or busmatrix)
+    python3 mixer_hw.py level <window> <ch> <dB>       # one channel of a level
+                                              # stage (Phase 12), then COMMIT
+    python3 mixer_hw.py identity [window]     # unity diagonal, rest off
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
     python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
@@ -89,6 +93,12 @@ def dt_node_for(base, root=None, max_depth=4):
     return None
 
 
+class WindowAbsent(RuntimeError):
+    """The running device tree has no node for this window: the bitstream
+    doesn't have it. Raised before the bus is touched; callers that treat a
+    window as optional (an older bitstream) catch exactly this."""
+
+
 class RegWindow:
     """One axil_coef_window, mapped from /dev/mem."""
 
@@ -98,7 +108,7 @@ class RegWindow:
         self.base = base
         self._lock = threading.Lock()
         if dev == "/dev/mem" and not dt_node_for(base):
-            raise RuntimeError(
+            raise WindowAbsent(
                 f"no device-tree node for a register window at 0x{base:08x} under "
                 f"{DEVICE_TREE}: this image's bitstream doesn't have it (pre-Phase 5?). "
                 f"Refusing to touch the bus, since an access there would hang it.")
@@ -205,6 +215,64 @@ class MatrixHW(RegWindow):
         """levels: {(out, in): dB}; one COMMIT for the lot."""
         self.write_coefs({self._k(o, i): db_to_code(db, self.gain_frac, self.gain_width)[0]
                           for (o, i), db in levels.items()})
+
+
+class GainHW(RegWindow):
+    """A pcm_gain window (src/rtl/gain_regs_axil.sv, Phase 12): one level per
+    channel, in dB. CONFIG = [31:24] channels, [23:16] TAP (0 input, 1 bus,
+    2 output), [15:8] gain width, [7:0] gain fraction bits; COEF[c] = gain
+    of channel c. The three level stages share the ID; a subclass names the
+    TAP it expects, so opening the wrong one of the three is refused like a
+    wrong ID."""
+
+    ID = 0x474E_5001
+    TAP = None
+    TAP_NAMES = {0: "input", 1: "bus", 2: "output"}
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.tap = (self.config >> 16) & 0xFF
+        self.gain_width = (self.config >> 8) & 0xFF
+        self.gain_frac = self.config & 0xFF
+        if self.TAP is not None and self.tap != self.TAP:
+            raise RuntimeError(f"window at 0x{base:08x}: gain stage TAP {self.tap}, expected "
+                               f"{self.TAP} ({self.TAP_NAMES.get(self.TAP)} levels; wrong address map?)")
+
+    def describe(self):
+        return (f"{self.TAP_NAMES.get(self.tap, f'tap {self.tap}')} levels, {self.n} channels, "
+                f"Q{self.gain_width - self.gain_frac}.{self.gain_frac}")
+
+    def _c(self, ch):
+        if not 0 <= ch < self.n:
+            raise IndexError(f"channel {ch} outside {self.n} channels")
+        return ch
+
+    def read_db(self, ch):
+        return code_to_db(self.read_coef(self._c(ch)), self.gain_frac)
+
+    def set_db(self, ch, db, commit=True):
+        """Set one channel's level in dB. Returns the dB actually applied."""
+        code, applied = db_to_code(db, self.gain_frac, self.gain_width)
+        self.write_coefs({self._c(ch): code}, commit=commit)
+        return applied
+
+    def set_bank_db(self, levels):
+        """levels: {channel: dB}; one COMMIT for the lot."""
+        self.write_coefs({self._c(c): db_to_code(db, self.gain_frac, self.gain_width)[0]
+                          for c, db in levels.items()})
+
+
+class InputLevelHW(GainHW):
+    TAP = 0
+
+
+class BusLevelHW(GainHW):
+    TAP = 1
+
+
+class OutputLevelHW(GainHW):
+    TAP = 2
 
 
 class LinkStatHW(RegWindow):
@@ -362,7 +430,17 @@ WINDOWS = {
     "mclk":     (0x8000_2000, MediaClockHW),   # Phase 9 (phase9 bitstreams) only
     "mclkctl":  (0x8000_3000, MediaClockSteerHW),  # Phase 9 P9.4b bitstreams only
     "linkstat2": (0x8000_4000, LinkStatHW),    # link #2, Phase 9 P9.5 bitstreams only
+    # Phase 12 (every PS bitstream from then on): the bus layer. "matrix" is
+    # then the input matrix (input -> bus); "busmatrix" is bus -> output.
+    "busmatrix": (0x8000_5000, MatrixHW),
+    "inlevel":   (0x8000_6000, InputLevelHW),
+    "buslevel":  (0x8000_7000, BusLevelHW),
+    "outlevel":  (0x8000_8000, OutputLevelHW),
 }
+
+# The bus layer's windows: present all together (a Phase 12 bitstream) or not
+# at all (older ones, where "matrix" is input -> output).
+BUS_LAYER = ("busmatrix", "inlevel", "buslevel", "outlevel")
 
 COUNTERS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns", "tid_errors")
 
@@ -461,22 +539,37 @@ def _main(argv):
         print(f"{st.describe()}: {st.status()}")
         return 0
 
-    hw = open_window("matrix")
-    if cmd == "dump":
+    def fmt(db):
+        return f"{'off':>9}" if db == float("-inf") else f"{db:9.2f}"
+
+    if cmd == "level" and len(argv) == 5:
+        lv = open_window(argv[2])
+        if not isinstance(lv, GainHW):
+            print(f"{argv[2]} is not a level window ({', '.join(BUS_LAYER[1:])})")
+            return 2
+        applied = lv.set_db(int(argv[3]), float(argv[4]))
+        print(f"{argv[2]} ch {argv[3]}: {applied:.2f} dB, {lv.status()}")
+        return 0
+
+    # dump [window]; set <out> <in> <dB> [window]; identity [window]
+    name = {"dump": 2, "set": 5, "identity": 2}.get(cmd)
+    name = argv[name] if name is not None and len(argv) > name else "matrix"
+    hw = open_window(name)
+    if cmd == "dump" and isinstance(hw, GainHW):
+        print(f"{hw.describe()}")
+        for c in range(hw.n):
+            print(f"{c:>6} {fmt(hw.read_db(c))}")
+    elif cmd == "dump":
         print("out\\in " + "".join(f"{i:>9}" for i in range(hw.n_in)))
         for o in range(hw.n_out):
-            cells = []
-            for i in range(hw.n_in):
-                db = hw.read_db(o, i)
-                cells.append(f"{'off':>9}" if db == float("-inf") else f"{db:9.2f}")
-            print(f"{o:>6} " + "".join(cells))
-    elif cmd == "set" and len(argv) == 5:
+            print(f"{o:>6} " + "".join(fmt(hw.read_db(o, i)) for i in range(hw.n_in)))
+    elif cmd == "set" and len(argv) in (5, 6) and isinstance(hw, MatrixHW):
         applied = hw.set_db(int(argv[2]), int(argv[3]), float(argv[4]))
-        print(f"out {argv[2]} <- in {argv[3]}: {applied:.2f} dB, {hw.status()}")
-    elif cmd == "identity":
+        print(f"{name}: out {argv[2]} <- in {argv[3]}: {applied:.2f} dB, {hw.status()}")
+    elif cmd == "identity" and isinstance(hw, MatrixHW):
         hw.set_bank_db({(o, i): (0.0 if o == i else OFF_DB)
                         for o in range(hw.n_out) for i in range(hw.n_in)})
-        print(f"identity applied, {hw.status()}")
+        print(f"{name}: identity applied, {hw.status()}")
     else:
         print(__doc__)
         return 2

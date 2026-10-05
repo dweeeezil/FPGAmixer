@@ -16,6 +16,12 @@ import tempfile
 import unittest
 
 import mixer_hw
+from mixer_params import float32
+
+# A stored level comes back at OSC's float32 precision: seeding brings every
+# value inside the module's rules, rounding included (controller support
+# step 3). The migration tests compared with the double until 2026-10-04.
+DB_6 = float32(-6.0206)
 
 
 def make_window_file(ident=0x4D585001, config=0x04041210):
@@ -31,6 +37,25 @@ def reg(path, off, signed=False):
     with open(path, "rb") as f:
         f.seek(off)
         return struct.unpack("<i" if signed else "<I", f.read(4))[0]
+
+
+def only_matrix(path):
+    """open_window for a bitstream from before Phase 12: the matrix window at
+    `path`, and no bus-layer windows (absent from the device tree)."""
+    def open_window(name, dev=path):
+        if name != "matrix":
+            raise mixer_hw.WindowAbsent(f"no {name}")
+        return mixer_hw.MatrixHW(0, dev)
+    return open_window
+
+
+def fake_windows(paths):
+    """open_window over fake files: {name: path}; names not given are absent."""
+    def open_window(name, dev=None):
+        if name not in paths:
+            raise mixer_hw.WindowAbsent(f"no {name}")
+        return mixer_hw.WINDOWS[name][1](0, paths[name])
+    return open_window
 
 
 class DeviceTreeGuard(unittest.TestCase):
@@ -118,7 +143,7 @@ class Registers(unittest.TestCase):
         from mixer_state import MixerState
         srv.log = lambda m: None
         real_open = mixer_hw.open_window
-        mixer_hw.open_window = lambda name, dev=self.path: mixer_hw.MatrixHW(0, dev)
+        mixer_hw.open_window = only_matrix(self.path)      # a pre-Phase-12 bitstream
         try:
             state = MixerState("mixer", None)
             state.set("inputMatrix/2_1/level", -6.0206)          # restored: in 2 -> out 1
@@ -143,7 +168,7 @@ class Registers(unittest.TestCase):
         os.unlink(self.path)
         self.path = make_window_file(config=0x0C0C1210)          # 12 out, 12 in, Q2.16
         real_open = mixer_hw.open_window
-        mixer_hw.open_window = lambda name, dev=self.path: mixer_hw.MatrixHW(0, dev)
+        mixer_hw.open_window = only_matrix(self.path)      # a pre-Phase-12 bitstream
         try:
             state = MixerState("mixer", None)
             for i in range(4):                                    # a full old 4x4 file
@@ -165,7 +190,7 @@ class Registers(unittest.TestCase):
         self.assertEqual(reg(self.path, k(11, 11)), 0x10000)
         self.assertEqual(reg(self.path, k(4, 0)), 0)              # new: off
         self.assertEqual(reg(self.path, k(0, 4)), 0)
-        self.assertEqual(state.get("inputMatrix/0_2/level"), -6.0206)  # store untouched
+        self.assertEqual(state.get("inputMatrix/0_2/level"), DB_6)     # store keeps it (float32)
         self.assertEqual(state.get("inputMatrix/5_5/level"), 0.0)      # and seeded
         self.assertEqual(state.get("inputMatrix/5_3/level"), -90.0)
         self.assertEqual(reg(self.path, mixer_hw.REG_CTRL) & 1, 1)     # committed
@@ -183,7 +208,7 @@ class Registers(unittest.TestCase):
         os.unlink(self.path)
         self.path = make_window_file(config=0x14141210)          # 20 out, 20 in, Q2.16
         real_open = mixer_hw.open_window
-        mixer_hw.open_window = lambda name, dev=self.path: mixer_hw.MatrixHW(0, dev)
+        mixer_hw.open_window = only_matrix(self.path)      # a pre-Phase-12 bitstream
         try:
             state = MixerState("mixer", None)
             for i in range(12):                                   # a full old 12x12 file
@@ -212,7 +237,7 @@ class Registers(unittest.TestCase):
         self.assertEqual(reg(self.path, k(12, 0)), 0)             # AVB 1 -> JB_L: off
         on = [kk for kk in range(400) if reg(self.path, 0x100 + 4 * kk)]
         self.assertEqual(len(on), 11 + 2 + 8)                     # 11 old diagonal + 2 routes + 8 AVB
-        self.assertEqual(state.get("inputMatrix/4_0/level"), -6.0206)  # store untouched
+        self.assertEqual(state.get("inputMatrix/4_0/level"), DB_6)     # store keeps it (float32)
         self.assertEqual(state.get("inputMatrix/11_11/level"), -90.0)
         self.assertEqual(state.get("inputMatrix/19_19/level"), 0.0)    # and seeded
         self.assertEqual(state.get("inputMatrix/19_4/level"), -90.0)
@@ -220,13 +245,135 @@ class Registers(unittest.TestCase):
 
     def test_windows_map(self):
         """The address map mirrors assign_bd_address (create_project.tcl):
-        link #2's status window at 0x8000_4000 is a LinkStatHW, and no two
-        windows share a base."""
+        link #2's status window at 0x8000_4000 is a LinkStatHW; the Phase 12
+        bus layer at 0x8000_5000..8000 (decision L6); no two windows share a
+        base."""
         self.assertEqual(mixer_hw.WINDOWS["linkstat2"], (0x8000_4000, mixer_hw.LinkStatHW))
+        self.assertEqual(mixer_hw.WINDOWS["busmatrix"], (0x8000_5000, mixer_hw.MatrixHW))
+        self.assertEqual(mixer_hw.WINDOWS["inlevel"], (0x8000_6000, mixer_hw.InputLevelHW))
+        self.assertEqual(mixer_hw.WINDOWS["buslevel"], (0x8000_7000, mixer_hw.BusLevelHW))
+        self.assertEqual(mixer_hw.WINDOWS["outlevel"], (0x8000_8000, mixer_hw.OutputLevelHW))
+        self.assertEqual(mixer_hw.BUS_LAYER, ("busmatrix", "inlevel", "buslevel", "outlevel"))
         bases = [b for b, _cls in mixer_hw.WINDOWS.values()]
         self.assertEqual(len(bases), len(set(bases)))
         self.assertTrue(all(b % mixer_hw.WINDOW_SIZE == 0 and 0x8000_0000 <= b < 0x8010_0000
                             for b in bases))
+
+
+@unittest.skipIf(os.name == "nt", "mmap with Linux flags")
+class BusLayer(unittest.TestCase):
+    """Phase 12: the gain-stage windows (GainHW) and the server's bus layer
+    over fake 20-channel windows."""
+
+    GAIN_ID = 0x474E5001
+    MATRIX_20 = 0x14141210                      # 20 out, 20 in, Q2.16
+
+    def setUp(self):
+        self.paths = {"matrix": make_window_file(config=self.MATRIX_20),
+                      "busmatrix": make_window_file(config=self.MATRIX_20),
+                      "inlevel": make_window_file(self.GAIN_ID, 0x14001210),
+                      "buslevel": make_window_file(self.GAIN_ID, 0x14011210),
+                      "outlevel": make_window_file(self.GAIN_ID, 0x14021210)}
+        import osc_mixer_server as srv
+        srv.log = lambda m: None
+        self.srv = srv
+
+    def tearDown(self):
+        for p in self.paths.values():
+            os.unlink(p)
+
+    def build(self, paths):
+        real_open = mixer_hw.open_window
+        mixer_hw.open_window = fake_windows(paths)
+        try:
+            return self.srv.build_backends(True, 4)
+        finally:
+            mixer_hw.open_window = real_open
+
+    def test_gain_header_and_tap(self):
+        g = mixer_hw.OutputLevelHW(0, dev=self.paths["outlevel"])
+        self.assertEqual((g.n, g.tap, g.gain_width, g.gain_frac), (20, 2, 18, 16))
+        self.assertEqual(g.describe(), "output levels, 20 channels, Q2.16")
+
+    def test_wrong_tap_refused(self):
+        with self.assertRaises(RuntimeError) as cm:
+            mixer_hw.InputLevelHW(0, dev=self.paths["outlevel"])
+        self.assertIn("TAP 2, expected 0", str(cm.exception))
+
+    def test_matrix_id_refused_as_a_gain_window(self):
+        with self.assertRaises(RuntimeError):
+            mixer_hw.BusLevelHW(0, dev=self.paths["busmatrix"])
+
+    def test_gain_addressing_clamp_and_commit(self):
+        g = mixer_hw.BusLevelHW(0, dev=self.paths["buslevel"])
+        g.set_db(3, -6.0206)
+        self.assertEqual(reg(self.paths["buslevel"], 0x100 + 4 * 3), 0x8000)
+        self.assertEqual(reg(self.paths["buslevel"], mixer_hw.REG_CTRL) & 1, 1)
+        self.assertAlmostEqual(g.read_db(3), -6.0206, places=3)
+        self.assertAlmostEqual(g.set_db(19, 20.0), 6.0205, places=3)
+        self.assertEqual(reg(self.paths["buslevel"], 0x100 + 4 * 19), 0x1FFFF)
+        with self.assertRaises(IndexError):
+            g.set_db(20, 0.0)
+
+    def test_full_bus_layer_seeds_and_pushes_the_reset_state(self):
+        from mixer_state import MixerState
+        b = self.build(self.paths)
+        self.assertEqual(list(b), ["inputChannel", "inputMatrix", "busChannel", "busMatrix",
+                                   "outputChannel"])
+        state = MixerState("mixer", None)
+        state.set("busChannel/5/level", -6.0206)
+        state.set("busMatrix/2_7/level", -6.0206)               # bus 2 -> out 7
+        for backend in b.values():
+            backend.seed_and_push(state)
+        for name in ("inlevel", "outlevel"):
+            self.assertEqual([reg(self.paths[name], 0x100 + 4 * c) for c in range(20)], [0x10000] * 20)
+        self.assertEqual(reg(self.paths["buslevel"], 0x100 + 4 * 5), 0x8000)
+        self.assertEqual(reg(self.paths["buslevel"], 0x100 + 4 * 4), 0x10000)
+        k = lambda src, dst: 0x100 + 4 * (dst * 20 + src)
+        self.assertEqual(reg(self.paths["busmatrix"], k(2, 7)), 0x8000)
+        self.assertEqual(reg(self.paths["busmatrix"], k(7, 7)), 0x10000)
+        self.assertEqual(reg(self.paths["busmatrix"], k(7, 2)), 0)
+        self.assertEqual(reg(self.paths["matrix"], k(3, 3)), 0x10000)
+        for name, p in self.paths.items():
+            self.assertEqual(reg(p, mixer_hw.REG_CTRL) & 1, 1, name)   # each window committed
+        self.assertEqual(state.get("outputChannel/19/level"), 0.0)       # seeded into the store
+        self.assertEqual(state.get("busChannel/5/level"), DB_6)
+
+    def test_sets_reach_the_right_window(self):
+        b = self.build(self.paths)
+        b["inputChannel"].apply("1", "level", -6.0206)
+        b["outputChannel"].apply("2", "level", -6.0206)
+        b["busMatrix"].apply("4_6", "level", -6.0206)           # bus 4 -> out 6
+        self.assertEqual(reg(self.paths["inlevel"], 0x104), 0x8000)
+        self.assertEqual(reg(self.paths["outlevel"], 0x108), 0x8000)
+        self.assertEqual(reg(self.paths["buslevel"], 0x104), 0)
+        self.assertEqual(reg(self.paths["busmatrix"], 0x100 + 4 * (6 * 20 + 4)), 0x8000)
+        self.assertEqual(reg(self.paths["matrix"], 0x100 + 4 * (6 * 20 + 4)), 0)
+
+    def test_older_bitstream_serves_the_matrix_only(self):
+        b = self.build({"matrix": self.paths["matrix"]})
+        self.assertEqual(list(b), ["inputMatrix"])
+
+    def test_partial_bus_layer_refused(self):
+        paths = dict(self.paths)
+        del paths["buslevel"]
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(paths)
+        self.assertIn("incomplete: no window buslevel", str(cm.exception))
+
+    def test_sizes_that_dont_chain_refused(self):
+        os.unlink(self.paths["outlevel"])
+        self.paths["outlevel"] = make_window_file(self.GAIN_ID, 0x0C021210)   # 12 channels
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(self.paths)
+        self.assertIn("output levels / bus matrix outputs = 12 / 20", str(cm.exception))
+
+    def test_other_gain_format_refused(self):
+        os.unlink(self.paths["inlevel"])
+        self.paths["inlevel"] = make_window_file(self.GAIN_ID, 0x14001810)   # Q8.16
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(self.paths)
+        self.assertIn("'level' is one module", str(cm.exception))
 
 
 @unittest.skipIf(os.name == "nt", "mmap with Linux flags")

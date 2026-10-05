@@ -66,17 +66,23 @@ made here so you can compare against the real firmware once it exists):
     module's range, bools snapped, ints rounded, non-finite numbers remapped
     first (NaN, -inf -> -99.9; +inf -> +99.9); the echo carries the applied
     value, rounded to float32. Clamping is not an error.
-  - Crosspoints (Phase 5): '/<root>/set/inputMatrix/<in>_<out>/level <dB>'
-    sets the gain from input <in> to output <out> of the PL matrix. The
-    hardware has no bus layer yet, so "bus" = output for now. Level: -90 dB
-    (off, hard zero) to the gain ceiling read from the window (+6.02 dB for
-    Q2.16), default off. The rules are the same with or without --hw, so the
-    simulator behaves like the board. Every crosspoint without a stored
-    level is seeded at startup: 0 dB on the diagonal, -90 dB (off)
-    elsewhere -- the routing the bitstream resets to -- and stored levels
-    outside the range are brought inside it. With --hw the full matrix is
-    written to the PL on startup (restored state included), then each set
-    is applied as it arrives.
+  - Levels (Phase 5; the bus layer since Phase 12): the signal flow is
+    inputChannel -> inputMatrix -> busChannel -> busMatrix -> outputChannel.
+    '/<root>/set/inputMatrix/<in>_<bus>/level <dB>' sets the gain from
+    input <in> to bus <bus>; busMatrix/<bus>_<out> from bus to output;
+    inputChannel/<n>/level (and busChannel, outputChannel) a channel's
+    level. One 'level' module everywhere (level_module): -90 dB (off, hard
+    zero) to the gain ceiling read from the windows (+6.02 dB for Q2.16),
+    default off. The rules are the same with or without --hw, so the
+    simulator behaves like the board. At startup every parameter without a
+    stored level gets the reset state the bitstream has: matrices 0 dB on
+    the diagonal and off elsewhere (bus k -> output k, so a state file from
+    before Phase 12, whose inputMatrix was input -> output, sounds the same:
+    decision L3), channel levels 0 dB; stored levels outside the range are
+    brought inside it. With --hw every bank is written to the PL on startup
+    (restored state included), then each set is applied as it arrives. On a
+    bitstream without the bus-layer windows only inputMatrix is served, as
+    input -> output (build_backends).
   - Zones and backends: each OSC zone is served by one backend (a Backend
     subclass), listed in BACKENDS; one backend drives one register window
     (mixer_hw.WINDOWS) and describes its own zone. A new core block = a new
@@ -273,12 +279,23 @@ def send_error(reply, state, path, reason, via):
 
 
 # ---------------------------------------------------------------------------
-# Crosspoint levels -> matrix (hardware, or simulated with the same rules)
+# Levels -> matrices and gain stages (hardware, or simulated with the same rules)
 # ---------------------------------------------------------------------------
 
 MATRIX_ZONE = "inputMatrix"
+BUS_MATRIX_ZONE = "busMatrix"
+LEVEL_ZONES = ("inputChannel", "busChannel", "outputChannel")
 OFF_DB = -90.0            # mirrors mixer_hw.OFF_DB
 SIM_MAX_DB = 20.0 * math.log10(((1 << 17) - 1) / (1 << 16))  # Q2.16 ceiling
+
+
+def level_module(max_db):
+    """The one 'level' module (controller D77): float dB, -90 (off) to the
+    hardware ceiling, default off. Every zone describes it through this, so
+    matrices and channels can't drift apart (the model refuses a module two
+    zones describe differently)."""
+    return ModuleSpec("float", unit="dB", min=OFF_DB, max=float32(max_db),
+                      default=OFF_DB, group="level")
 
 
 class Backend:
@@ -315,19 +332,18 @@ def q_ceiling_db(width, frac):
 
 
 class MatrixBackend(Backend):
-    """<zone>/<in>_<out>/level -> one pcm_matrix. With hw (a mixer_hw.MatrixHW)
-    the level goes to the PL; with hw None the same rules run without it
-    (simulator). Levels: -90 dB (off) to the gain ceiling, default off; at
-    startup crosspoints without a stored level get the reset routing (0 dB on
-    the diagonal)."""
+    """<zone>/<src>_<dst>/level -> one pcm_matrix (inputMatrix: input -> bus;
+    busMatrix: bus -> output). With hw (a mixer_hw.MatrixHW) the level goes to
+    the PL; with hw None the same rules run without it (simulator). Levels:
+    -90 dB (off) to the gain ceiling, default off; at startup crosspoints
+    without a stored level get the reset routing (0 dB on the diagonal)."""
 
     def __init__(self, zone, hw, n_in, n_out, max_db=SIM_MAX_DB):
         super().__init__(zone)
         self.hw = hw
         self.n_in = n_in
         self.n_out = n_out
-        self.level = ModuleSpec("float", unit="dB", min=OFF_DB, max=float32(max_db),
-                                default=OFF_DB, group="level")
+        self.level = level_module(max_db)
 
     def describe(self):
         return (ZoneSpec("matrix", ("level",), rows=self.n_in, cols=self.n_out),
@@ -373,21 +389,116 @@ class MatrixBackend(Backend):
                 f"({self.hw.status()})")
 
 
+class GainBackend(Backend):
+    """<zone>/<channel>/level -> one pcm_gain (Phase 12: inputChannel,
+    busChannel, outputChannel). With hw (a mixer_hw.GainHW) the level goes to
+    the PL; with hw None the same rules run without it (simulator). The
+    module is the shared 'level' (default off, D77), so at startup every
+    channel without a stored level is seeded at 0 dB (unity, decision L7: the
+    gain stage's reset), the way the matrix seeds its diagonal; the config
+    then lists those levels explicitly."""
+
+    def __init__(self, zone, hw, n, max_db=SIM_MAX_DB):
+        super().__init__(zone)
+        self.hw = hw
+        self.n = n
+        self.level = level_module(max_db)
+
+    def describe(self):
+        return ZoneSpec("channels", ("level",), count=self.n), {"level": self.level}
+
+    def level_key(self, ch):
+        return f"{self.zone}/{ch}/level"
+
+    def apply(self, index, module, value):
+        if self.hw is not None:
+            return float32(self.hw.set_db(int(index), value))
+        return value
+
+    def seed_and_push(self, state):
+        """Fill in missing levels with 0 dB, bring stored ones inside the
+        rules, then (hw) push the whole bank in one commit."""
+        levels, seeded, normalised = {}, {}, 0
+        for ch in range(self.n):
+            key = self.level_key(ch)
+            stored = state.get(key, default=None)
+            db, why = self.level.apply(stored) if stored is not None else (None, "missing")
+            if db is None:
+                db = 0.0
+                seeded[key] = db
+            elif db != stored:
+                seeded[key] = db
+                normalised += 1
+            levels[ch] = db
+        if seeded:
+            for tail, why in state.set_many(seeded).items():
+                log(f"    could not seed {tail}: {why}")
+        if normalised:
+            log(f"    {normalised} stored {self.zone} level(s) brought inside "
+                f"{self.level.min}..{self.level.max} dB")
+        if self.hw is not None:
+            self.hw.set_bank_db(levels)
+            log(f"Pushed {len(levels)} {self.zone} level(s) to the PL ({self.hw.status()})")
+
+
 BACKENDS = {}  # zone -> Backend, filled in main()
 
 
-def build_backends(use_hw, matrix_size):
+def build_backends(use_hw, matrix_size, bus_layer=True):
     """The zone -> backend table. With use_hw each backend opens its register
-    window (mixer_hw.WINDOWS, checked by ID); without, the same backends run
-    in simulation with the given sizes."""
-    if use_hw:
-        import mixer_hw  # next to this script; needs /dev/mem
-        m = mixer_hw.open_window("matrix")
-        log(f"PL window 'matrix' at 0x{m.base:08x}: {m.describe()}")
-        backends = [MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out,
-                                  max_db=q_ceiling_db(m.gain_width, m.gain_frac))]
-    else:
-        backends = [MatrixBackend(MATRIX_ZONE, None, matrix_size, matrix_size)]
+    window (mixer_hw.WINDOWS, checked by ID; the level windows also by TAP);
+    without, the same backends run in simulation with the given size
+    (bus_layer False: as a bitstream from before Phase 12).
+
+    The bus layer (Phase 12): inputChannel -> inputMatrix -> busChannel ->
+    busMatrix -> outputChannel. Its four windows are present together or not
+    at all; on an older bitstream (none present) only inputMatrix is served,
+    and there it is still input -> output. A partial set, or sizes that don't
+    chain, is refused: the hardware isn't what this server describes."""
+    if not use_hw:
+        n = matrix_size
+        if not bus_layer:
+            return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, None, n, n)}
+        backends = [GainBackend("inputChannel", None, n), MatrixBackend(MATRIX_ZONE, None, n, n),
+                    GainBackend("busChannel", None, n), MatrixBackend(BUS_MATRIX_ZONE, None, n, n),
+                    GainBackend("outputChannel", None, n)]
+        return {b.zone: b for b in backends}
+
+    import mixer_hw  # next to this script; needs /dev/mem
+    m = mixer_hw.open_window("matrix")
+    log(f"PL window 'matrix' at 0x{m.base:08x}: {m.describe()}")
+    max_db = q_ceiling_db(m.gain_width, m.gain_frac)
+    found = {}
+    for name in mixer_hw.BUS_LAYER:
+        try:
+            found[name] = mixer_hw.open_window(name)
+        except mixer_hw.WindowAbsent:
+            continue
+        log(f"PL window '{name}' at 0x{found[name].base:08x}: {found[name].describe()}")
+    if not found:
+        log("No bus-layer windows (a bitstream from before Phase 12): inputMatrix is input -> output")
+        return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db)}
+    missing = [name for name in mixer_hw.BUS_LAYER if name not in found]
+    if missing:
+        raise RuntimeError(f"bus layer incomplete: no window {', '.join(missing)}")
+    bm, il, bl, ol = (found[name] for name in mixer_hw.BUS_LAYER)
+    chain = ((il.n, m.n_in, "input levels / input matrix inputs"),
+             (m.n_out, bm.n_in, "input matrix outputs / bus matrix inputs"),
+             (bl.n, bm.n_in, "bus levels / buses"),
+             (ol.n, bm.n_out, "output levels / bus matrix outputs"))
+    for a, b, what in chain:
+        if a != b:
+            raise RuntimeError(f"bus layer doesn't chain: {what} = {a} / {b}")
+    for w in (bm, il, bl, ol):
+        if (w.gain_width, w.gain_frac) != (m.gain_width, m.gain_frac):
+            raise RuntimeError(f"window at 0x{w.base:08x}: Q{w.gain_width - w.gain_frac}."
+                               f"{w.gain_frac}, the input matrix is Q{m.gain_width - m.gain_frac}."
+                               f"{m.gain_frac} ('level' is one module, D77)")
+    backends = [GainBackend("inputChannel", il, il.n, max_db=max_db),
+                MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db),
+                GainBackend("busChannel", bl, bl.n, max_db=max_db),
+                MatrixBackend(BUS_MATRIX_ZONE, bm, bm.n_in, bm.n_out, max_db=max_db),
+                GainBackend("outputChannel", ol, ol.n, max_db=max_db)]
     return {b.zone: b for b in backends}
 
 
@@ -696,9 +807,12 @@ def main():
                    help="drive the PL register windows (mixer_hw.WINDOWS) through /dev/mem "
                         "(on the board, as root; Phase 5+ bitstream only)")
     p.add_argument("--matrix-size", type=int, default=20,
-                   help="simulated matrix size N (NxN) without --hw (default: 20, the "
-                        "Phase 9 hardware: 4 Pmod + 8 link #1 (USB) + 8 link #2 (AVB) "
-                        "channels)")
+                   help="simulated size N without --hw: N inputs, N buses, N outputs "
+                        "(default: 20, the hardware: 4 Pmod + 8 link #1 (USB) + 8 link #2 "
+                        "(AVB) channels)")
+    p.add_argument("--no-bus-layer", action="store_true",
+                   help="simulate a bitstream from before Phase 12: inputMatrix only, "
+                        "input -> output (with --hw the windows decide)")
     p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
                    help="TCP stream framing: len32 = OSC 1.0 4-byte size prefix per packet "
                         "(default); none = unframed messages back to back (older controllers)")
@@ -712,7 +826,7 @@ def main():
     VERBOSE = args.verbose
 
     state = MixerState(args.mixer_name, args.state_file or None, log=log)
-    BACKENDS.update(build_backends(args.hw, args.matrix_size))
+    BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer))
     MODEL = build_model(BACKENDS, SYSTEM_SETTINGS)
     FIRMWARE = firmware_version()
     log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}")
