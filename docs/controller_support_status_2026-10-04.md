@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status: steps 0–5 and 7 done** (standard approved; shared codec and TCP framing; alias and name rules; error reply and value rules; config reply and snapshot ordering; ping; Bonjour through systemd-resolved), verified on the PC. **Image with all of it: §5** (the Pi is gone, C9). Then the first Mac run, metering (step 6) and the step 8 checks.
+**Status (closed 2026-10-04): steps 0–5 and 7 done**, in image `ctl1` (§5); **the app connects to the board** (user, first boot). **Open:** step 6 (metering, F4) and step 8 (the F1–F9 checks on the board), §6. The F1–F9 status for the controller repo is §7. The next work, channel levels and the bus layer, starts in a new session: `docs/prompt_phase12_channels_buses.md`.
 
 ---
 
@@ -193,13 +193,39 @@ UDP (either framing): one packet per datagram, so bundles work. **Changed:** two
 
 **Checked under the board's Python version:** all 138 tests on the VM (Python 3.12.3, Linux; the board has 3.12.12), including the SIGTERM test that Windows skips. It failed once: the test still set `inputChannel/5/level`, refused since step 3 (I had updated its framing in step 1, not its path, and it had never run). Fixed to `inputMatrix/0_1/level`; 138/138. A test-only change, not in the image.
 
-**Not verified:** anything on the board (first boot below).
+**First boot (user, 2026-10-04): "The mixer connects properly."** The app synced with the board over the Mac's direct cable. Not recorded: whether it found the board through Bonjour or by manual entry.
+
+**"No inputs on this device"** on the app's Inputs tab is correct, not a fault: the board's config has no `inputChannel` zone because the hardware has no per-input processing (only the crosspoint matrix), and the app draws strips only from channel zones (controller D5). At that time the app's matrix tabs were still a placeholder ("Matrices arrive in Stage 9"), so the app could connect but not edit the matrix; my first-boot steps wrongly said to move a crosspoint. The user has since built Stage 9 (controller `126a501`, D74–D77).
+
+**Not verified on the board:** crosspoint edits from the app (Stage 9 now allows them), error replies, refused renames, Bonjour by itself (`dns-sd -B`), restore after a power cycle with the new server. That is step 8.
 
 ## 6. Open items
 
-- The board image needs the meter/Bonjour modules added to the `fpgamixer-osc` recipe (`osc_codec.py` is in since step 1), and `avahi-daemon` in the image (step 7).
-- `osc_mixer_test.py` gains F1–F9 coverage in step 8. It needs a matrix with at least 20 outputs for its default scratch output (pass `--scratch-output` otherwise).
-- The step 4 recipe change (`VERSION` from `.synced-from`, `do_install[file-checksums]`) is unbuilt; check it in the first image build (step 8): `cat /usr/lib/fpgamixer/VERSION` on the board.
+- **Step 6, metering (F4):** `meter/subscribe`, the 5 s lease, the UDP stream, sequences per zone per subscriber, behind a `MeterSource` interface (C3). Until now pointless on the board (no channel zones); once the channel-level work adds channel zones, it has a purpose, and the real source is the F4a peak detector (gateware). Server-only: deployable by copying files from the Mac, no image needed. The new session's prompt raises it.
+- **Step 8, board checks:** extend `osc_mixer_test.py` to F1–F9 and run it against the board. With the Pi gone it runs on the Mac (it needs only Python 3 and `osc_codec.py`; UDP reaches the board on the cable). Then a power cycle (state restored), and the app's crosspoint edits. The suite needs a matrix with at least 20 outputs for its default scratch output (`--scratch-output` otherwise).
+- `VERSION` from `.synced-from` works: `ctl1`'s rootfs has `VERSION` = `12c8f9f`.
+- **The bus layer will change `inputMatrix`'s meaning** (today input → output, D5; with buses, input → bus). The state format can't change (§4.2), so the new session must decide how old crosspoints keep their meaning; its prompt recommends a way.
 - `sampleRate` is reported as 48000 (nominal). The core actually runs ~+324 ppm fast unless disciplined (roadmap §4); the setting is the nominal rate, which is what the app shows.
 - **The board's current name.** The service starts with `--mixer-name mixer`; if the board's state file still has `mixer`, it is the factory name (fine). Renaming it is the user's call; the app works either way through the alias.
 - `MockProfile.hardwareToday` is 12 × 12 (Phase 8); the board on this branch is 20 × 20. The config JSON follows the PL's CONFIG register, so a comparison with the mock is by shape, not size.
+
+## 7. F1–F9 status, for the controller repo
+
+For the user to paste into `../StudioRunner-controller/docs/FIRMWARE_CONTRACT.md` (this session doesn't edit that repo). Replaces the **Status** column and adds a log line; the protocol pointer at the top should now name the merged standard (`protocol/OSC_Standard.md`) instead of the amendments file.
+
+| # | Status |
+|---|---|
+| F1 | **done** (FPGAmixer `12c8f9f`, image `ctl1`): config reply built from the backends' own descriptions; sparse `values`; `firmware` = the build commit. Passes a port of `DeviceConfig`'s rules; the app synced with the board 2026-10-04. |
+| F2 | **done**: the current name and `/mixer/`, TCP and UDP; `mixer` refused as a new name (it remains the factory name). |
+| F3 | **done**: one ordering lock over every change (apply, store, echo), every send and the snapshot; tested end to end and deterministically. |
+| F4 | **missing** (step 6): no channel zones on the hardware yet, so nothing to meter. Planned behind a `MeterSource` interface. |
+| F4a | **missing** (gateware). |
+| F5 | **done** via systemd-resolved (not Avahi): `_studiorunner._tcp`, instance = the mixer name, TXT `name`, `v=1`, `framing`; rewritten on rename. Advertising on the board not checked separately (`dns-sd -B`). |
+| F6 | **done**: 4-byte length prefix by default, bundles accepted (TCP and UDP); `--tcp-framing none` for older controllers. |
+| F7 | **done**: `ping <int>` → `pong <int>`. |
+| F8 | **done**: `error <path> <reason>` for every refused request (unknown path, no value, wrong kind, read-only, enum option, invalid name); `get` of an unknown path no longer answers 0.0; path normalised (no trailing slash). UDP never replies. |
+| F9 | **done except the meter rules** (with F4): name rules; clamp, snap and round with the applied value echoed (float32); refused rename answers the sender with the current name, then an error. |
+
+Log line: **2026-10-04:** firmware side built (FPGAmixer branch `controller-support`, `12c8f9f`, image `ctl1`); app connected to the board. F4/F4a open.
+
+Also worth adding to "Already satisfied": unadvertised paths are refused (not stored generically); paths are canonical in echoes and errors (`01_002` → `1_2`); a controller that stops reading is dropped after 5 s.
