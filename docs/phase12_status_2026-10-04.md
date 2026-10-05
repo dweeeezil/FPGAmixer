@@ -217,6 +217,15 @@ Not done yet: copying the SDT to the VM and `gen-machine-conf` (with the image, 
 
 **Note for the bench:** a state file written by a server before 2026-10-04 could hold `inputChannel/…` values stored generically (the `ctl1` SIGTERM test once set `inputChannel/5/level`). With this server they become live levels. Flashing the image erases the state, so it doesn't arise on the bench.
 
+### 6.6 Step 6: the image `p12` (2026-10-05 UTC)
+
+- **SDT on the VM:** the P9.5 one moved to `~/edf/sdt.p95`; `build/sdt` copied to `~/edf/sdt` + `dos2unix`; checked there: `firmware-name` `fpgamixer_p12.bit.bin`, the 4 new nodes in `pcw.dtsi`, `psu_init.tcl` identical to P9.5's, bitstream MD5 `0ab6f921…` on both ends.
+- **Layer synced** at the clean commit `7685f7f` (`.synced-from` = `7685f7f`, 74 files).
+- **Build** (`~/edf/logs/p12-build.sh`, the `p10e` script with the tag changed, detached): `gen-machine-conf` exit 0; `bitbake edf-linux-disk-image xilinx-bootbin`: **15,069 tasks, all succeeded**, 7 min 15 s, 22 warnings (the usual set; none from fpgamixer recipes).
+- **Checked:** deployed bitstream MD5 = Vivado `p12` (`0ab6f921…`); the DTB has `M_AXI_CTRL@80000000`, `M_AXI_BUSMX@80005000`, `M_AXI_INLVL@80006000`, `M_AXI_BUSLVL@80007000`, `M_AXI_OUTLVL@80008000` (the presence guards); the rootfs's `/usr/lib/fpgamixer/VERSION` = `7685f7f`, `mixer_hw.py` has the gain windows, `osc_mixer_server.py` has `GainBackend` / `level_module`.
+- **`build/sd/p12-buses-20261005.wic.xz`** (108 MB, MD5 `ea844f48…`, same on both ends).
+- `crosspoint_restore_test.py` is **not** in the image (it never was; only `osc_codec.py` is): the bench copies it to the board.
+
 ## 7. Not in this phase
 
 Mute, EQ, dynamics, delay; gain smoothing (its place: inside `pcm_gain`); metering (L8); USB host mode; the open AVB checks.
