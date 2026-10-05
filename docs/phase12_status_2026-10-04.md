@@ -2,7 +2,7 @@
 
 *Opening prompt: `prompt_phase12_channels_buses.md`. Branch `phase12-levels-buses`, from `controller-support` at `6e70512`.*
 
-**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 done in simulation (§6.1–§6.3); step 4 (Vivado build) next.**
+**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 done in simulation (§6.1–§6.3), step 4 built clean (§6.4, `p12`); step 5 (software) next.**
 
 ---
 
@@ -174,6 +174,25 @@ Icarus not run (not installed on this PC).
 **Mutation test: 9 of 9 killed** (runner extended to multi-edit mutants): `gain_regs_axil` without its reset bank (19 checks fail), CONFIG with N and TAP swapped, no frame strobe (bank never swaps: timeout), wrong ID; in the top: input and output level stages swapped at the core, the input and bus level windows swapped on the AXI side (all 34 port connections), the output window with TAP 1, the bus matrix window reset to all-off, the input level window disconnected from the core.
 
 **Not checked until step 4:** the BD script itself (it only runs in Vivado), and the real `ps_sys_wrapper`'s port names against the stub's (a mismatch is an elaboration error in the build, not a silent fault). `mixer_hw.WINDOWS` doesn't list the new windows yet (step 5); until then software can't touch them, and an image with this bitstream behaves as today's (identity bus matrix, unity levels).
+
+### 6.4 Step 4: the Vivado build `p12` and the SDT: clean
+
+`create_project.tcl` (`phase9`) + `build.tcl p12`, Vivado 2026.1, launched detached, ~13 min. Logs `build/p12_{create,build}.log`, reports `build/p12_{timing,util,cdc,clocks,exceptions}.rpt`, hierarchy `build/p12_util_hier.rpt`, XSA **`build/fpgamixer_p12.xsa`** (`build/` is untracked). No Defender trouble this time.
+
+| | P9.5 (`p95`) | **Phase 12 (`p12`)** |
+|---|---|---|
+| WNS / WHS | +2.505 / +0.004 ns | **+2.557 / +0.010 ns**, 0 failing endpoints; methodology gate **PASS**, 0 critical warnings (create and build) |
+| per clock | `pl_clk0` +5.048, `mclk` +76.2 | `pl_clk0` **+4.693** (worst path unchanged: steering window → `media_clock_steer`), `mclk` **+74.9**; cross-clock +6.93 / +7.40 |
+| **DSP48E2** | 2 | **11**, as predicted: `u_in_mx` and `u_bus_mx` lanes 0–3 (accumulator in P, MREG + PREG), `u_in_lvl` / `u_bus_lvl` / `u_out_lvl` one each (the product register went to PREG instead of MREG, AREG = 2: the same three stages) |
+| RAMB18 | 3 | **13**: one per lane bank (4 + 4), one per level bank (3), a shadow per matrix (2); the levels' 20-word shadows went to LUTRAM |
+| LUTs / FFs | 12,633 / 22,877 | **13,706 / 23,914** (19.4 % / 17.0 %) |
+| CDC | CDC-1 1264, CDC-3 10, CDC-6 10, CDC-15 1902 | the same, except **CDC-3 18**: the 4 new banks' req/ack toggles, each "Max Delay Datapath Only" from the scoped `coef_bank_ram.xdc`, which covered the new instances with no change (§4.1's promise) |
+
+**BD:** `M_AXI_BUSMX` 0x8000_5000 on **M07**, `M_AXI_INLVL` 0x8000_6000 on **M08**, `M_AXI_BUSLVL` 0x8000_7000 on **M09**, `M_AXI_OUTLVL` 0x8000_8000 on **M10** (create log). The real `ps_sys_wrapper`'s ports matched the stub's names (elaboration clean).
+
+**SDT** (`sdtgen` on `fpgamixer_p12.xsa` → `build/sdt`; the P9.5 one kept as `build/sdt.p95`): **`psu_init.tcl`, `psu_init.c`, `psu_init.h`, `zynqmp.dtsi`, `zynqmp-clk-ccf.dtsi`, `zynqmp-u-boot.dtsi` identical**: no PS setting changed. `pcw.dtsi` adds exactly `M_AXI_BUSMX@80005000`, `M_AXI_INLVL@80006000`, `M_AXI_BUSLVL@80007000`, `M_AXI_OUTLVL@80008000` (the nodes `mixer_hw`'s presence guard needs); `system-top.dts` only their address-map entries; `pl.dtsi` only `firmware-name` (`fpgamixer_p12.bit.bin`).
+
+Not done yet: copying the SDT to the VM and `gen-machine-conf` (with the image, step 6).
 
 ## 7. Not in this phase
 
