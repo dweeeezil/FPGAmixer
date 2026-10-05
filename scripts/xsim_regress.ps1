@@ -43,12 +43,14 @@ $targets = [ordered]@{
   stream      = @("tb_pcm_stream",      "", @("$rtl\pcm_pack2stream.sv","$rtl\pcm_stream2pack.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_stream.sv"))
   coefram     = @("tb_coef_bank_ram",    "", @("$rtl\coef_bank_ram.sv","$rtl\coef_flat_reader.sv","$sim\tb_coef_bank_ram.sv"))
   regs        = @("tb_matrix_regs",      "", ($mixcore + @($mxsim,"$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$sim\tb_matrix_regs.sv")))
-  link        = @("tb_pcm_link",         "", @("$rtl\async_fifo.sv","$rtl\pcm_link.sv","$sim\tb_pcm_link.sv"))
+  gainregs    = @("tb_gain_regs",        "", ($mixcore + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\gain_regs_axil.sv","$sim\tb_gain_regs.sv")))
+  link        = @("tb_pcm_link",        "", @("$rtl\async_fifo.sv","$rtl\pcm_link.sv","$sim\tb_pcm_link.sv"))
   mclk        = @("tb_media_clock_meter", "", @("$rtl\media_clock_meter.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\media_clock_stat_regs.sv","$sim\tb_media_clock_meter.sv"))
   steer       = @("tb_media_clock_steer", "", @("$rtl\axil_reg_window.sv","$rtl\media_clock_ctrl_regs.sv","$rtl\media_clock_steer.sv","$rtl\media_clock_meter.sv","$sim\tb_media_clock_steer.sv"))
   linkstat    = @("tb_link_stat_regs",   "", @("$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\pcm_link_stat_regs.sv","$sim\tb_link_stat_regs.sv"))
   phase3      = @("tb_phase3_datapath",  "SIM_ODDR", ($coreRtl + @("$sim\clk_wiz_audio_stub.sv","$sim\tb_phase3_datapath.sv")))
-  dynamic     = @("tb_phase3_dynamic",   "SIM_ODDR", ($coreRtl + @("$sim\clk_wiz_audio_stub.sv","$sim\tb_phase3_dynamic.sv")))
+  topwin      = @("tb_top_windows",      "INCLUDE_PS SIM_ODDR", ($coreRtl + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
+  dynamic     = @("tb_phase3_dynamic",  "SIM_ODDR", ($coreRtl + @("$sim\clk_wiz_audio_stub.sv","$sim\tb_phase3_dynamic.sv")))
 }
 
 function Invoke-Limited([string]$dir, [scriptblock]$block, [object[]]$argsList, [int]$seconds) {
@@ -70,7 +72,7 @@ foreach ($name in $targets.Keys) {
   $comp = Invoke-Limited $dir {
       param($d, $def, $files)
       Set-Location $d
-      $dargs = @(); if ($def) { $dargs = @("-d", $def) }
+      $dargs = @(); if ($def) { foreach ($d in $def.Split(" ")) { $dargs += @("-d", $d) } }
       xvlog -sv @dargs @files 2>&1 | Out-String
   } @($def, $files) 180
   if ($null -eq $comp -or $comp -match "ERROR:") {

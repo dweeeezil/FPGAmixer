@@ -119,6 +119,8 @@ set rtl_files [glob -nocomplain src/rtl/*.sv]
 set sim_files {}
 foreach f [glob -nocomplain src/sim/*.sv] {
     if {[string match "*clk_wiz_audio_stub.sv" $f]} continue
+    # the BD wrapper's sim stand-in (tb_top_windows); the real one is generated
+    if {[string match "*ps_sys_wrapper_stub.sv" $f]} continue
     lappend sim_files $f
 }
 
@@ -410,8 +412,11 @@ if {$include_ps} {
     # M02 = the Audio Formatter's own registers (below); phase9 adds
     # M03 = the media-clock status window and M04 = its steering window,
     # and (P9.5) M05 = formatter #2, M06 = link #2's status window.
+    # Phase 12: the four bus-layer windows take the next four masters in
+    # every PS build (M01-M04 in phase5, M03-M06 in phase8, M07-M10 in phase9).
+    set n_mi_base [expr {$include_link2 ? 7 : ($include_mclk ? 5 : ($include_link ? 3 : 1))}]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$include_link2 ? 7 : ($include_mclk ? 5 : ($include_link ? 3 : 1))}]] $smc
+        CONFIG.NUM_MI [expr {$n_mi_base + 4}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -610,6 +615,35 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
             }
         }
     }
+
+    # ----- Phase 12: the bus layer's windows (decision L6) -----
+    # Plain RTL bindings in fpgamixer_top, like the matrix window: the bus
+    # matrix (matrix_regs_axil u_busmx_regs) and the input / bus / output
+    # level stages (gain_regs_axil u_inlvl_regs / u_buslvl_regs /
+    # u_outlvl_regs), on the SmartConnect masters after the ones above, at the
+    # next free window slots. Still no PS8 setting changes.
+    set mi $n_mi_base
+    foreach {port offset} {M_AXI_BUSMX  0x80005000 M_AXI_INLVL  0x80006000 \
+                           M_AXI_BUSLVL 0x80007000 M_AXI_OUTLVL 0x80008000} {
+        set p [create_bd_intf_port -mode Master \
+            -vlnv xilinx.com:interface:aximm_rtl:1.0 $port]
+        set_property -dict [list \
+            CONFIG.PROTOCOL   {AXI4LITE} \
+            CONFIG.DATA_WIDTH {32} \
+            CONFIG.ADDR_WIDTH {32} \
+            CONFIG.FREQ_HZ    $pl_clk0_hz \
+        ] $p
+        connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] $p
+        assign_bd_address -offset $offset -range 4K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs $port/Reg]
+        puts "INFO: $port = [get_property OFFSET [get_bd_addr_segs \
+zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
+        incr mi
+    }
+    set_property CONFIG.ASSOCIATED_BUSIF \
+        "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_BUSMX:M_AXI_INLVL:M_AXI_BUSLVL:M_AXI_OUTLVL" \
+        [get_bd_ports ctrl_aclk]
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
     puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \

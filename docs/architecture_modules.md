@@ -69,7 +69,9 @@ There are four kinds of block:
 | Control plane (generic) | `src/rtl/coef_bank_ram.sv` + `constraints/coef_bank_ram.xdc` | Phase 9 (P9.A3): coefficient bank in RAM: shadow + two banks per lane, COMMIT = copy then swap at the frame strobe, a read port for time-shared blocks (§3). Store interface towards the window. Only the two toggles cross clocks; the XDC is scoped to the module (`create_project.tcl`, PS phases) |
 | Simulation (tooling) | `scripts/xsim_regress.ps1` | every TB with XSim on Windows, each in a fresh directory; the counterpart of `scripts/sim.mk` (Icarus), keep the two in step |
 | Generic | `src/rtl/coef_flat_reader.sv` | the same read port over a flat vector (non-PS builds, TBs) |
-| Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts |
+| Control plane (binding) | `src/rtl/matrix_regs_axil.sv` | the matrix's ID, CONFIG and bank size over the two generic parts. **Two instances since Phase 12:** `u_regs` (input matrix, 0x8000_0000) and `u_busmx_regs` (bus matrix, 0x8000_5000) |
+| Control plane (binding) | `src/rtl/gain_regs_axil.sv` | Phase 12: a gain stage's window (ID `0x474E_5001`; CONFIG = N, **TAP** (0 input, 1 bus, 2 output), width, frac; `GAIN[c]` at 0x100 + 4c) over the same two generic parts, bank N × 1 on one lane. Three instances: `u_inlvl_regs`, `u_buslvl_regs`, `u_outlvl_regs` |
+| Simulation | `src/sim/ps_sys_wrapper_stub.sv` | the BD wrapper's stand-in for a PS build without links or media clock: five AXI4-Lite master BFMs + `ctrl_aclk`/`ctrl_aresetn`, so `tb_top_windows` checks the real top's window wiring. Excluded from the Vivado project |
 | Control plane (generic) | `src/rtl/axil_stat_window.sv` | read-only AXI4-Lite status window, same header; its words arrive through a `coef_bank_handoff` used in reverse (block clock → AXI clock) |
 | Control plane (binding) | `src/rtl/pcm_link_stat_regs.sv` | a `pcm_link`'s counters and fill watermarks (ID `0x4C4B_5001`); one instance per link (`u_link_stat`, `u_link2_stat`) |
 | Control plane (software) | `tools/mixer_hw.py` | `RegWindow` (any window), `MatrixHW` (dB gains), `LinkStatHW` (windows `linkstat` and `linkstat2`; `mixer_hw.py link` / `link2`), `MediaClockHW` (ppm vs gPTP, `mixer_hw.py mclk`), `MediaClockSteerHW` (ppm ↔ RATE, `mixer_hw.py steer`), `WINDOWS` (address map) |
@@ -165,12 +167,16 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 
 | Window | Block | Since |
 |---|---|---|
-| 0x8000_0000 | input → output matrix (`u_regs` / `u_core`), 12 × 12 since Phase 8, **20 × 20 since P9.5** | Phase 5 |
+| 0x8000_0000 | input matrix (`u_regs` / `u_core`), 12 × 12 since Phase 8, **20 × 20 since P9.5**; input → output until Phase 12, **input → bus since** (zone `inputMatrix`) | Phase 5 |
 | 0x8000_1000 | PS↔PL link status (`u_link_stat`, read-only, ID `0x4C4B_5001`) | Phase 8 |
 | 0x8000_2000 | media-clock meter (`u_mclk_stat`, read-only, ID `0x4D43_5001`): `mclk` vs the gPTP 1PPS; `phase9` builds | Phase 9 (P9.3) |
 | 0x8000_3000 | media-clock steering (`u_mclk_ctrl`, read/write, ID `0x4D53_5001`): the rate for the MMCM's fine phase shift; `phase9` builds | Phase 9 (P9.4b) |
 | 0x8000_4000 | PS↔PL **link #2** status (`u_link2_stat`, read-only, ID `0x4C4B_5001`, the same binding as link #1); `phase9` builds | Phase 9 (P9.5) |
-| 0x8000_5000… | reserved: bus matrix, DSP blocks (moved up again in P9.5) | — |
+| 0x8000_5000 | bus matrix (`u_busmx_regs`, `matrix_regs_axil`, ID `0x4D58_5001`, N_BUS → N_OUT; zone `busMatrix`); every PS build (`M_AXI_BUSMX`) | Phase 12 |
+| 0x8000_6000 | input levels (`u_inlvl_regs`, `gain_regs_axil`, ID `0x474E_5001`, TAP 0; zone `inputChannel`); every PS build (`M_AXI_INLVL`) | Phase 12 |
+| 0x8000_7000 | bus levels (`u_buslvl_regs`, TAP 1; zone `busChannel`; `M_AXI_BUSLVL`) | Phase 12 |
+| 0x8000_8000 | output levels (`u_outlvl_regs`, TAP 2; zone `outputChannel`; `M_AXI_OUTLVL`) | Phase 12 |
+| 0x8000_9000… | reserved: DSP blocks | — |
 | 0x8010_0000 (64K) | AMD Audio Formatter #1 registers (`link_formatter`, card `FPGAmixerLink`): **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
 | 0x8011_0000 (64K) | AMD Audio Formatter #2 registers (`link2_formatter`, card `FPGAmixerLink2`): driver-owned, as #1; `phase9` builds | Phase 9 (P9.5) |
 

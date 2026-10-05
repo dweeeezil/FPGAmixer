@@ -14,9 +14,10 @@
 //                     -> levels -> bus matrix -> levels -> 20 out)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
 //                                   -> input matrix read port -> u_core
-//                  (without the PS: coef_flat_reader u_in_mx_gains, IN_MX_GAINS)
-//                  bus matrix and levels: coef_flat_readers over their reset
-//                  banks until Phase 12 step 3 adds their windows
+//                  Phase 12: M_AXI_BUSMX -> matrix_regs_axil u_busmx_regs,
+//                  M_AXI_INLVL / BUSLVL / OUTLVL -> gain_regs_axil
+//                  u_inlvl_regs / u_buslvl_regs / u_outlvl_regs
+//                  (without the PS: coef_flat_readers over the reset banks)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
 //   platform (INCLUDE_MCLK, phase9): PS tsu_timer_cnt[45] (1PPS) ->
@@ -206,6 +207,39 @@ module fpgamixer_top (
     logic        ctrl_bvalid, ctrl_bready, ctrl_arvalid, ctrl_arready;
     logic        ctrl_rvalid, ctrl_rready;
 
+    // Phase 12 (decision L6): the bus matrix and the three level stages, one
+    // AXI4-Lite window each, on the same clock and reset as M_AXI_CTRL:
+    //   M_AXI_BUSMX  0x8000_5000  bmx_*   M_AXI_INLVL  0x8000_6000  ilv_*
+    //   M_AXI_BUSLVL 0x8000_7000  blv_*   M_AXI_OUTLVL 0x8000_8000  olv_*
+    logic [31:0] bmx_awaddr, bmx_araddr, bmx_wdata, bmx_rdata;
+    logic [2:0]  bmx_awprot, bmx_arprot;
+    logic [3:0]  bmx_wstrb;
+    logic [1:0]  bmx_bresp, bmx_rresp;
+    logic        bmx_awvalid, bmx_awready, bmx_wvalid, bmx_wready;
+    logic        bmx_bvalid, bmx_bready, bmx_arvalid, bmx_arready;
+    logic        bmx_rvalid, bmx_rready;
+    logic [31:0] ilv_awaddr, ilv_araddr, ilv_wdata, ilv_rdata;
+    logic [2:0]  ilv_awprot, ilv_arprot;
+    logic [3:0]  ilv_wstrb;
+    logic [1:0]  ilv_bresp, ilv_rresp;
+    logic        ilv_awvalid, ilv_awready, ilv_wvalid, ilv_wready;
+    logic        ilv_bvalid, ilv_bready, ilv_arvalid, ilv_arready;
+    logic        ilv_rvalid, ilv_rready;
+    logic [31:0] blv_awaddr, blv_araddr, blv_wdata, blv_rdata;
+    logic [2:0]  blv_awprot, blv_arprot;
+    logic [3:0]  blv_wstrb;
+    logic [1:0]  blv_bresp, blv_rresp;
+    logic        blv_awvalid, blv_awready, blv_wvalid, blv_wready;
+    logic        blv_bvalid, blv_bready, blv_arvalid, blv_arready;
+    logic        blv_rvalid, blv_rready;
+    logic [31:0] olv_awaddr, olv_araddr, olv_wdata, olv_rdata;
+    logic [2:0]  olv_awprot, olv_arprot;
+    logic [3:0]  olv_wstrb;
+    logic [1:0]  olv_bresp, olv_rresp;
+    logic        olv_awvalid, olv_awready, olv_wvalid, olv_wready;
+    logic        olv_bvalid, olv_bready, olv_arvalid, olv_arready;
+    logic        olv_rvalid, olv_rready;
+
 `ifdef INCLUDE_LINK
     // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
     logic [31:0] mm2s_tdata, s2mm_tdata;
@@ -359,6 +393,82 @@ module fpgamixer_top (
         .M_AXI_LINK2STAT_rvalid     (stat2_rvalid),
         .M_AXI_LINK2STAT_rready     (stat2_rready),
 `endif
+        .M_AXI_BUSMX_awaddr   (bmx_awaddr),
+        .M_AXI_BUSMX_awprot   (bmx_awprot),
+        .M_AXI_BUSMX_awvalid  (bmx_awvalid),
+        .M_AXI_BUSMX_awready  (bmx_awready),
+        .M_AXI_BUSMX_wdata    (bmx_wdata),
+        .M_AXI_BUSMX_wstrb    (bmx_wstrb),
+        .M_AXI_BUSMX_wvalid   (bmx_wvalid),
+        .M_AXI_BUSMX_wready   (bmx_wready),
+        .M_AXI_BUSMX_bresp    (bmx_bresp),
+        .M_AXI_BUSMX_bvalid   (bmx_bvalid),
+        .M_AXI_BUSMX_bready   (bmx_bready),
+        .M_AXI_BUSMX_araddr   (bmx_araddr),
+        .M_AXI_BUSMX_arprot   (bmx_arprot),
+        .M_AXI_BUSMX_arvalid  (bmx_arvalid),
+        .M_AXI_BUSMX_arready  (bmx_arready),
+        .M_AXI_BUSMX_rdata    (bmx_rdata),
+        .M_AXI_BUSMX_rresp    (bmx_rresp),
+        .M_AXI_BUSMX_rvalid   (bmx_rvalid),
+        .M_AXI_BUSMX_rready   (bmx_rready),
+        .M_AXI_INLVL_awaddr   (ilv_awaddr),
+        .M_AXI_INLVL_awprot   (ilv_awprot),
+        .M_AXI_INLVL_awvalid  (ilv_awvalid),
+        .M_AXI_INLVL_awready  (ilv_awready),
+        .M_AXI_INLVL_wdata    (ilv_wdata),
+        .M_AXI_INLVL_wstrb    (ilv_wstrb),
+        .M_AXI_INLVL_wvalid   (ilv_wvalid),
+        .M_AXI_INLVL_wready   (ilv_wready),
+        .M_AXI_INLVL_bresp    (ilv_bresp),
+        .M_AXI_INLVL_bvalid   (ilv_bvalid),
+        .M_AXI_INLVL_bready   (ilv_bready),
+        .M_AXI_INLVL_araddr   (ilv_araddr),
+        .M_AXI_INLVL_arprot   (ilv_arprot),
+        .M_AXI_INLVL_arvalid  (ilv_arvalid),
+        .M_AXI_INLVL_arready  (ilv_arready),
+        .M_AXI_INLVL_rdata    (ilv_rdata),
+        .M_AXI_INLVL_rresp    (ilv_rresp),
+        .M_AXI_INLVL_rvalid   (ilv_rvalid),
+        .M_AXI_INLVL_rready   (ilv_rready),
+        .M_AXI_BUSLVL_awaddr  (blv_awaddr),
+        .M_AXI_BUSLVL_awprot  (blv_awprot),
+        .M_AXI_BUSLVL_awvalid (blv_awvalid),
+        .M_AXI_BUSLVL_awready (blv_awready),
+        .M_AXI_BUSLVL_wdata   (blv_wdata),
+        .M_AXI_BUSLVL_wstrb   (blv_wstrb),
+        .M_AXI_BUSLVL_wvalid  (blv_wvalid),
+        .M_AXI_BUSLVL_wready  (blv_wready),
+        .M_AXI_BUSLVL_bresp   (blv_bresp),
+        .M_AXI_BUSLVL_bvalid  (blv_bvalid),
+        .M_AXI_BUSLVL_bready  (blv_bready),
+        .M_AXI_BUSLVL_araddr  (blv_araddr),
+        .M_AXI_BUSLVL_arprot  (blv_arprot),
+        .M_AXI_BUSLVL_arvalid (blv_arvalid),
+        .M_AXI_BUSLVL_arready (blv_arready),
+        .M_AXI_BUSLVL_rdata   (blv_rdata),
+        .M_AXI_BUSLVL_rresp   (blv_rresp),
+        .M_AXI_BUSLVL_rvalid  (blv_rvalid),
+        .M_AXI_BUSLVL_rready  (blv_rready),
+        .M_AXI_OUTLVL_awaddr  (olv_awaddr),
+        .M_AXI_OUTLVL_awprot  (olv_awprot),
+        .M_AXI_OUTLVL_awvalid (olv_awvalid),
+        .M_AXI_OUTLVL_awready (olv_awready),
+        .M_AXI_OUTLVL_wdata   (olv_wdata),
+        .M_AXI_OUTLVL_wstrb   (olv_wstrb),
+        .M_AXI_OUTLVL_wvalid  (olv_wvalid),
+        .M_AXI_OUTLVL_wready  (olv_wready),
+        .M_AXI_OUTLVL_bresp   (olv_bresp),
+        .M_AXI_OUTLVL_bvalid  (olv_bvalid),
+        .M_AXI_OUTLVL_bready  (olv_bready),
+        .M_AXI_OUTLVL_araddr  (olv_araddr),
+        .M_AXI_OUTLVL_arprot  (olv_arprot),
+        .M_AXI_OUTLVL_arvalid (olv_arvalid),
+        .M_AXI_OUTLVL_arready (olv_arready),
+        .M_AXI_OUTLVL_rdata   (olv_rdata),
+        .M_AXI_OUTLVL_rresp   (olv_rresp),
+        .M_AXI_OUTLVL_rvalid  (olv_rvalid),
+        .M_AXI_OUTLVL_rready  (olv_rready),
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -401,6 +511,85 @@ module fpgamixer_top (
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
         .mclk (mclk), .frame_i (jb_rx_valid),
         .coef_addr (in_mx_addr), .coef_data (in_mx_data)
+    );
+
+    // Phase 12: the bus matrix (zone busMatrix, bus -> output) ...
+    matrix_regs_axil #(
+        .N_IN (N_BUS), .N_OUT (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .LANES (L2),
+        .ADDR_WIDTH (12), .RESET_GAINS (BUS_MX_GAINS)
+    ) u_busmx_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (bmx_awaddr[11:0]), .s_axi_awvalid (bmx_awvalid),
+        .s_axi_awready (bmx_awready),
+        .s_axi_wdata   (bmx_wdata),  .s_axi_wstrb  (bmx_wstrb),
+        .s_axi_wvalid  (bmx_wvalid), .s_axi_wready (bmx_wready),
+        .s_axi_bresp   (bmx_bresp),  .s_axi_bvalid (bmx_bvalid),
+        .s_axi_bready  (bmx_bready),
+        .s_axi_araddr  (bmx_araddr[11:0]), .s_axi_arvalid (bmx_arvalid),
+        .s_axi_arready (bmx_arready),
+        .s_axi_rdata   (bmx_rdata),  .s_axi_rresp  (bmx_rresp),
+        .s_axi_rvalid  (bmx_rvalid), .s_axi_rready (bmx_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .coef_addr (bus_mx_addr), .coef_data (bus_mx_data)
+    );
+
+    // ... and the three level stages (zones inputChannel, busChannel,
+    // outputChannel); TAP in CONFIG says which is which.
+    gain_regs_axil #(
+        .N (N), .TAP (0), .GAIN_WIDTH (GW), .GAIN_FRAC (GF),
+        .ADDR_WIDTH (12), .RESET_GAINS (LEVEL_GAINS)
+    ) u_inlvl_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (ilv_awaddr[11:0]), .s_axi_awvalid (ilv_awvalid),
+        .s_axi_awready (ilv_awready),
+        .s_axi_wdata   (ilv_wdata),  .s_axi_wstrb  (ilv_wstrb),
+        .s_axi_wvalid  (ilv_wvalid), .s_axi_wready (ilv_wready),
+        .s_axi_bresp   (ilv_bresp),  .s_axi_bvalid (ilv_bvalid),
+        .s_axi_bready  (ilv_bready),
+        .s_axi_araddr  (ilv_araddr[11:0]), .s_axi_arvalid (ilv_arvalid),
+        .s_axi_arready (ilv_arready),
+        .s_axi_rdata   (ilv_rdata),  .s_axi_rresp  (ilv_rresp),
+        .s_axi_rvalid  (ilv_rvalid), .s_axi_rready (ilv_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .coef_addr (in_lvl_addr), .coef_data (in_lvl_data)
+    );
+
+    gain_regs_axil #(
+        .N (N_BUS), .TAP (1), .GAIN_WIDTH (GW), .GAIN_FRAC (GF),
+        .ADDR_WIDTH (12), .RESET_GAINS (LEVEL_GAINS)
+    ) u_buslvl_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (blv_awaddr[11:0]), .s_axi_awvalid (blv_awvalid),
+        .s_axi_awready (blv_awready),
+        .s_axi_wdata   (blv_wdata),  .s_axi_wstrb  (blv_wstrb),
+        .s_axi_wvalid  (blv_wvalid), .s_axi_wready (blv_wready),
+        .s_axi_bresp   (blv_bresp),  .s_axi_bvalid (blv_bvalid),
+        .s_axi_bready  (blv_bready),
+        .s_axi_araddr  (blv_araddr[11:0]), .s_axi_arvalid (blv_arvalid),
+        .s_axi_arready (blv_arready),
+        .s_axi_rdata   (blv_rdata),  .s_axi_rresp  (blv_rresp),
+        .s_axi_rvalid  (blv_rvalid), .s_axi_rready (blv_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .coef_addr (bus_lvl_addr), .coef_data (bus_lvl_data)
+    );
+
+    gain_regs_axil #(
+        .N (N), .TAP (2), .GAIN_WIDTH (GW), .GAIN_FRAC (GF),
+        .ADDR_WIDTH (12), .RESET_GAINS (LEVEL_GAINS)
+    ) u_outlvl_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (olv_awaddr[11:0]), .s_axi_awvalid (olv_awvalid),
+        .s_axi_awready (olv_awready),
+        .s_axi_wdata   (olv_wdata),  .s_axi_wstrb  (olv_wstrb),
+        .s_axi_wvalid  (olv_wvalid), .s_axi_wready (olv_wready),
+        .s_axi_bresp   (olv_bresp),  .s_axi_bvalid (olv_bvalid),
+        .s_axi_bready  (olv_bready),
+        .s_axi_araddr  (olv_araddr[11:0]), .s_axi_arvalid (olv_arvalid),
+        .s_axi_arready (olv_arready),
+        .s_axi_rdata   (olv_rdata),  .s_axi_rresp  (olv_rresp),
+        .s_axi_rvalid  (olv_rvalid), .s_axi_rready (olv_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .coef_addr (out_lvl_addr), .coef_data (out_lvl_data)
     );
 
 `ifdef INCLUDE_LINK
@@ -584,13 +773,8 @@ module fpgamixer_top (
         .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (IN_MX_GAINS),
         .rd_addr (in_mx_addr), .rd_data (in_mx_data)
     );
-    assign link_rx  = '0;
-    assign link2_rx = '0;
-`endif
-
-    // Bus matrix and the three level stages: their reset banks, in every build
-    // for now. Phase 12 step 3 gives INCLUDE_PS builds their register windows
-    // (bus matrix 0x8000_5000; levels 0x8000_6000 / 7000 / 8000, decision L6).
+    // Without the PS the bus matrix and the three level stages also read
+    // their reset banks (identity, unity).
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N_BUS), .LANES (L2)) u_bus_mx_gains (
         .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (BUS_MX_GAINS),
         .rd_addr (bus_mx_addr), .rd_data (bus_mx_data)
@@ -607,6 +791,9 @@ module fpgamixer_top (
         .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
         .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
     );
+    assign link_rx  = '0;
+    assign link2_rx = '0;
+`endif
 
     // ----- PCM core -----
     // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->

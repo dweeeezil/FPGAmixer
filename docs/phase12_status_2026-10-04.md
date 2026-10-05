@@ -2,7 +2,7 @@
 
 *Opening prompt: `prompt_phase12_channels_buses.md`. Branch `phase12-levels-buses`, from `controller-support` at `6e70512`.*
 
-**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–2 done in simulation (§6.1, §6.2); step 3 (control plane RTL: the windows) next.**
+**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 done in simulation (§6.1–§6.3); step 4 (Vivado build) next.**
 
 ---
 
@@ -157,6 +157,23 @@ Each step is built, tested, committed, and recorded here.
 **Mutation test: 8 of 8 killed** (runner as step 1, now also treating a launch failure as no verdict and retrying, because the first run counted one tool failure as a kill): bus levels reading the input-level port (2763 errors); input levels bypassed (4809); output levels bypassed (3344); bus matrix on the input matrix's lane count (199, from the 3 + 2 case); no positive saturation in `pcm_matrix` (1126); D one cycle short in the package (420); in `fpgamixer_top`, reset levels at half gain and a bus matrix reset that isn't identity (both caught by `phase3`).
 
 Icarus not run (not installed on this PC).
+
+### 6.3 Step 3: the control plane RTL and the BD (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/gain_regs_axil.sv` (new) | the gain stage's window: `axil_coef_window` + `coef_bank_ram` (N × 1, one lane), ID `0x474E_5001`, CONFIG `{N, TAP, GW, GF}`; refuses N > 255 or a bank that overflows the window |
+| `src/rtl/fpgamixer_top.sv` | in `INCLUDE_PS` builds: `u_busmx_regs` (`matrix_regs_axil`, N_BUS → N, L2, reset identity) on `M_AXI_BUSMX`; `u_inlvl_regs` / `u_buslvl_regs` / `u_outlvl_regs` (`gain_regs_axil`, TAP 0/1/2, reset unity) on `M_AXI_INLVL` / `BUSLVL` / `OUTLVL`; all on `ctrl_aclk`/`ctrl_aresetn` and the frame strobe, like `u_regs`. The four `coef_flat_reader`s moved into the non-PS branch |
+| `scripts/create_project.tcl` | SmartConnect `NUM_MI` = base + 4 in every PS build; the four ports on the next masters (phase5: M01–M04, phase8: M03–M06, **phase9: M07–M10**), AXI4-Lite, `pl_clk0`, mapped at **0x8000_5000 / 6000 / 7000 / 8000** (4K each), appended to `ctrl_aclk`'s `ASSOCIATED_BUSIF`; one INFO line per window. The stub is kept out of the sim fileset. No PS8 setting changed |
+| `src/sim/tb_gain_regs.sv` (new) | `gain_regs_axil` → `pcm_gain` between the converters, unrelated clocks, N = 5, TAP 2: ID, CONFIG, reset unity read back and output = input, no effect before COMMIT, COMMIT applies, −1.0 sign-extended, **48 frames atomic over 20 back-to-back bank changes** (bank rebuilt from the read port), end to end against a reference |
+| `src/sim/ps_sys_wrapper_stub.sv` (new), `src/sim/tb_top_windows.sv` (new) | the real `fpgamixer_top` compiled with `INCLUDE_PS` (a phase5-shaped build), the BD replaced by five AXI4-Lite BFMs: every window's ID and CONFIG on its own port; reset state output = input on all 20 channels; then **one change per window**, chosen so a swapped or misrouted window changes the result (input level ch0, input matrix 2←2, bus level ch0, bus matrix 0←0 off / 1←0 on, output level ch1), all 20 outputs checked; read-back; no non-OKAY responses |
+| `scripts/sim.mk`, `scripts/xsim_regress.ps1` | targets `gainregs`, `topwin`; `xsim_regress.ps1` now passes several defines (`"INCLUDE_PS SIM_ODDR"`) |
+
+**Results (XSim 2026.1): full regression 20 of 20 PASS** (`gainregs`, `topwin` new). No launch failures this time.
+
+**Mutation test: 9 of 9 killed** (runner extended to multi-edit mutants): `gain_regs_axil` without its reset bank (19 checks fail), CONFIG with N and TAP swapped, no frame strobe (bank never swaps: timeout), wrong ID; in the top: input and output level stages swapped at the core, the input and bus level windows swapped on the AXI side (all 34 port connections), the output window with TAP 1, the bus matrix window reset to all-off, the input level window disconnected from the core.
+
+**Not checked until step 4:** the BD script itself (it only runs in Vivado), and the real `ps_sys_wrapper`'s port names against the stub's (a mismatch is an elaboration error in the build, not a silent fault). `mixer_hw.WINDOWS` doesn't list the new windows yet (step 5); until then software can't touch them, and an image with this bitstream behaves as today's (identity bus matrix, unity levels).
 
 ## 7. Not in this phase
 

@@ -50,8 +50,8 @@ CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs link linkstat phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs link linkstat phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs link linkstat phase3 topwin dynamic clean
+all: rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs link linkstat phase3 topwin dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -177,12 +177,30 @@ regs: | $(BUILD)
 		$(RTL)/matrix_regs_axil.sv $(SIM)/tb_matrix_regs.sv
 	@$(VVP) $(BUILD)/tb_matrix_regs.vvp
 
+# --- Phase 12: a gain stage's AXI4-Lite window across aclk/mclk into pcm_gain ---
+gainregs: | $(BUILD)
+	@echo ">>> Building tb_gain_regs"
+	@$(IVERILOG) $(FLAGS) -s tb_gain_regs -o $(BUILD)/tb_gain_regs.vvp \
+		$(MIXCORE) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
+		$(RTL)/gain_regs_axil.sv $(SIM)/tb_gain_regs.sv
+	@$(VVP) $(BUILD)/tb_gain_regs.vvp
+
 # --- Phase-3 integration: real fpgamixer_top (no PS), MMCM stubbed, rx/tx as fixtures ---
 # -DSIM_ODDR selects the behavioral ODDR model inside oddr_out (the Xilinx
 # primitive doesn't elaborate under Icarus). Sim-only define -- Vivado
 # synthesis must see the real primitive. NOTE: a green run here only proves
 # the datapath logic; the ODDR/pin-constraint timing this guards is validated
 # by STA + hardware, not by this suite (handoff doc 6).
+# --- Phase 12: fpgamixer_top as a PS build (INCLUDE_PS), the BD replaced by
+# ps_sys_wrapper_stub: each register window on its port, driving its block ---
+topwin: | $(BUILD)
+	@echo ">>> Building tb_top_windows"
+	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -DINCLUDE_PS -s tb_top_windows -o $(BUILD)/tb_top_windows.vvp \
+		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
+		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/fpgamixer_top.sv \
+		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
+	@$(VVP) $(BUILD)/tb_top_windows.vvp
+
 phase3: | $(BUILD)
 	@echo ">>> Building tb_phase3_datapath"
 	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_datapath -o $(BUILD)/tb_phase3_datapath.vvp \
