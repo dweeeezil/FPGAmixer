@@ -44,8 +44,8 @@ set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 
 # phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top).
-# phase3          : fpgamixer_top WITHOUT the PS -- the static matrix, gains
-#                   tied to MATRIX_GAINS.
+# phase3          : fpgamixer_top WITHOUT the PS -- the static core, every
+#                   coefficient tied to its reset bank (identity, unity).
 # phase4, phase5  : fpgamixer_top WITH the PS (INCLUDE_PS): the BD, the
 #                   M_AXI_CTRL port and the matrix gain registers. Since the
 #                   Phase 5 control plane landed these are the same build; the

@@ -15,6 +15,7 @@
 #   make -f scripts/sim.mk matrix_rect  # non-square matrices (3->5, 5->2)
 #   make -f scripts/sim.mk corepkg    # Phase 12 core chain arithmetic (lanes, D)
 #   make -f scripts/sim.mk gain       # Phase 12 per-channel gain stage
+#   make -f scripts/sim.mk core       # Phase 12 whole core chain (levels + two matrices)
 #   make -f scripts/sim.mk stream     # Phase 9 PCM stream contract + packed<->stream converters
 #   make -f scripts/sim.mk coefram    # Phase 9 coefficient bank in RAM (read port, swap at the frame)
 #   make -f scripts/sim.mk link       # Phase 8 PS<->PL link front door (AXIS <-> PCM, two clocks)
@@ -36,18 +37,21 @@ SIM      := src/sim
 # RTL for the full non-PS top (fpgamixer_top without INCLUDE_PS): the platform
 # clocking, the I2S front doors and the PCM core. Excludes the legacy
 # phase1/phase2 tops and the control plane (not instantiated without the PS).
-# Phase 9: the PCM core (mixer_core = converters + time-shared pcm_matrix).
-# The package must come first.
-MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
-            $(RTL)/pcm_matrix.sv $(RTL)/mixer_core.sv
+# The PCM core: mixer_core = converters + gain stages + two time-shared
+# matrices (Phase 12). The packages must come first. MXSIM: the single matrix
+# between the converters, for the matrix TBs (sim only).
+MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv \
+            $(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
+            $(RTL)/pcm_matrix.sv $(RTL)/pcm_gain.sv $(RTL)/mixer_core.sv
+MXSIM    := $(SIM)/matrix_packed_sim.sv
 
 CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain stream coefram mclk steer regs link linkstat phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect corepkg gain stream coefram mclk steer regs link linkstat phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs link linkstat phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs link linkstat phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -85,16 +89,24 @@ loopback: | $(BUILD)
 matrix: | $(BUILD)
 	@echo ">>> Building tb_pcm_matrix"
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix -o $(BUILD)/tb_pcm_matrix.vvp \
-		$(MIXCORE) $(RTL)/coef_flat_reader.sv $(SIM)/tb_pcm_matrix.sv
+		$(MIXCORE) $(MXSIM) $(RTL)/coef_flat_reader.sv $(SIM)/tb_pcm_matrix.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix.vvp
 
 # --- Sizes and lane counts (3->5 ... 32x32, forced lanes), random vs a reference ---
 matrix_rect: | $(BUILD)
 	@echo ">>> Building tb_pcm_matrix_rect"
 	@$(IVERILOG) $(FLAGS) -s tb_pcm_matrix_rect -o $(BUILD)/tb_pcm_matrix_rect.vvp \
-		$(MIXCORE) $(RTL)/coef_flat_reader.sv \
+		$(MIXCORE) $(MXSIM) $(RTL)/coef_flat_reader.sv \
 		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_matrix_rect.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix_rect.vvp
+
+# --- Phase 12: the whole core chain (levels, two matrices), random vs a chain model ---
+core: | $(BUILD)
+	@echo ">>> Building tb_mixer_core"
+	@$(IVERILOG) $(FLAGS) -s tb_mixer_core -o $(BUILD)/tb_mixer_core.vvp \
+		$(MIXCORE) $(RTL)/coef_flat_reader.sv \
+		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_mixer_core.sv
+	@$(VVP) $(BUILD)/tb_mixer_core.vvp
 
 # --- Phase 12: the core chain's arithmetic (lanes, D) vs independent values ---
 corepkg: | $(BUILD)
@@ -161,7 +173,7 @@ linkstat: | $(BUILD)
 regs: | $(BUILD)
 	@echo ">>> Building tb_matrix_regs"
 	@$(IVERILOG) $(FLAGS) -s tb_matrix_regs -o $(BUILD)/tb_matrix_regs.vvp \
-		$(MIXCORE) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
+		$(MIXCORE) $(MXSIM) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
 		$(RTL)/matrix_regs_axil.sv $(SIM)/tb_matrix_regs.sv
 	@$(VVP) $(BUILD)/tb_matrix_regs.vvp
 

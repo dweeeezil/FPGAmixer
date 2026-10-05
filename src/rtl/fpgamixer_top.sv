@@ -10,10 +10,13 @@
 //   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) -----+-> mixer_core
 //   PS (Audio Formatter #1) <-> pcm_link u_link  <-> ch4..11 ---+   u_core
 //   PS (Audio Formatter #2) <-> pcm_link u_link2 <-> ch12..19 --'
-//                                                   (time-shared 20 x 20 matrix)
+//                    (Phase 12: 20 in -> levels -> input matrix -> 20 buses
+//                     -> levels -> bus matrix -> levels -> 20 out)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
-//                                   -> coefficient read port -> u_core
-//                  (without the PS: coef_flat_reader u_gains, MATRIX_GAINS)
+//                                   -> input matrix read port -> u_core
+//                  (without the PS: coef_flat_reader u_in_mx_gains, IN_MX_GAINS)
+//                  bus matrix and levels: coef_flat_readers over their reset
+//                  banks until Phase 12 step 3 adds their windows
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
 //   platform (INCLUDE_MCLK, phase9): PS tsu_timer_cnt[45] (1PPS) ->
@@ -21,9 +24,11 @@
 //
 // Everything this file decides:
 //   - the channel map: which front-door channel is which core channel;
-//   - MATRIX_GAINS: the routing the matrix resets to (identity);
-//   - where the gains come from: the PS (INCLUDE_PS builds), or MATRIX_GAINS
-//     tied on directly (non-PS projects and the Icarus/XSim integration TBs);
+//   - N_BUS (= N, decision L2) and the reset state: IN_MX_GAINS, BUS_MX_GAINS
+//     (identity), LEVEL_GAINS (unity);
+//   - where the coefficients come from: the PS (INCLUDE_PS builds), or the
+//     reset banks tied on directly (non-PS projects and the Icarus/XSim
+//     integration TBs);
 //   - whether the PS<->PL links exist (INCLUDE_LINK, phase8 builds; link #2,
 //     INCLUDE_LINK2, phase9 builds: the AVB front door's PL half). Without a
 //     link its channels read as silence, so the core is 20 x 20 in every
@@ -129,32 +134,58 @@ module fpgamixer_top (
     assign core_in = { link2_rx, link_rx, jc_rx, jb_rx };
     assign { link2_tx, link_tx, jc_tx, jb_tx } = core_out;
 
-    // ----- Reset routing (Q2.16 gains; gain k = o*N + i, output o, input i) -----
+    // ----- Buses (Phase 12, decision L2): one per output -----
+    // With the bus matrix at identity, bus k feeds output k, so input -> bus k
+    // sounds exactly like the old input -> output k (L3: saved inputMatrix
+    // crosspoints keep their meaning).
+    localparam int N_BUS = N;
+
+    // ----- Reset state (Q2.16; a matrix's gain k = dst*N_src + src) -----
     localparam logic signed [GW-1:0] G_UNITY = 18'sh10000;
 
-    // IDENTITY: each output = its own input at unity. For the Pmods that is
-    // each ADC passed to its own DAC (the minimal datapath test: noise here
-    // points at clocking or the ports, not the routing); for each link it is
-    // the PS's playback returned to its capture. Runtime control (INCLUDE_PS)
-    // starts from this bank, and the OSC server seeds missing crosspoints with
-    // the same rule. Other routings for a non-PS build: git history before
-    // Phase 8 has a worked 4 x 4 DEMO bank.
-    function automatic logic [N*N*GW-1:0] identity_gains();
-        logic [N*N*GW-1:0] g = '0;
-        for (int o = 0; o < N; o++) g[(o*N + o)*GW +: GW] = G_UNITY;
+    // IDENTITY: input k -> bus k -> output k at unity, every level at unity
+    // (L7). For the Pmods that is each ADC passed to its own DAC (the minimal
+    // datapath test: noise here points at clocking or the ports, not the
+    // routing); for each link it is the PS's playback returned to its capture.
+    // Runtime control (INCLUDE_PS) starts from these banks, and the OSC server
+    // seeds missing parameters with the same rule. Other routings for a non-PS
+    // build: git history before Phase 8 has a worked 4 x 4 DEMO bank.
+    function automatic logic [N_BUS*N*GW-1:0] identity_in_mx();     // rows = buses
+        logic [N_BUS*N*GW-1:0] g = '0;
+        for (int b = 0; b < N_BUS && b < N; b++) g[(b*N + b)*GW +: GW] = G_UNITY;
         return g;
     endfunction
-    localparam logic [N*N*GW-1:0] MATRIX_GAINS = identity_gains();
+    function automatic logic [N*N_BUS*GW-1:0] identity_bus_mx();    // rows = outputs
+        logic [N*N_BUS*GW-1:0] g = '0;
+        for (int o = 0; o < N && o < N_BUS; o++) g[(o*N_BUS + o)*GW +: GW] = G_UNITY;
+        return g;
+    endfunction
+    function automatic logic [N*GW-1:0] unity_levels();             // N in = N_BUS = N out
+        logic [N*GW-1:0] g;
+        for (int c = 0; c < N; c++) g[c*GW +: GW] = G_UNITY;
+        return g;
+    endfunction
+    localparam logic [N_BUS*N*GW-1:0] IN_MX_GAINS  = identity_in_mx();
+    localparam logic [N*N_BUS*GW-1:0] BUS_MX_GAINS = identity_bus_mx();
+    localparam logic [N*GW-1:0]       LEVEL_GAINS  = unity_levels();
 
-    // ----- Control plane: where the gains come from -----
-    // Since Phase 9 the core reads its gains through a coefficient read port
-    // (docs/architecture_modules.md 3): from the PS's register window
-    // (coef_bank_ram inside matrix_regs_axil), or from MATRIX_GAINS through a
-    // coef_flat_reader. Both are sized by the same lane count as the core.
-    localparam int LANES   = pcm_matrix_pkg::matrix_lanes(N, N);
-    localparam int COEF_AW = $clog2(pcm_matrix_pkg::matrix_passes(N, LANES) * N);
-    logic [COEF_AW-1:0]  coef_addr;
-    logic [LANES*GW-1:0] coef_data;
+    // ----- Control plane: where the coefficients come from -----
+    // The core reads each block's coefficients through a read port
+    // (docs/architecture_modules.md 3): from the PS's register windows
+    // (coef_bank_ram inside matrix_regs_axil / gain_regs_axil), or from the
+    // reset banks above through coef_flat_readers. Matrix stores are sized by
+    // the same lane counts as the core (mixer_core_pkg's chooser).
+    localparam int L1     = mixer_core_pkg::chain_l1(N, N_BUS, N);
+    localparam int L2     = mixer_core_pkg::chain_l2(N, N_BUS, N);
+    localparam int IMX_AW = $clog2(pcm_matrix_pkg::matrix_passes(N_BUS, L1) * N);
+    localparam int BMX_AW = $clog2(pcm_matrix_pkg::matrix_passes(N, L2) * N_BUS);
+    localparam int CW     = $clog2(N);
+    logic [CW-1:0]     in_lvl_addr, bus_lvl_addr, out_lvl_addr;
+    logic [GW-1:0]     in_lvl_data, bus_lvl_data, out_lvl_data;
+    logic [IMX_AW-1:0] in_mx_addr;
+    logic [L1*GW-1:0]  in_mx_data;
+    logic [BMX_AW-1:0] bus_mx_addr;
+    logic [L2*GW-1:0]  bus_mx_data;
 
 `ifdef INCLUDE_PS
     // ps_sys_wrapper (the BD) exports M_AXI_CTRL (AXI4-Lite, through a
@@ -351,9 +382,11 @@ module fpgamixer_top (
         .M_AXI_CTRL_rready    (ctrl_rready)
     );
 
+    // The input matrix (zone inputMatrix: input -> bus since Phase 12), at
+    // 0x8000_0000 as before.
     matrix_regs_axil #(
-        .N_IN (N), .N_OUT (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .LANES (LANES),
-        .ADDR_WIDTH (12), .RESET_GAINS (MATRIX_GAINS)
+        .N_IN (N), .N_OUT (N_BUS), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .LANES (L1),
+        .ADDR_WIDTH (12), .RESET_GAINS (IN_MX_GAINS)
     ) u_regs (
         .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
         .s_axi_awaddr  (ctrl_awaddr[11:0]), .s_axi_awvalid (ctrl_awvalid),
@@ -367,7 +400,7 @@ module fpgamixer_top (
         .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
         .mclk (mclk), .frame_i (jb_rx_valid),
-        .coef_addr (coef_addr), .coef_data (coef_data)
+        .coef_addr (in_mx_addr), .coef_data (in_mx_data)
     );
 
 `ifdef INCLUDE_LINK
@@ -547,22 +580,44 @@ module fpgamixer_top (
     );
 `endif
 `else
-    coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N), .LANES (LANES)) u_gains (
-        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (MATRIX_GAINS),
-        .rd_addr (coef_addr), .rd_data (coef_data)
+    coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N), .LANES (L1)) u_in_mx_gains (
+        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (IN_MX_GAINS),
+        .rd_addr (in_mx_addr), .rd_data (in_mx_data)
     );
     assign link_rx  = '0;
     assign link2_rx = '0;
 `endif
 
+    // Bus matrix and the three level stages: their reset banks, in every build
+    // for now. Phase 12 step 3 gives INCLUDE_PS builds their register windows
+    // (bus matrix 0x8000_5000; levels 0x8000_6000 / 7000 / 8000, decision L6).
+    coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N_BUS), .LANES (L2)) u_bus_mx_gains (
+        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (BUS_MX_GAINS),
+        .rd_addr (bus_mx_addr), .rd_data (bus_mx_data)
+    );
+    coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_lvl_gains (
+        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
+        .rd_addr (in_lvl_addr), .rd_data (in_lvl_data)
+    );
+    coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1), .LANES (1)) u_bus_lvl_gains (
+        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
+        .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data)
+    );
+    coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_lvl_gains (
+        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
+        .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
+    );
+
     // ----- PCM core -----
-    // mixer_core: pack -> stream -> time-shared pcm_matrix -> stream -> pack.
-    // core_out updates D cycles after the strobe (227 at 20 x 20 on 2 lanes;
-    // it was 162 at 12 x 12 on 1), before
-    // i2s_port samples its pair (edge 254) and the link its frame (the next
-    // strobe): the same latency as the parallel matrix had.
+    // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->
+    // bus matrix -> output levels, between the stream converters. core_out
+    // updates D cycles after the strobe (249 at 20 -> 20 -> 20 on 4 + 4 lanes;
+    // the single matrix was 227), before i2s_port samples its pair (edge 254)
+    // and the link its frame (the next strobe): the same latency in frames as
+    // the parallel matrix had.
     mixer_core #(
-        .N_IN (N), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)
+        .N_IN (N), .N_BUS (N_BUS), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF),
+        .L1 (L1), .L2 (L2)
     ) u_core (
         .mclk (mclk), .rst_n (rst_n),
         .frame_i (jb_rx_valid),
@@ -570,8 +625,11 @@ module fpgamixer_top (
         .out_flat (core_out),
         .valid_o  (),
         .err_o    (),
-        .coef_addr (coef_addr),
-        .coef_data (coef_data)
+        .in_lvl_addr  (in_lvl_addr),  .in_lvl_data  (in_lvl_data),
+        .in_mx_addr   (in_mx_addr),   .in_mx_data   (in_mx_data),
+        .bus_lvl_addr (bus_lvl_addr), .bus_lvl_data (bus_lvl_data),
+        .bus_mx_addr  (bus_mx_addr),  .bus_mx_data  (bus_mx_data),
+        .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data)
     );
 
 endmodule

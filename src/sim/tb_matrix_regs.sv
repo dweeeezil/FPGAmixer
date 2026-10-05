@@ -53,8 +53,9 @@ module tb_matrix_regs;
     logic [1:0]  bresp, rresp;
 
     // Phase 9: the window feeds the matrix through a coefficient read port
-    // (coef_bank_ram); the matrix is the time-shared one inside mixer_core,
-    // run with a real 256-mclk frame.
+    // (coef_bank_ram); the matrix is the time-shared one (since Phase 12
+    // through matrix_packed_sim, the single-matrix core), run with a real
+    // 256-mclk frame.
     localparam int LANES = pcm_matrix_pkg::matrix_lanes(N, N);
     localparam int AW    = $clog2(pcm_matrix_pkg::matrix_passes(N, LANES) * N);
     logic [AW-1:0]       coef_addr;
@@ -90,7 +91,7 @@ module tb_matrix_regs;
         frame <= (mcnt % 256 == 0);
     end
 
-    mixer_core #(.N_IN (N), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)) u_core (
+    matrix_packed_sim #(.N_IN (N), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)) u_core (
         .mclk (mclk), .rst_n (mrst_n), .frame_i (frame),
         .in_flat (in_flat), .out_flat (out_flat), .valid_o (sv_out), .err_o (core_err),
         .coef_addr (coef_addr), .coef_data (coef_data)

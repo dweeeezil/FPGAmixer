@@ -21,8 +21,10 @@ $root = (Resolve-Path "$PSScriptRoot\..").Path
 $rtl  = "$root\src\rtl"
 $sim  = "$root\src\sim"
 
-$mixcore = @("pcm_matrix_pkg","pcm_pack2stream","pcm_stream2pack","pcm_matrix","mixer_core") |
+$mixcore = @("pcm_matrix_pkg","mixer_core_pkg","pcm_pack2stream","pcm_stream2pack","pcm_matrix",
+             "pcm_gain","mixer_core") |
            ForEach-Object { "$rtl\$_.sv" }
+$mxsim   = "$sim\matrix_packed_sim.sv"   # the single matrix between the converters (matrix TBs)
 $coreRtl = $mixcore + (@("coef_flat_reader","i2s_receiver","i2s_transmitter","i2s_clock_divider",
                          "reset_sync","audio_clocking","i2s_port","oddr_out","fpgamixer_top") |
                        ForEach-Object { "$rtl\$_.sv" })
@@ -33,13 +35,14 @@ $targets = [ordered]@{
   tx          = @("tb_i2s_transmitter",  "", @("$rtl\i2s_transmitter.sv","$rtl\i2s_clock_divider.sv","$sim\tb_i2s_transmitter.sv"))
   txphase     = @("tb_i2s_tx_pin_phase", "", @("$rtl\i2s_transmitter.sv","$rtl\i2s_clock_divider.sv","$sim\tb_i2s_tx_pin_phase.sv"))
   loopback    = @("tb_i2s_loopback",     "", @("$rtl\i2s_receiver.sv","$rtl\i2s_transmitter.sv","$rtl\i2s_clock_divider.sv","$sim\tb_i2s_loopback.sv"))
-  matrix      = @("tb_pcm_matrix",       "", ($mixcore + @("$rtl\coef_flat_reader.sv","$sim\tb_pcm_matrix.sv")))
-  matrix_rect = @("tb_pcm_matrix_rect",  "", ($mixcore + @("$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_matrix_rect.sv")))
+  matrix      = @("tb_pcm_matrix",       "", ($mixcore + @($mxsim,"$rtl\coef_flat_reader.sv","$sim\tb_pcm_matrix.sv")))
+  matrix_rect = @("tb_pcm_matrix_rect",  "", ($mixcore + @($mxsim,"$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_matrix_rect.sv")))
   corepkg     = @("tb_mixer_core_pkg",   "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$sim\tb_mixer_core_pkg.sv"))
+  core        = @("tb_mixer_core",       "", ($mixcore + @("$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_mixer_core.sv")))
   gain        = @("tb_pcm_gain",         "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$rtl\pcm_gain.sv","$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_gain.sv"))
   stream      = @("tb_pcm_stream",      "", @("$rtl\pcm_pack2stream.sv","$rtl\pcm_stream2pack.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_stream.sv"))
   coefram     = @("tb_coef_bank_ram",    "", @("$rtl\coef_bank_ram.sv","$rtl\coef_flat_reader.sv","$sim\tb_coef_bank_ram.sv"))
-  regs        = @("tb_matrix_regs",      "", ($mixcore + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$sim\tb_matrix_regs.sv")))
+  regs        = @("tb_matrix_regs",      "", ($mixcore + @($mxsim,"$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$sim\tb_matrix_regs.sv")))
   link        = @("tb_pcm_link",         "", @("$rtl\async_fifo.sv","$rtl\pcm_link.sv","$sim\tb_pcm_link.sv"))
   mclk        = @("tb_media_clock_meter", "", @("$rtl\media_clock_meter.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\media_clock_stat_regs.sv","$sim\tb_media_clock_meter.sv"))
   steer       = @("tb_media_clock_steer", "", @("$rtl\axil_reg_window.sv","$rtl\media_clock_ctrl_regs.sv","$rtl\media_clock_steer.sv","$rtl\media_clock_meter.sv","$sim\tb_media_clock_steer.sv"))

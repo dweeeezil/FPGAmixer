@@ -14,7 +14,8 @@
 // Phase 9 (P9.A4): the same vectors and reference, now through mixer_core
 // (the time-shared matrix between the stream converters) with the gains from
 // coef_flat_reader; the output must also arrive exactly D cycles after the
-// strobe.
+// strobe. Phase 12: mixer_core became the full chain, so the single matrix is
+// tested through matrix_packed_sim (the P9.A4 core body, sim only).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -82,7 +83,7 @@ module tb_pcm_matrix;
         G_ZERO, G_ZERO,  G_ZERO,  G_UNITY
     };
 
-    // Phase 9: the time-shared matrix inside mixer_core (packed in/out, as the
+    // Phase 9: the time-shared matrix between the converters (packed in/out, as the
     // parallel matrix had), its gains through a coef_flat_reader.
     localparam int LANES = pcm_matrix_pkg::matrix_lanes(N, N);
     localparam int D     = pcm_matrix_pkg::core_latency(N, N, LANES);
@@ -91,7 +92,7 @@ module tb_pcm_matrix;
     logic [LANES*GAIN_WIDTH-1:0] coef_data;
     logic                     err_o;
 
-    mixer_core #(
+    matrix_packed_sim #(
         .N_IN (N), .N_OUT (N), .SW (SAMPLE_WIDTH),
         .GW (GAIN_WIDTH), .GF (GAIN_FRAC), .LANES (LANES)
     ) dut (

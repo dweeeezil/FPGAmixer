@@ -2,7 +2,7 @@
 
 *Opening prompt: `prompt_phase12_channels_buses.md`. Branch `phase12-levels-buses`, from `controller-support` at `6e70512`.*
 
-**State: decided 2026-10-04 (L1–L10 all as recommended, §5); step 1 done in simulation (§6.1); step 2 (`mixer_core` with the chain) next.**
+**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–2 done in simulation (§6.1, §6.2); step 3 (control plane RTL: the windows) next.**
 
 ---
 
@@ -128,6 +128,35 @@ Each step is built, tested, committed, and recorded here.
 **Results (XSim 2026.1):** `corepkg` PASS; `gain` PASS (5 × 60 frames, 0 errors). Icarus not run (not installed on this PC); the `sim.mk` targets are written like the others.
 
 **Mutation test** (scratchpad runner: copies `src/` and `scripts/` to a temp folder, runs the unmutated baseline there first, stops if it fails; one replacement per mutant): **11 of 12 killed.** Killed: wrong coefficient address (3700 errors), no positive / negative saturation (522 / 610), valid one cycle early (5573), rounding instead of truncation (877), sample and gain misaligned (3031), channel tag from the wrong stage (4843); package: GAIN_LAT missing at the buses, the +1 missing, ties to the later candidate, D_MAX + 1 accepted, all failing `corepkg`. **Survived, equivalent:** capping L1 by N_IN only (not also N_BUS). Lanes beyond a matrix's outputs can't shorten it (one pass either way), so the chooser always settles the tie at the smaller total before the cap could matter; `pcm_matrix` still refuses such a LANES at elaboration.
+
+### 6.2 Step 2: `mixer_core` with the chain (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/mixer_core.sv` (rewritten) | levels → input matrix → levels → bus matrix → levels between the converters (§3.1); parameters N_IN, N_BUS, N_OUT, L1/L2 (default: the chooser); five read ports `in_lvl_*`, `in_mx_*`, `bus_lvl_*`, `bus_mx_*`, `out_lvl_*`; `$error` when nothing fits or D > D_MAX. The single-matrix configuration is gone (L10) |
+| `src/rtl/fpgamixer_top.sv` | `N_BUS = N`; reset banks `IN_MX_GAINS`, `BUS_MX_GAINS` (identity), `LEVEL_GAINS` (unity) replace `MATRIX_GAINS`; `u_regs` now serves the input matrix (N_OUT = N_BUS, LANES = L1). **For now the bus matrix and the three level stages read their reset banks through `coef_flat_reader`s in every build, PS builds included**; step 3 gives PS builds their windows. So a bitstream built at this commit would behave like today's (identity bus matrix, unity levels) |
+| `src/sim/tb_mixer_core.sv` (new) | 20/20/20, 12/12/12, 28/28/28, 20→8→20, 3→5→2, 7→5→3 with lanes forced 3 + 2 (idle lanes in both last passes), 1/1/1; 60 frames each; all five banks random every frame in three modes (extreme, console-like, reset); bit-exact against a 64-bit chain model that saturates after every block; output only at D, `err_o` never; stream monitors on the buses and the output levels at their stated first/last beats; a counter of frames where bus saturation changes the output (must be > 0 overall) |
+| `src/sim/matrix_packed_sim.sv` (new) | the P9.A4 core body, sim only; `tb_pcm_matrix`, `tb_pcm_matrix_rect`, `tb_matrix_regs` instantiate it instead of `mixer_core`, checks unchanged |
+| `scripts/sim.mk`, `scripts/xsim_regress.ps1` | `MIXCORE` gains the package and `pcm_gain`; `MXSIM` for the matrix TBs; target `core` |
+| `scripts/create_project.tcl` | comment only (`MATRIX_GAINS` → reset banks); the RTL glob picks up the new files |
+
+**Results (XSim 2026.1).** `core` PASS:
+
+| Size | Lanes | D | Frames | Bus clips | Errors |
+|---|---|---|---|---|---|
+| 20 → 20 → 20 | 4 + 4 | 249 | 60 | 26 | 0 |
+| 12 → 12 → 12 | 2 + 2 | 181 | 60 | 14 | 0 |
+| 28 → 28 → 28 | 10 + 10 | 233 | 60 | 32 | 0 |
+| 20 → 8 → 20 | 2 + 2 | 205 | 60 | 22 | 0 |
+| 3 → 5 → 2 | 1 + 1 | 51 | 60 | 4 | 0 |
+| 7 → 5 → 3 | 3 + 2 (forced) | 55 | 60 | 10 | 0 |
+| 1 → 1 → 1 | 1 + 1 | 26 | 60 | 0 | 0 |
+
+**Full regression: 18 of 18 PASS**, including `phase3` and `dynamic` (the real `fpgamixer_top`, which now runs the whole chain at its reset state, through the Pmod fixtures) and the matrix TBs through the wrapper. Two TBs (`corepkg`, `mclk`) first failed to *start* ("Simulation engine failed to start: child exe not found") and passed on a rerun. **Cause (user, 2026-10-04): Windows Defender blocks some of what Vivado does.** A launch failure is a tool failure, not a test result; `xsim_regress.ps1` reports it as FAIL (never as PASS), so rerun those targets.
+
+**Mutation test: 8 of 8 killed** (runner as step 1, now also treating a launch failure as no verdict and retrying, because the first run counted one tool failure as a kill): bus levels reading the input-level port (2763 errors); input levels bypassed (4809); output levels bypassed (3344); bus matrix on the input matrix's lane count (199, from the 3 + 2 case); no positive saturation in `pcm_matrix` (1126); D one cycle short in the package (420); in `fpgamixer_top`, reset levels at half gain and a bus matrix reset that isn't identity (both caught by `phase3`).
+
+Icarus not run (not installed on this PC).
 
 ## 7. Not in this phase
 

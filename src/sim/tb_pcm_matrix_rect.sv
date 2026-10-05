@@ -2,7 +2,8 @@
 // tb_pcm_matrix_rect.sv
 //
 // The time-shared matrix (Phase 9, P9.A4) across sizes and lane counts, through
-// mixer_core (pack -> stream -> pcm_matrix -> stream -> pack) with its
+// matrix_packed_sim (pack -> stream -> pcm_matrix -> stream -> pack: the P9.A4
+// mixer_core body, kept for this TB when Phase 12 made the core a chain) with its
 // coefficients from coef_flat_reader. tb_pcm_matrix covers the arithmetic
 // corner cases on a 4x4; this checks the schedule and the indexing:
 //
@@ -51,7 +52,7 @@ module matrix_harness
     logic [AW-1:0]             coef_addr;
     logic [LANES*GW-1:0]       coef_data;
 
-    mixer_core #(.N_IN (N_IN), .N_OUT (N_OUT), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)) dut (
+    matrix_packed_sim #(.N_IN (N_IN), .N_OUT (N_OUT), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)) dut (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
         .in_flat (in_flat), .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o),
         .coef_addr (coef_addr), .coef_data (coef_data));
