@@ -13,6 +13,8 @@
 # Usage (from repo root):
 #   make -f scripts/sim.mk matrix     # matrix unit test
 #   make -f scripts/sim.mk matrix_rect  # non-square matrices (3->5, 5->2)
+#   make -f scripts/sim.mk corepkg    # Phase 12 core chain arithmetic (lanes, D)
+#   make -f scripts/sim.mk gain       # Phase 12 per-channel gain stage
 #   make -f scripts/sim.mk stream     # Phase 9 PCM stream contract + packed<->stream converters
 #   make -f scripts/sim.mk coefram    # Phase 9 coefficient bank in RAM (read port, swap at the frame)
 #   make -f scripts/sim.mk link       # Phase 8 PS<->PL link front door (AXIS <-> PCM, two clocks)
@@ -44,8 +46,8 @@ CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect stream coefram mclk steer regs link linkstat phase3 dynamic clean
-all: rx tx txphase loopback matrix matrix_rect stream coefram mclk steer regs link linkstat phase3 dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain stream coefram mclk steer regs link linkstat phase3 dynamic clean
+all: rx tx txphase loopback matrix matrix_rect corepkg gain stream coefram mclk steer regs link linkstat phase3 dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -93,6 +95,21 @@ matrix_rect: | $(BUILD)
 		$(MIXCORE) $(RTL)/coef_flat_reader.sv \
 		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_matrix_rect.sv
 	@$(VVP) $(BUILD)/tb_pcm_matrix_rect.vvp
+
+# --- Phase 12: the core chain's arithmetic (lanes, D) vs independent values ---
+corepkg: | $(BUILD)
+	@echo ">>> Building tb_mixer_core_pkg"
+	@$(IVERILOG) $(FLAGS) -s tb_mixer_core_pkg -o $(BUILD)/tb_mixer_core_pkg.vvp \
+		$(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv $(SIM)/tb_mixer_core_pkg.sv
+	@$(VVP) $(BUILD)/tb_mixer_core_pkg.vvp
+
+# --- Phase 12: per-channel gain stage (N = 1, 4, 20, 28; gaps), random vs a reference ---
+gain: | $(BUILD)
+	@echo ">>> Building tb_pcm_gain"
+	@$(IVERILOG) $(FLAGS) -s tb_pcm_gain -o $(BUILD)/tb_pcm_gain.vvp \
+		$(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv $(RTL)/pcm_gain.sv \
+		$(RTL)/coef_flat_reader.sv $(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_gain.sv
+	@$(VVP) $(BUILD)/tb_pcm_gain.vvp
 
 # --- Phase 9: PCM stream contract, packed <-> stream converters (N = 1, 12, 20) ---
 stream: | $(BUILD)

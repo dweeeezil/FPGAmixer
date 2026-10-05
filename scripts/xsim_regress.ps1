@@ -12,7 +12,9 @@
 # Prints one PASS/FAIL line per TB (the TB's own verdict line) and a summary;
 # exits 1 if any TB fails or times out.
 # =============================================================================
-param([string[]]$Only)
+# ValueFromRemainingArguments: "matrix regs" binds both names (a plain
+# [string[]] took only the first and silently skipped the rest).
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Only)
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..").Path
@@ -33,7 +35,9 @@ $targets = [ordered]@{
   loopback    = @("tb_i2s_loopback",     "", @("$rtl\i2s_receiver.sv","$rtl\i2s_transmitter.sv","$rtl\i2s_clock_divider.sv","$sim\tb_i2s_loopback.sv"))
   matrix      = @("tb_pcm_matrix",       "", ($mixcore + @("$rtl\coef_flat_reader.sv","$sim\tb_pcm_matrix.sv")))
   matrix_rect = @("tb_pcm_matrix_rect",  "", ($mixcore + @("$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_matrix_rect.sv")))
-  stream      = @("tb_pcm_stream",       "", @("$rtl\pcm_pack2stream.sv","$rtl\pcm_stream2pack.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_stream.sv"))
+  corepkg     = @("tb_mixer_core_pkg",   "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$sim\tb_mixer_core_pkg.sv"))
+  gain        = @("tb_pcm_gain",         "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$rtl\pcm_gain.sv","$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_gain.sv"))
+  stream      = @("tb_pcm_stream",      "", @("$rtl\pcm_pack2stream.sv","$rtl\pcm_stream2pack.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_stream.sv"))
   coefram     = @("tb_coef_bank_ram",    "", @("$rtl\coef_bank_ram.sv","$rtl\coef_flat_reader.sv","$sim\tb_coef_bank_ram.sv"))
   regs        = @("tb_matrix_regs",      "", ($mixcore + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$sim\tb_matrix_regs.sv")))
   link        = @("tb_pcm_link",         "", @("$rtl\async_fifo.sv","$rtl\pcm_link.sv","$sim\tb_pcm_link.sv"))

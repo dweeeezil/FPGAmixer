@@ -2,7 +2,7 @@
 
 *Opening prompt: `prompt_phase12_channels_buses.md`. Branch `phase12-levels-buses`, from `controller-support` at `6e70512`.*
 
-**State: proposal, awaiting decisions L1–L10 (§5).** Nothing is built yet.
+**State: decided 2026-10-04 (L1–L10 all as recommended, §5); step 1 done in simulation (§6.1); step 2 (`mixer_core` with the chain) next.**
 
 ---
 
@@ -99,6 +99,8 @@ With **N_BUS = N_OUT and the bus matrix at identity**, input → bus *k* → out
 | **L9** | Growth | Every size is a parameter derived from `fpgamixer_top`'s channel map (N_IN, N_OUT, N_BUS = N_OUT). Channels are appended, never interleaved. The TBs run 20/20/20 and at least one uneven size (e.g. 7 → 5 → 3). The 28 × 28 case is checked at elaboration (lanes and D) but not built. |
 | **L10** | Name, and the old single-matrix core | Record it in the roadmap as **Phase 12, "channel levels and buses"**: the first slice of Phase 7's per-channel and per-bus processing plus §6's bus layer (Phase 7 keeps EQ, dynamics, delay and mute). **Drop the single-matrix configuration** of `mixer_core`: every build gets the chain, which keeps one tested path. |
 
+**Decided by the user, 2026-10-04: all as recommended.** L1 PL gain stages (`pcm_gain`); L2 N_BUS = N_OUT; L3 no migration; L4 inside one frame, one chain package; L5 saturate at every block; L6 windows 0x8000_5000 (bus matrix), 0x6000 / 0x7000 / 0x8000 (input / bus / output levels), `gain_regs_axil` ID `0x474E_5001` with the tap in CONFIG; L7 unity / identity at reset, 0 dB seeded, Q2.16 shared `level`; L8 metering right after this phase; L9 sizes as parameters; L10 roadmap "Phase 12", single-matrix core dropped.
+
 ## 6. Steps after the decisions
 
 Each step is built, tested, committed, and recorded here.
@@ -109,6 +111,23 @@ Each step is built, tested, committed, and recorded here.
 4. **Vivado:** timing, CDC, the methodology gate; DSP and BRAM counts recorded. Export, `sdtgen`, compare `psu_init` (expected identical), DT (four new nodes).
 5. **Software:** §3.4, all tests on the PC and on the VM.
 6. **Image + bench:** USB in (Mac) → input level → bus → bus level → bus matrix → output level → JB_L, by ear, one check per stage. Then the power-cycle restore check with audio.
+
+### 6.1 Step 1: `pcm_gain` and the chain package (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/pcm_gain.sv` (new) | the gain stage: stream in/out, read port `coef_addr = s_ch` (ROW_LEN 1, LANES 1), one multiplier; **G = 4** (register, A/B, M, saturate), so every beat leaves exactly 4 cycles after it arrived and the input's order, gaps and timing carry through. Same arithmetic as one matrix crosspoint |
+| `src/rtl/mixer_core_pkg.sv` (new) | `GAIN_LAT`, `chain_bus_last`, `chain_out_last`, `chain_latency`, `chain_l1` / `chain_l2` (fewest total lanes with D ≤ D_MAX, ties to the smaller D, then the smaller L1). Uses `pcm_matrix_pkg`'s per-matrix formulas, unchanged |
+| `src/sim/tb_pcm_gain.sv` (new) | N = 1, 4, 20, 28 contiguous, and 20 with random gaps; 60 frames each, random samples and gains with extremes; every beat bit-exact vs a 64-bit reference, on its channel, exactly G cycles after its input; no unexpected beats; `pcm_stream_monitor` (first/last beat and no gaps where contiguous) |
+| `src/sim/tb_mixer_core_pkg.sv` (new) | lanes and D for 20/20/20, 12/12/12, 28/28/28, 40/40/40 (= D_MAX), 48 and 64 (nothing fits), 20/8/20, 20/16/20, 7/5/3, 1/1/1, against values from an independent Python model of the formulas |
+| `scripts/sim.mk`, `scripts/xsim_regress.ps1` | targets `corepkg`, `gain` (in step) |
+| `scripts/xsim_regress.ps1` | **fix:** `.\scripts\xsim_regress.ps1 a b` bound only `a` and silently skipped the rest (a plain `[string[]]` parameter); now `ValueFromRemainingArguments`. Found because `gain` printed no line |
+
+**The estimate moved, in your favour on DSPs:** with G = 4 instead of the budgeted 5, the rule picks **4 + 4 lanes at 20/20/20, D = 249** (one cycle under D_MAX; 4 + 5 would be 230). That is the same rule `matrix_lanes` applies (spend lanes only when the frame needs them). So the chain needs 8 matrix DSPs + 3 gain DSPs = **11**. D_MAX already carries the 3-cycle margin to `i2s_port`; a later Phase 7 block that lengthens the chain makes the chooser add a lane by itself.
+
+**Results (XSim 2026.1):** `corepkg` PASS; `gain` PASS (5 × 60 frames, 0 errors). Icarus not run (not installed on this PC); the `sim.mk` targets are written like the others.
+
+**Mutation test** (scratchpad runner: copies `src/` and `scripts/` to a temp folder, runs the unmutated baseline there first, stops if it fails; one replacement per mutant): **11 of 12 killed.** Killed: wrong coefficient address (3700 errors), no positive / negative saturation (522 / 610), valid one cycle early (5573), rounding instead of truncation (877), sample and gain misaligned (3031), channel tag from the wrong stage (4843); package: GAIN_LAT missing at the buses, the +1 missing, ties to the later candidate, D_MAX + 1 accepted, all failing `corepkg`. **Survived, equivalent:** capping L1 by N_IN only (not also N_BUS). Lanes beyond a matrix's outputs can't shorten it (one pass either way), so the chooser always settles the tie at the smaller total before the cap could matter; `pcm_matrix` still refuses such a LANES at elaboration.
 
 ## 7. Not in this phase
 
