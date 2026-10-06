@@ -20,11 +20,11 @@ There are four kinds of block:
                  │                 (per block)   CDC handoff      │
                  └───────────────────────────────────┬───────────┘
                                                      │ coefficient ports (§3)
-   front doors (§2)            PCM core                      front doors
- I2S rx ──┐                ┌───────────────┐                ┌── I2S tx
- USB in ──┼─ PCM contract ─►  matrix (now)  ├─ PCM contract ─┼── USB out
- AVB in ──┘                │  bus/DSP later│                └── AVB out
-                           └───────────────┘
+   front doors (§2)            PCM core (since Phase 12)          front doors
+ I2S rx ──┐           ┌──────────────────────────────────┐        ┌── I2S tx
+ USB in ──┼─ PCM ────►│ levels → input matrix → levels → │─ PCM ──┼── USB out
+ AVB in ──┘ contract  │ bus matrix → levels   (DSP later)│ contr. └── AVB out
+                      └──────────────────────────────────┘
                         platform: clocks, resets, PS, pins
 ```
 

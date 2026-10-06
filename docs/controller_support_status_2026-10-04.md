@@ -2,7 +2,7 @@
 
 **Branch:** `controller-support`, from `phase9/time-shared-core` at `368e236`. **Opening prompt:** `../StudioRunner-controller/docs/prompts/prompt_firmware_controller_support.md`.
 
-**Status (closed 2026-10-04): steps 0–5 and 7 done**, in image `ctl1` (§5); **the app connects to the board** (user, first boot). **Open:** step 6 (metering, F4) and step 8 (the F1–F9 checks on the board), §6. The F1–F9 status for the controller repo is §7. The next work, channel levels and the bus layer, starts in a new session: `docs/prompt_phase12_channels_buses.md`.
+**Status (closed 2026-10-04): steps 0–5 and 7 done**, in image `ctl1` (§5); **the app connects to the board** (user, first boot). **Open:** step 6 (metering, F4) and step 8 (the F1–F9 checks on the board), §6. The F1–F9 status for the controller repo is §7. The next work, channel levels and the bus layer, starts in a new session: `docs/prompt_phase12_channels_buses.md`. **Update 2026-10-06:** that work is done (`phase12_status_2026-10-04.md`); the app now has channel zones to meter, so step 6 has its purpose (Phase 12 decision L8: metering next). Step 8 still open.
 
 ---
 

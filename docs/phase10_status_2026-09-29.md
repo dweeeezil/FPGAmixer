@@ -2,6 +2,8 @@
 
 **Branch:** `phase9/time-shared-core` (continued). **Started from:** P9.7a (the AVB bridge) built as image `p97-bridge-20260928`, **not yet benched**.
 
+**Status (updated 2026-10-06):** the Mac sees the board as an AVB device and audio runs both ways (2026-09-30, §14); fixes and decisions are in image `p10e` (and every image since: `ctl1`, `p12`). **Still open (§14's "Next"):** a clean boot with the Mac attached and no manual steps (SLAVE, the entity in the browser, audio both ways), not recorded as checked; the Mac's two-streams-to-one-listener question; the P9.7 checks and the P9.8 soak.
+
 ## 1. The decision, and how this phase was run
 
 The user, 2026-09-29: *"I want you to write the rest of the code required to make the board AVB compliant … I should be able to plug my mac (with the owc thunderbolt ethernet adapter) into the board and have it show up as an AVB device. From there we can debug and run tests."* They called it "a bit of a reckless call … I'm okay with the potential consequences".

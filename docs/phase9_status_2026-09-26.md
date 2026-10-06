@@ -1,6 +1,6 @@
 # Phase 9 status: 2026-09-26 — network audio (AVB): design proposal
 
-**Status: proposal only, nothing built.** The decisions in §8 come first. Every *checked* fact below was read from the build tree, the XSA or the bench on 2026-09-26, not recalled.
+**Status (updated 2026-10-06):** P9.A (the time-shared core) and P9.1–P9.6 done on hardware; P9.7 (the AVB bridge) built and first heard with the Mac in Phase 10 (`phase10_status_2026-09-29.md` §14). Still open: the P9.7 checks (60-minute log, round trip) and the P9.8 soak. *Original header:* proposal only, nothing built; the decisions in §8 come first. Every *checked* fact below was read from the build tree, the XSA or the bench on 2026-09-26, not recalled.
 
 Order decided by the user (2026-09-26): after the single 8 × 8 USB device (Phase 8, done), **AVB comes before DSP**. Phase 7 is deferred because the planned DSP module library makes it large.
 

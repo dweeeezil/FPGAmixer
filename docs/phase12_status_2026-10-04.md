@@ -2,7 +2,7 @@
 
 *Opening prompt: `prompt_phase12_channels_buses.md`. Branch `phase12-levels-buses`, from `controller-support` at `6e70512`.*
 
-**State: decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 done in simulation (§6.1–§6.3), step 4 built clean (§6.4, `p12`), step 5 software done (§6.5); step 6 (image + bench) next.**
+**State: DONE 2026-10-06.** Decided 2026-10-04 (L1–L10 all as recommended, §5); steps 1–3 in simulation (§6.1–§6.3), Vivado build `p12` (§6.4), software (§6.5), image `p12-buses-20261005` (§6.6), bench PASS (§6.7). Open items: §7.
 
 ---
 
@@ -226,6 +226,19 @@ Not done yet: copying the SDT to the VM and `gen-machine-conf` (with the image, 
 - **`build/sd/p12-buses-20261005.wic.xz`** (108 MB, MD5 `ea844f48…`, same on both ends).
 - `crosspoint_restore_test.py` is **not** in the image (it never was; only `osc_codec.py` is): the bench copies it to the board.
 
-## 7. Not in this phase
+### 6.7 Bench (image `p12-buses-20261005`, Mac + board): PASS
+
+**User, 2026-10-06: "Everything works great."** The bench plan was: flash; `mixer_hw.py info` (all five core windows with their IDs, CONFIGs and TAPs); the app's Inputs / Buses / Outputs tabs (20 strips each) and both matrix tabs; one by-ear change per stage (USB 1 → JB_L); the power-cycle restore with `crosspoint_restore_test.py` (860 registers). The bench ran on the Mac, so the individual readings (the `info` lines, the `check-hw` counts) weren't captured in this session; recorded as reported. **Phase 12 is done.**
+
+## 7. Open items and follow-ups
+
+- **Metering (decision L8: right after this phase).** The gain stages' output streams are the "post-DSP" taps the standard names. Gateware F4a (a peak detector per tap) + the server's meter protocol (controller-support step 6: `meter/subscribe`, lease, UDP stream). The app already meters channel zones.
+- **The controller repo** (not edited from here): its D5 ("no bus layer on hardware yet") and D76's caveat are now out of date; `MockProfile.hardwareToday` (12 × 12, one matrix) no longer describes the board, which now has `standard`'s shape at 20. Suggested line for `docs/FIRMWARE_CONTRACT.md`'s log: *2026-10-06: firmware Phase 12 (FPGAmixer `ffdfc1b`, image `p12-buses-20261005`): all five zones on hardware (20 inputs, 20 buses, 20 outputs, `level` everywhere); F4/F4a still open.*
+- **Mute** (Phase 7): a gain of 0 in the existing level stages, combined with `level` in the server; no new gateware.
+- **Gain smoothing** (deferred since Phase 5): a ramp on the coefficient inside `pcm_gain` (and `pcm_matrix`), no contract change.
+- **The frame budget:** D = 249 of 250 at 20/20/20. Any block added to the chain makes the lane chooser spend more DSPs (there are 349 left). D_MAX = 250 is set by the Pmods' `i2s_port` (it samples on edge 254); if the Pmods go, the limit becomes the link's capture at the next strobe and can loosen.
+- `xsim_regress.ps1` and the mutation runners treat an XSim launch failure (Windows Defender) as no result; the runners' copies live in the session scratchpad, not the repo.
+
+## 8. Not in this phase
 
 Mute, EQ, dynamics, delay; gain smoothing (its place: inside `pcm_gain`); metering (L8); USB host mode; the open AVB checks.
