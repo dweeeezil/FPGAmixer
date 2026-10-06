@@ -45,6 +45,9 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py level <window> <ch> <dB>       # one channel of a level
                                               # stage (Phase 12), then COMMIT
     python3 mixer_hw.py identity [window]     # unity diagonal, rest off
+    python3 mixer_hw.py meter <window>        # peaks since the last snapshot (Phase 13:
+                                              # inmeter, busmeter, outmeter); steals one
+                                              # window from the OSC server's meters
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
     python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
@@ -62,6 +65,7 @@ import os
 import struct
 import sys
 import threading
+import time
 
 WINDOW_SIZE = 0x1000
 
@@ -275,6 +279,69 @@ class OutputLevelHW(GainHW):
     TAP = 2
 
 
+class PeakHW(RegWindow):
+    """A peak-meter window (src/rtl/peak_regs_axil.sv, Phase 13): per-channel
+    peak magnitudes of one zone. CONFIG = [31:24] channels, [23:16] TAP (0
+    input, 1 bus, 2 output), [15:8] sample width; PEAK[c] at COEF[c], the
+    largest |sample| (0 .. 2^23-1) over the frames since the previous SNAP.
+    CTRL bit0 written = SNAP (close the window at the next frame strobe);
+    BUSY/QUEUED read as for a commit. ONE reader: every SNAP starts a new
+    window, so two readers would split the peaks between them (the OSC server
+    is the reader on the board)."""
+
+    ID = 0x504B_5001
+    TAP = None
+    TAP_NAMES = GainHW.TAP_NAMES
+    SNAP_TIMEOUT_S = 0.05      # a snapshot takes about one frame (21 us)
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.tap = (self.config >> 16) & 0xFF
+        self.width = (self.config >> 8) & 0xFF
+        if self.TAP is not None and self.tap != self.TAP:
+            raise RuntimeError(f"window at 0x{base:08x}: meter TAP {self.tap}, expected "
+                               f"{self.TAP} ({self.TAP_NAMES.get(self.TAP)} meter; wrong address map?)")
+
+    def describe(self):
+        return (f"{self.TAP_NAMES.get(self.tap, f'tap {self.tap}')} meter, {self.n} channels, "
+                f"{self.width}-bit")
+
+    def request_snap(self):
+        """Close the current window at the next frame strobe."""
+        with self._lock:
+            self.wr(REG_CTRL, 1)
+
+    def wait_and_read(self):
+        """Wait for the snapshot (BUSY and QUEUED clear), then read every
+        channel's peak. Raises TimeoutError if the PL doesn't finish (no
+        frames: mclk stopped)."""
+        deadline = time.monotonic() + self.SNAP_TIMEOUT_S
+        while self.rd(REG_CTRL) & 3:
+            time.sleep(0)          # yield the GIL: the server's TCP threads keep running
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"meter at 0x{self.base:08x}: snapshot not done "
+                                   f"after {self.SNAP_TIMEOUT_S * 1000:.0f} ms (no audio frames?)")
+        mask = (1 << self.width) - 1
+        return [self.rd(REG_COEF0 + 4 * c) & mask for c in range(self.n)]
+
+    def snapshot(self):
+        self.request_snap()
+        return self.wait_and_read()
+
+
+class InputMeterHW(PeakHW):
+    TAP = 0
+
+
+class BusMeterHW(PeakHW):
+    TAP = 1
+
+
+class OutputMeterHW(PeakHW):
+    TAP = 2
+
+
 class LinkStatHW(RegWindow):
     """A pcm_link status window (src/rtl/pcm_link_stat_regs.sv, Phase 8):
     read-only, same header, 0x00C = snapshot sequence. Counters are
@@ -436,7 +503,14 @@ WINDOWS = {
     "inlevel":   (0x8000_6000, InputLevelHW),
     "buslevel":  (0x8000_7000, BusLevelHW),
     "outlevel":  (0x8000_8000, OutputLevelHW),
+    # Phase 13: the peak meters on the level stages' outputs (decision M4)
+    "inmeter":   (0x8000_9000, InputMeterHW),
+    "busmeter":  (0x8000_A000, BusMeterHW),
+    "outmeter":  (0x8000_B000, OutputMeterHW),
 }
+
+# The meters: present all together (a Phase 13 bitstream) or not at all.
+METERS = ("inmeter", "busmeter", "outmeter")
 
 # The bus layer's windows: present all together (a Phase 12 bitstream) or not
 # at all (older ones, where "matrix" is input -> output).
@@ -541,6 +615,19 @@ def _main(argv):
 
     def fmt(db):
         return f"{'off':>9}" if db == float("-inf") else f"{db:9.2f}"
+
+    if cmd == "meter" and len(argv) == 3:
+        # One SNAP + read. The OSC server is the meters' reader: this takes
+        # the window away from its next sample (one meter update shows less).
+        mt = open_window(argv[2])
+        if not isinstance(mt, PeakHW):
+            print(f"{argv[2]} is not a meter window ({', '.join(METERS)})")
+            return 2
+        print(mt.describe())
+        for c, p in enumerate(mt.snapshot()):
+            db = 20.0 * math.log10(p / (1 << 23)) if p else float("-inf")
+            print(f"{c:>6} {p:#08x} {'silence' if not p else f'{db:7.2f} dBFS'}")
+        return 0
 
     if cmd == "level" and len(argv) == 5:
         lv = open_window(argv[2])

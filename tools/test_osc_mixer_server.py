@@ -1030,6 +1030,132 @@ class StateFromBeforeBuses(ServerCase):
                                      "busMatrix", "outputChannel"})
 
 
+class Metering(ServerCase):
+    """Phase 13 (F4) end to end with the synthetic source: subscribe over TCP,
+    datagrams on a UDP socket, decoded as the app's UDPMeterListener does.
+    The synthetic peak of channel c is -12 - 3*(c % 6) dBFS + the level."""
+
+    SERVER_ARGS = ["--meter-source", "synthetic"]
+    MASK_IN_OUT = 0b101
+
+    def listener(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        s.settimeout(0.2)
+        self.addCleanup(s.close)
+        return s
+
+    def collect(self, sock, seconds):
+        """{zone: [(seq, [centibels...]), ...]} received for `seconds`."""
+        from osc_codec import decode_packet
+        out, end = {}, time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                data = sock.recv(65535)
+            except socket.timeout:
+                continue
+            for m in decode_packet(data):
+                self.assertEqual(m.address.rsplit("/", 1)[0], "/mixer/meter")
+                blob = m.args[0]
+                self.assertIsInstance(blob, (bytes, bytearray))
+                seq = struct.unpack(">I", blob[:4])[0]
+                vals = list(struct.unpack(f">{(len(blob) - 4) // 2}h", blob[4:]))
+                out.setdefault(m.address.rsplit("/", 1)[1], []).append((seq, vals))
+        return out
+
+    def subscribe(self, link, port, rate=30, mask=MASK_IN_OUT):
+        link.send_message("/mixer/meter/subscribe", [port, rate, mask])
+
+    def test_stream_zones_blob_sequence_and_values(self):
+        c, u = self.tcp(), self.listener()
+        self.subscribe(c, u.getsockname()[1])
+        got = self.collect(u, 1.0)
+        self.assertEqual(set(got), {"inputChannel", "outputChannel"})   # bit 1 (bus) not asked for
+        ins = got["inputChannel"]
+        self.assertTrue(20 <= len(ins) <= 35, len(ins))                  # ~30 Hz
+        self.assertEqual([s for s, _v in ins], list(range(len(ins))))    # 0, 1, 2, ... per zone
+        self.assertEqual(ins[0][1], [-1200, -1500, -1800, -2100])        # N = 4, levels at 0 dB
+        self.assertEqual([s for s, _v in got["outputChannel"]][:3], [0, 1, 2])
+
+    def test_meters_follow_the_level(self):
+        c, u = self.tcp(), self.listener()
+        self.roundtrip(c, "/mixer/set/outputChannel/2/level", -90.0)
+        self.roundtrip(c, "/mixer/set/outputChannel/1/level", -6.0)
+        self.subscribe(c, u.getsockname()[1], mask=0b100)
+        vals = self.collect(u, 0.3)["outputChannel"][-1][1]
+        self.assertEqual(vals[2], -32768)                                # off: silence
+        self.assertEqual(vals[1], -1500 - 600)
+
+    def test_floats_with_integral_values_are_accepted(self):
+        c, u = self.tcp(), self.listener()
+        c.send_message("/mixer/meter/subscribe", [float(u.getsockname()[1]), 30.0, 1.0])
+        self.assertIn("inputChannel", self.collect(u, 0.3))
+        silent(self, c)                                                  # no error reply
+
+    def test_malformed_subscribes_get_an_error_reply(self):
+        c = self.tcp()
+        for args in ([9000, 30], ["9000", 30, 1], [0, 30, 1], [70000, 30, 1], [9000.5, 30, 1],
+                     [9000, 30, 1, 1], [9000, 30, float("nan")]):
+            c.send_message("/mixer/meter/subscribe", args)
+            m = c.read_message()
+            self.assertEqual((m.address, m.args[0]), ("/mixer/error", "meter/subscribe"), args)
+
+    def test_rate_is_clamped(self):
+        c, u = self.tcp(), self.listener()
+        self.subscribe(c, u.getsockname()[1], rate=10000, mask=1)
+        n = len(self.collect(u, 1.0).get("inputChannel", []))
+        self.assertTrue(90 <= n <= 125, n)                               # 120 Hz, not 10 kHz
+
+    def test_mask_0_unsubscribes_and_closing_tcp_ends_it(self):
+        c, u = self.tcp(), self.listener()
+        self.subscribe(c, u.getsockname()[1])
+        self.assertTrue(self.collect(u, 0.3))
+        self.subscribe(c, u.getsockname()[1], mask=0)
+        self.collect(u, 0.2)                                             # drain what's in flight
+        self.assertEqual(self.collect(u, 0.4), {})
+        d, v = self.tcp(), self.listener()
+        self.subscribe(d, v.getsockname()[1])
+        self.assertTrue(self.collect(v, 0.3))
+        d.close()
+        self.collect(v, 0.2)
+        self.assertEqual(self.collect(v, 0.4), {})
+
+    def test_two_subscribers_each_get_their_own_sequences(self):
+        a, ua = self.tcp(), self.listener()
+        b, ub = self.tcp(), self.listener()
+        self.subscribe(a, ua.getsockname()[1], rate=30, mask=1)
+        first_a = self.collect(ua, 0.3)["inputChannel"]                  # a's stream so far
+        self.subscribe(b, ub.getsockname()[1], rate=10, mask=1)
+        gb = self.collect(ub, 0.5)["inputChannel"]
+        later_a = self.collect(ua, 0.01)["inputChannel"]                 # what a got meanwhile
+        self.assertEqual(first_a[0][0], 0)
+        self.assertEqual(gb[0][0], 0)                                    # b starts at 0 ...
+        self.assertEqual(later_a[0][0], first_a[-1][0] + 1)              # ... a just continues
+        self.assertGreater(len(later_a), len(gb))                        # 30 Hz vs 10 Hz
+
+
+class NoMeters(ServerCase):
+    """No meter source (the simulator's default; an older bitstream): a
+    subscribe is answered with an error reply."""
+
+    def test_subscribe_refused(self):
+        c = self.tcp()
+        c.send_message("/mixer/meter/subscribe", [9000, 30, 7])
+        m = c.read_message()
+        self.assertEqual(m.args[:1], ["meter/subscribe"])
+        self.assertIn("no meters", m.args[1])
+
+
+class MeterSourceFlag(unittest.TestCase):
+    def test_synthetic_refused_with_hw(self):
+        r = subprocess.run([sys.executable, os.path.join(HERE, "osc_mixer_server.py"),
+                            "--tcp-port", "1", "--udp-port", "2", "--hw",
+                            "--meter-source", "synthetic"],
+                           cwd=HERE, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("decision M8", r.stderr)
+
+
 class Ping(ServerCase):
     """F7, amendment H: /<name>/ping <int> -> /<name>/pong <int>, to the sender."""
 

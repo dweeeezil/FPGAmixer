@@ -2,7 +2,7 @@
 
 *Branch `phase13-metering`, from `phase12-levels-buses` at `2bf1346`. Covers controller-support step 6 (F4: the server's meter protocol) and F4a (the gateware peak detector), planned as "next" by Phase 12 decision L8.*
 
-**State: decided 2026-10-06 (M1–M9 all as recommended, §5); steps 1–2 done in simulation (§6.1, §6.2); step 3 (Vivado) next.**
+**State: decided 2026-10-06 (M1–M9 all as recommended, §5); steps 1–2 in simulation (§6.1, §6.2), the Vivado build `p13` (§6.3) and the server (§6.4) done; step 5 (image + bench) next.**
 
 ---
 
@@ -110,3 +110,35 @@ Each step: build, test, commit, this doc updated.
 | `src/sim/ps_sys_wrapper_stub.sv`, `src/sim/tb_top_windows.sv` | three more masters; each meter's ID and CONFIG (`0x14T0_1800`); after the per-window changes, one SNAP to close the window from before them, then **every channel of every meter** against its zone's value (input levels, bus levels, outputs) |
 
 **Results:** full regression **21 of 21** (`linkstat` first failed to start: Defender; passed on the rerun). **Mutation: 4 of 4 valid mutants killed** (bus meter on the output tap, input meter on the bus tap, the output meter with TAP 1, meters without a frame strobe: timeout); one malformed mutant (an input/output swap written with a placeholder the runner correctly rejected) was replaced by the single-edit "input meter on the bus tap".
+
+### 6.3 Step 3: the Vivado build `p13` and the SDT: clean
+
+`create_project.tcl` (`phase9`) + `build.tcl p13`, detached, ~13 min (run alongside step 4). XSA `build/fpgamixer_p13.xsa`.
+
+| | `p12` | **`p13`** |
+|---|---|---|
+| WNS / WHS | +2.557 / +0.010 ns | **+2.559 / +0.010 ns**, 0 failing endpoints; methodology gate **PASS**; 0 critical warnings (create and build) |
+| DSP48E2 / RAMB18 | 11 / 13 | **11 / 13** (the meters use neither) |
+| LUTs / FFs | 13,706 / 23,914 | **16,709 / 27,141** (23.7 % / 19.2 %): +3,227 FFs, the three meters' accumulators and closed banks (~1k each, as estimated) and their read muxes |
+| CDC | CDC-3 18, CDC-15 1,902 | **CDC-3 24** (+6: the three meters' req/ack toggles) and **CDC-15 1,974** (+72: 3 × 24 `st_rdata` bits, the planned enable-controlled path); **all 78 meter crossings carry their exception** (Max Delay Datapath Only from the scoped `pcm_peak.xdc`, applied to all three instances, `report_exceptions` rows 58/61/64) |
+
+**BD:** `M_AXI_INMTR` 0x8000_9000 on **M11**, `M_AXI_BUSMTR` 0x8000_A000 on **M12**, `M_AXI_OUTMTR` 0x8000_B000 on **M13**.
+
+**SDT** (`build/sdt`; the `p12` one kept as `build/sdt.p12`): `psu_init.*`, `zynqmp*.dtsi` **identical**; `pcw.dtsi` adds exactly `M_AXI_INMTR@80009000`, `M_AXI_BUSMTR@8000a000`, `M_AXI_OUTMTR@8000b000`; `system-top.dts` their address-map entries; `pl.dtsi` only `firmware-name`. The first `sdtgen` run was **blocked by Windows Device Guard** ("sdtgen.exe was blocked by your organization's Device Guard policy"); the unchanged retry ran. Same family as the XSim launch failures.
+
+### 6.4 Step 4: the server's meters (PC and VM): PASS
+
+| File | What |
+|---|---|
+| `tools/mixer_meters.py` (new) | `centibels` (2²³ = 0 dBFS, 0 → −32768, clamp ±32767), `meter_blob` (big-endian uint32 seq + int16s), `zones_from_mask`; `MeterSource` with **`HardwareMeterSource`** (SNAP every window, then read them) and **`SyntheticMeterSource`** (peak = −12 − 3·(c mod 6) dBFS + the channel's level); **`MeterHub`**: subscribe / renew / move / unsubscribe by TCP connection, 5 s lease, a sampler at the highest subscribed rate folding ONE sample into every subscriber's per-zone maxima, each subscriber's own per-zone sequences, sends outside the lock, a failing send logged and skipped, no catch-up bursts. Clock and send injected |
+| `tools/mixer_hw.py` | **`PeakHW`** (ID `0x504B_5001`; N, TAP, width from CONFIG; `request_snap`, `wait_and_read` (BUSY/QUEUED polled with a GIL yield, 50 ms timeout → `TimeoutError`), `snapshot`) + `InputMeterHW` / `BusMeterHW` / `OutputMeterHW` (TAP-checked); `WINDOWS` `inmeter` / `busmeter` / `outmeter`; `METERS`; CLI **`meter <window>`** (warns that it steals one window from the server) |
+| `tools/osc_mixer_server.py` | `handle_meter_subscribe` (three integers, `f` only if integral and finite; port 1..65535; rate clamped; mask → zones; no source → error reply "this mixer has no meters"); the TCP close drops the subscription; **`build_meter_source`**: with `--hw` the three windows all or none (none = older bitstream: no meters; partial or a size that doesn't match its zone → refused at startup), without `--hw` **`--meter-source synthetic`** (refused together with `--hw`: decision M8); one UDP socket and the sampler thread. Docstring: the metering paragraph |
+| `tools/test_mixer_meters.py` (new) | 14 tests: the scale, the blob, the mask; the synthetic source follows level; the hub with a scripted source and a fake clock: nothing sampled without subscribers; address, ~30 Hz, sequences per zone from 0; **a transient reaches two subscribers at different rates exactly once each**; the sampler at the highest rate; lease expiry at 5 s and renewal; port move keeps sequences, a new zone starts at 0; mask 0 and drop end it; maxima restart after each message; the name read at send time (rename); a failing send doesn't stop the others |
+| `tools/test_osc_mixer_server.py` | `Metering` (the real server, `--meter-source synthetic`, a UDP socket): zones, blob, ~30 Hz, sequences, values at 0 dB; meters follow `level` (−90 → silence); integral floats accepted; 7 malformed subscribes → error replies; rate clamped to 120; mask 0 and the TCP close end the stream; two subscribers, each its own sequences. `NoMeters`: error reply. `MeterSourceFlag`: `--hw --meter-source synthetic` exits 2 |
+| `tools/test_mixer_hw.py` | `Meters` (Linux): header and TAP, wrong TAP refused; a snapshot against a fake PL thread (SNAP seen, CTRL cleared, COMMITS counted), the top byte masked; timeout without frames; the hardware source samples every zone **and snapshots every window**; an older bitstream has no meters; a partial set and a size mismatch refused. `test_windows_map` covers the three entries |
+
+**Found while testing:** `wait_and_read` first busy-polled CTRL without yielding, which starved the fake PL's threads; on the board it would have starved the server's TCP threads in the same way for the length of every poll. It now yields the GIL each iteration.
+
+**Results:** Windows: `test_osc_mixer_server` + `test_mixer_params` + `test_mixer_meters` all pass (`Metering` 3 extra runs clean: the socket tests are timing-based). **VM (Python 3.12.3): 180 / 180** (`test_mixer_hw`, `test_mixer_meters`, `test_mixer_state`, `test_osc_mixer_server`, `test_mixer_params`, `test_mediaclock`; 1 skip as before).
+
+**Mutation test (VM): 20 of 20 killed**, after one survivor exposed a weak test ("no SNAP requested": the fake windows handed back their peaks anyway; the test now also requires every window's COMMITS to have moved). Killed: the running max overwritten, maxima not restarted, leases never expiring, renewals not extending, a new zone not starting at 0, sequences stepping by 2, the sampler at the lowest rate, dB instead of 0.01 dB, silence not −32768, a little-endian blob, mask bits swapped, the port range unchecked, non-integral floats accepted, a subscription surviving its TCP close, no error without meters, synthetic allowed with `--hw`, the rate unclamped, peaks unmasked, the meter TAP unchecked.

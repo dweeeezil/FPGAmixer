@@ -101,6 +101,15 @@ made here so you can compare against the real firmware once it exists):
     rename. The board service uses it; the default is none.
   - Ping (amendment H, F7): '/<root>/ping <int>' -> '/<name>/pong <int>',
     same token, to the sender (TCP only; UDP never replies).
+  - Metering (standard "Metering", F4; Phase 13): '/<root>/meter/subscribe
+    <port> <rateHz> <zoneMask>' over TCP (handle_meter_subscribe validates;
+    malformed -> error reply); the subscriptions, the 5 s lease and the UDP
+    stream to the TCP peer's address are mixer_meters.MeterHub's. The source
+    is the PL's three peak-meter windows with --hw (all or none: none on a
+    bitstream from before Phase 13), or with --meter-source synthetic a
+    simulated one that follows each channel's level (never with --hw). No
+    source: a subscribe is answered with an error reply. Meter sends never
+    take the control lock.
   - Ordering (F3): ClientRegistry.lock is held while a change is applied,
     stored and echoed, while any packet is sent, and while the config
     snapshot is read and sent. Echoes therefore follow the store order, two
@@ -152,6 +161,7 @@ from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
 from mixer_state import MixerState, split_path, is_device_name  # noqa: E402
 from mixer_params import Model, ModuleSpec, Refused, ZoneSpec, float32  # noqa: E402
 from osc_discovery import DNSSD_FILE, DNSSD_RELOAD, NoAdvertiser, make_advertiser  # noqa: E402
+import mixer_meters  # noqa: E402
 
 DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
@@ -668,6 +678,8 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
         handle_get(tail, state, reply, via)
     elif kind == "ping" and not tail:
         handle_ping(msg.args, state, reply, via)
+    elif kind == "meter" and "/".join(split_path(tail) or ()) == "subscribe":
+        handle_meter_subscribe(msg.args, state, reply, reply_sock, via)
     else:
         log(f"    [{via}] ignoring unknown command kind {kind!r} in {msg.address!r}")
 
@@ -680,6 +692,43 @@ def handle_ping(args, state, reply, via):
         log(f"    [{via}] ping without one int token {args!r}; ignored")
         return
     reply(encode_message(f"/{state.mixer_name}/pong", [args[0]]))
+
+
+METER_PATH = "meter/subscribe"
+METER_HUB = None   # mixer_meters.MeterHub, or None: this mixer has no meters (main)
+
+
+def handle_meter_subscribe(args, state, reply, conn, via):
+    """Standard "Metering" (F4): /<name>/meter/subscribe <port> <rateHz>
+    <zoneMask>, three integers (OSC i, or f with an integral value); port
+    1..65535; rate clamped 1..120; mask bits for zones the mixer doesn't meter
+    are ignored; mask 0 unsubscribes. The stream goes to the TCP peer's address.
+    Anything else is refused with an error reply (TCP only: UDP never gets
+    here)."""
+    def as_int(v):
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float) and math.isfinite(v) and v.is_integer():
+            return int(v)
+        return None
+
+    if METER_HUB is None:
+        return send_error(reply, state, METER_PATH, "this mixer has no meters", via)
+    ints = [as_int(v) for v in args]
+    if len(args) != 3 or any(v is None for v in ints):
+        return send_error(reply, state, METER_PATH,
+                          "needs three integers: port, rateHz, zoneMask", via)
+    port, rate, mask = ints
+    if not 1 <= port <= 65535:
+        return send_error(reply, state, METER_PATH, f"port {port} outside 1..65535", via)
+    rate = max(mixer_meters.RATE_MIN, min(mixer_meters.RATE_MAX, rate))
+    try:
+        ip = conn.getpeername()[0]
+    except OSError:
+        return
+    METER_HUB.subscribe(conn, ip, port, rate, mixer_meters.zones_from_mask(mask, METER_HUB.available))
 
 
 def handle_packet(packet, state, registry, reply_sock, via):
@@ -728,6 +777,8 @@ def handle_tcp_client(conn, addr, state, registry):
         log(f"    [{via}] connection error: {e}")
     finally:
         registry.remove(conn)
+        if METER_HUB is not None:
+            METER_HUB.drop(conn)     # "Closing the TCP connection ends the subscription"
         try:
             conn.close()
         except OSError:
@@ -791,8 +842,42 @@ def handle_udp_message(msg, state, registry, via):
 # CLI
 # ---------------------------------------------------------------------------
 
+def build_meter_source(use_hw, kind, backends, state):
+    """The meters (Phase 13), or None. With use_hw the PL's three peak-meter
+    windows, all or none (none = a bitstream from before Phase 13: no meters),
+    each matching its channel zone's size; without, the synthetic source if
+    asked for (decision M8: never on hardware)."""
+    sizes = {z: b.n for z, b in backends.items() if z in mixer_meters.METER_ZONES}
+    if use_hw:
+        import mixer_hw
+        found = {}
+        for name, zone in zip(mixer_hw.METERS, mixer_meters.METER_ZONES):
+            try:
+                found[zone] = mixer_hw.open_window(name)
+            except mixer_hw.WindowAbsent:
+                continue
+            log(f"PL window '{name}' at 0x{found[zone].base:08x}: {found[zone].describe()}")
+        if not found:
+            log("No meter windows (a bitstream from before Phase 13): no meters")
+            return None
+        if len(found) != len(mixer_meters.METER_ZONES):
+            missing = [z for z in mixer_meters.METER_ZONES if z not in found]
+            raise RuntimeError(f"meters incomplete: none for {', '.join(missing)}")
+        for zone, w in found.items():
+            if sizes.get(zone) != w.n:
+                raise RuntimeError(f"{zone} meter has {w.n} channels, the zone {sizes.get(zone)}")
+        return mixer_meters.HardwareMeterSource(found)
+    if kind == "synthetic" and sizes:
+        def level_of(zone, ch):
+            v = state.get(f"{zone}/{ch}/level", default=None)
+            return v if isinstance(v, (int, float)) else None
+        log("Meters: SYNTHETIC source (--meter-source synthetic; for tests, never on hardware)")
+        return mixer_meters.SyntheticMeterSource(sizes, level_of)
+    return None
+
+
 def main():
-    global VERBOSE, MODEL, FIRMWARE, ADVERTISER
+    global VERBOSE, MODEL, FIRMWARE, ADVERTISER, METER_HUB
     p = argparse.ArgumentParser(description="Reference/simulator server for the FPGA mixer OSC protocol.")
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
@@ -822,8 +907,14 @@ def main():
     p.add_argument("--dnssd-file", default=DNSSD_FILE, help=f"(dnssd) the file to write (default {DNSSD_FILE})")
     p.add_argument("--dnssd-reload", default=DNSSD_RELOAD,
                    help=f"(dnssd) command run after the file changes (default '{DNSSD_RELOAD}'; '' = none)")
+    p.add_argument("--meter-source", choices=("none", "synthetic"), default="none",
+                   help="without --hw: synthetic = meters that follow each channel's level "
+                        "(tests, the simulator); none = no meters (default). With --hw the "
+                        "PL's meter windows are used if the bitstream has them")
     args = p.parse_args()
     VERBOSE = args.verbose
+    if args.hw and args.meter_source != "none":
+        p.error("--meter-source is for the simulator; with --hw the meters are the PL's (decision M8)")
 
     state = MixerState(args.mixer_name, args.state_file or None, log=log)
     BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer))
@@ -839,6 +930,13 @@ def main():
     ADVERTISER.advertise(state.mixer_name)
 
     threading.Thread(target=udp_serve, args=(args.host, args.udp_port, state, registry), daemon=True).start()
+
+    source = build_meter_source(args.hw, args.meter_source, BACKENDS, state)
+    if source is not None:
+        meter_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        METER_HUB = mixer_meters.MeterHub(source, meter_sock.sendto, lambda: state.mixer_name, log=log)
+        threading.Thread(target=METER_HUB.run, daemon=True).start()
+        log(f"Meters: {', '.join(f'{z} ({n})' for z, n in source.zones().items())}")
 
     # systemd stops the service with SIGTERM: turn it into a normal exit so
     # the finally-block writes any batched, not-yet-saved state.

@@ -254,6 +254,10 @@ class Registers(unittest.TestCase):
         self.assertEqual(mixer_hw.WINDOWS["buslevel"], (0x8000_7000, mixer_hw.BusLevelHW))
         self.assertEqual(mixer_hw.WINDOWS["outlevel"], (0x8000_8000, mixer_hw.OutputLevelHW))
         self.assertEqual(mixer_hw.BUS_LAYER, ("busmatrix", "inlevel", "buslevel", "outlevel"))
+        self.assertEqual(mixer_hw.WINDOWS["inmeter"], (0x8000_9000, mixer_hw.InputMeterHW))
+        self.assertEqual(mixer_hw.WINDOWS["busmeter"], (0x8000_A000, mixer_hw.BusMeterHW))
+        self.assertEqual(mixer_hw.WINDOWS["outmeter"], (0x8000_B000, mixer_hw.OutputMeterHW))
+        self.assertEqual(mixer_hw.METERS, ("inmeter", "busmeter", "outmeter"))
         bases = [b for b, _cls in mixer_hw.WINDOWS.values()]
         self.assertEqual(len(bases), len(set(bases)))
         self.assertTrue(all(b % mixer_hw.WINDOW_SIZE == 0 and 0x8000_0000 <= b < 0x8010_0000
@@ -374,6 +378,103 @@ class BusLayer(unittest.TestCase):
         with self.assertRaises(RuntimeError) as cm:
             self.build(self.paths)
         self.assertIn("'level' is one module", str(cm.exception))
+
+
+@unittest.skipIf(os.name == "nt", "mmap with Linux flags")
+class Meters(unittest.TestCase):
+    """Phase 13: the peak-meter windows (PeakHW) and the server's meter source
+    over fake 20-channel windows. A thread plays the PL for snapshots: it sees
+    SNAP in CTRL, clears it and counts the snapshot."""
+
+    PEAK_ID = 0x504B5001
+
+    def setUp(self):
+        self.paths = {name: make_window_file(self.PEAK_ID, 0x14001800 | (tap << 16))
+                      for tap, name in enumerate(mixer_hw.METERS)}
+        import osc_mixer_server as srv
+        srv.log = lambda m: None
+        self.srv = srv
+
+    def tearDown(self):
+        for p in self.paths.values():
+            os.unlink(p)
+
+    def fake_pl(self, path, peaks):
+        """Write `peaks` into PEAK[c]; clear CTRL whenever SNAP appears."""
+        import threading
+        import time
+        with open(path, "r+b") as f:
+            f.seek(0x100)
+            f.write(struct.pack(f"<{len(peaks)}I", *peaks))
+        stop = threading.Event()
+
+        def run():
+            while not stop.is_set():
+                if reg(path, mixer_hw.REG_CTRL) & 1:
+                    with open(path, "r+b") as f:
+                        f.seek(mixer_hw.REG_CTRL)
+                        f.write(struct.pack("<II", 0, reg(path, mixer_hw.REG_COMMITS) + 1))
+                time.sleep(0.0005)
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        self.addCleanup(stop.set)
+
+    def test_header_and_tap(self):
+        m = mixer_hw.BusMeterHW(0, dev=self.paths["busmeter"])
+        self.assertEqual((m.n, m.tap, m.width), (20, 1, 24))
+        self.assertEqual(m.describe(), "bus meter, 20 channels, 24-bit")
+        with self.assertRaises(RuntimeError) as cm:
+            mixer_hw.InputMeterHW(0, dev=self.paths["outmeter"])
+        self.assertIn("TAP 2, expected 0", str(cm.exception))
+
+    def test_snapshot_snaps_waits_and_reads_masked(self):
+        peaks = [c * 1000 for c in range(19)] + [0xFF7F_FFFF]   # the top byte isn't data
+        self.fake_pl(self.paths["inmeter"], peaks)
+        m = mixer_hw.InputMeterHW(0, dev=self.paths["inmeter"])
+        got = m.snapshot()
+        self.assertEqual(got[:19], peaks[:19])
+        self.assertEqual(got[19], 0x7F_FFFF)
+        self.assertEqual(reg(self.paths["inmeter"], mixer_hw.REG_COMMITS), 1)
+
+    def test_snapshot_times_out_without_frames(self):
+        m = mixer_hw.InputMeterHW(0, dev=self.paths["inmeter"])          # nobody clears CTRL
+        with self.assertRaises(TimeoutError):
+            m.snapshot()
+
+    def build(self, paths, sizes=20):
+        real_open = mixer_hw.open_window
+        mixer_hw.open_window = fake_windows(paths)
+        backends = {z: type("B", (), {"n": sizes})() for z in ("inputChannel", "busChannel", "outputChannel")}
+        try:
+            return self.srv.build_meter_source(True, "none", backends, None)
+        finally:
+            mixer_hw.open_window = real_open
+
+    def test_hardware_source_samples_every_zone(self):
+        for tap, name in enumerate(mixer_hw.METERS):
+            self.fake_pl(self.paths[name], [tap * 100 + c for c in range(20)])
+        src = self.build(self.paths)
+        self.assertEqual(src.zones(), {"inputChannel": 20, "busChannel": 20, "outputChannel": 20})
+        s = src.sample()
+        self.assertEqual(s["busChannel"][:3], [100, 101, 102])
+        self.assertEqual(s["outputChannel"][19], 219)
+        for name in mixer_hw.METERS:                     # every window was really snapshotted
+            self.assertEqual(reg(self.paths[name], mixer_hw.REG_COMMITS), 1, name)
+
+    def test_older_bitstream_has_no_meters(self):
+        self.assertIsNone(self.build({}))
+
+    def test_partial_meters_refused(self):
+        paths = dict(self.paths)
+        del paths["busmeter"]
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(paths)
+        self.assertIn("meters incomplete: none for busChannel", str(cm.exception))
+
+    def test_meter_size_must_match_the_zone(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(self.paths, sizes=12)
+        self.assertIn("meter has 20 channels, the zone 12", str(cm.exception))
 
 
 @unittest.skipIf(os.name == "nt", "mmap with Linux flags")
