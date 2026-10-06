@@ -22,6 +22,12 @@
 // before. Every block saturates its output to SW bits (L5): a bus sum clips at
 // the bus, as on a console.
 //
+// Tap ports (Phase 13, decision M1): the three level stages' output streams
+// leave the core as copies (stream contract), the zones' post-DSP points the
+// OSC standard meters; the peak meters (pcm_peak) attach there, outside the
+// chain. Last beats (cycles after the strobe): tap_in = N_IN + GAIN_LAT,
+// tap_bus = chain_bus_last + GAIN_LAT, tap_out = D - 1.
+//
 // Phase 7 DSP blocks go into this chain the same way, between the converters,
 // so the platform layer and the front doors never change when the core grows.
 // (Phase 9, P9.A4: the core was pack2stream -> pcm_matrix -> stream2pack.)
@@ -72,7 +78,19 @@ module mixer_core
     output logic [AW2-1:0]       bus_mx_addr,
     input  logic [L2*GW-1:0]     bus_mx_data,
     output logic [CWO-1:0]       out_lvl_addr,
-    input  logic [GW-1:0]        out_lvl_data
+    input  logic [GW-1:0]        out_lvl_data,
+
+    // tap ports (Phase 13): copies of the three level stages' output streams
+    // (the zones' post-DSP points), for listeners such as the peak meters
+    output logic                 tap_in_valid,
+    output logic [CWI-1:0]       tap_in_ch,
+    output logic [SW-1:0]        tap_in_data,
+    output logic                 tap_bus_valid,
+    output logic [CWB-1:0]       tap_bus_ch,
+    output logic [SW-1:0]        tap_bus_data,
+    output logic                 tap_out_valid,
+    output logic [CWO-1:0]       tap_out_ch,
+    output logic [SW-1:0]        tap_out_data
 );
 
     localparam int D = chain_latency(N_IN, N_BUS, N_OUT, L1, L2);
@@ -132,6 +150,17 @@ module mixer_core
         .in_valid (e_valid), .in_ch (e_ch), .in_data (e_data),
         .coef_addr (out_lvl_addr), .coef_data (out_lvl_data),
         .out_valid (f_valid), .out_ch (f_ch), .out_data (f_data));
+
+    // ----- taps: listen only; the chain doesn't know they exist -----
+    assign tap_in_valid  = b_valid;
+    assign tap_in_ch     = b_ch;
+    assign tap_in_data   = b_data;
+    assign tap_bus_valid = d_valid;
+    assign tap_bus_ch    = d_ch;
+    assign tap_bus_data  = d_data;
+    assign tap_out_valid = f_valid;
+    assign tap_out_ch    = f_ch;
+    assign tap_out_data  = f_data;
 
     pcm_stream2pack #(.N (N_OUT), .SW (SW)) u_out (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame_i),

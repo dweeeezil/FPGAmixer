@@ -50,8 +50,8 @@ CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
             $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs link linkstat phase3 topwin dynamic clean
-all: rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs link linkstat phase3 topwin dynamic
+.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat phase3 topwin dynamic clean
+all: rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat phase3 topwin dynamic
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -184,6 +184,14 @@ gainregs: | $(BUILD)
 		$(MIXCORE) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
 		$(RTL)/gain_regs_axil.sv $(SIM)/tb_gain_regs.sv
 	@$(VVP) $(BUILD)/tb_gain_regs.vvp
+
+# --- Phase 13: the peak meter window (SNAP, windows vs a model) across aclk/mclk ---
+peak: | $(BUILD)
+	@echo ">>> Building tb_pcm_peak"
+	@$(IVERILOG) $(FLAGS) -s tb_pcm_peak -o $(BUILD)/tb_pcm_peak.vvp \
+		$(RTL)/axil_coef_window.sv $(RTL)/pcm_peak.sv $(RTL)/peak_regs_axil.sv \
+		$(SIM)/tb_pcm_peak.sv
+	@$(VVP) $(BUILD)/tb_pcm_peak.vvp
 
 # --- Phase-3 integration: real fpgamixer_top (no PS), MMCM stubbed, rx/tx as fixtures ---
 # -DSIM_ODDR selects the behavioral ODDR model inside oddr_out (the Xilinx

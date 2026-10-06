@@ -2,7 +2,7 @@
 
 *Branch `phase13-metering`, from `phase12-levels-buses` at `2bf1346`. Covers controller-support step 6 (F4: the server's meter protocol) and F4a (the gateware peak detector), planned as "next" by Phase 12 decision L8.*
 
-**State: proposal, awaiting decisions M1–M9 (§5).** Nothing is built yet.
+**State: decided 2026-10-06 (M1–M9 all as recommended, §5); step 1 done in simulation (§6.1); step 2 (top + BD) next.**
 
 ---
 
@@ -72,6 +72,8 @@ fpgamixer_top:   peak_regs_axil (in)            peak_regs_axil (bus)            
 | **M8** | Synthetic source | **Server flag only** (`--meter-source synthetic`, refused together with `--hw`), as C3 decided: never on the board. |
 | **M9** | Name | Roadmap **Phase 13, "metering"** (F4 + F4a); controller-support step 6 points at it. |
 
+**Decided by the user, 2026-10-06: all as recommended.** M1 tap ports on `mixer_core`, meters in the window bindings; M2 SNAP on demand, flip at the frame strobe, the server the only reader; M3 post-level taps on the three channel zones; M4 windows 0x8000_9000 / A000 / B000, ID `0x504B_5001`, CONFIG `{N, TAP, 24, 0}`; M5 one sampler at the highest subscribed rate, per-subscriber maxima; M6 2²³ = 0 dBFS, −32768 only for 0; M7 the HDL lives here; M8 synthetic source by server flag only; M9 roadmap Phase 13.
+
 ## 6. Steps (after the decisions)
 
 1. RTL: `pcm_peak` + `peak_regs_axil` + `tb_pcm_peak`; tap ports on `mixer_core` (`tb_mixer_core` checks them).
@@ -81,3 +83,20 @@ fpgamixer_top:   peak_regs_axil (in)            peak_regs_axil (bus)            
 5. Image, bench.
 
 Each step: build, test, commit, this doc updated.
+
+### 6.1 Step 1: the peak meter and the tap ports (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/pcm_peak.sv` (new) | the meter: one accumulator per channel on `mclk` (`max(|x|)`, −2²³ → 2²³−1), one update per beat; on a requested frame strobe all accumulators are copied into the **closed** bank on one edge and cleared; the AXI side reads the closed bank. The `axil_coef_window` store interface: `commit` = SNAP, `busy` while the copy is in flight, `queued` for a SNAP during BUSY, `commits` = snapshots; reads wait while busy or queued, writes are ignored |
+| `src/rtl/peak_regs_axil.sv` (new) | the binding: `axil_coef_window` + `pcm_peak`, ID `0x504B_5001`, CONFIG `{N, TAP, 24, 0}`, `PEAK[c]` at 0x100 + 4c, the tap stream as input |
+| `constraints/pcm_peak.xdc` (new) | scoped: the two toggles and the `closed` → `st_rdata` path (multicycle by protocol, as `coef_bank_handoff`), 10 ns datapath-only; enters `create_project.tcl` in step 2 |
+| `src/rtl/mixer_core.sv` | **tap ports** `tap_in_*`, `tap_bus_*`, `tap_out_*`: copies of the three level stages' output streams; the chain is unchanged |
+| `src/sim/tb_pcm_peak.sv` (new) | the binding with a stream, unrelated clocks, N = 5, against a model with its own windows (closed at a strobe where the DUT's synchronized request is pending): 41 snapshots at random times, random samples with extremes and gaps, a beat on the strobe edge in ~¼ of frames; a queued SNAP pair yields exactly two snapshots; **a read straight after SNAP comes back from that snapshot's window**; a one-sample transient reported once, by the next snapshot only; the most negative sample reads full scale; writes ignored; COMMITS = windows closed (48) |
+| `src/sim/tb_mixer_core.sv` | the taps at all seven sizes: the stream contract at their stated last beats, and **every tap beat equal to the model at that point of the chain** (after the input levels, after the bus levels, the output) |
+
+**Two changes from the proposal (§3.1), both simplifications:** the banks are **flip-flops**, not a dual-clock RAM (a per-beat read-modify-write on `mclk` plus an `aclk` read would need three RAM ports): 2 × N × 24 flops per meter, about 1k at 20 channels. And there is no `fresh` flag: since a window always starts at a frame strobe, clearing the accumulators to 0 at the copy is the same as starting at each channel's first sample. The CDC is then the two toggles plus one multicycle path (`closed` → `st_rdata`, captured only while the protocol holds it stable).
+
+**Results (XSim 2026.1):** `peak` PASS, `core` PASS; **full regression 21 of 21**.
+
+**Mutation test: 12 of 12 killed**, after the first run found a weak spot in my TB: "reads allowed while a snapshot is in flight" survived, because the model's closed window at read time was still the previous one in both cases. The no-wait test now also requires the window to have closed before the read returns. Killed: flip not aligned to the strobe (193 checks), accumulators not cleared (98), the most negative sample not saturated (62), a strobe-edge beat dropped (4), reads during BUSY (5), a SNAP during BUSY dropped, COMMITS not counted, a signed compare (125), CONFIG fields swapped; and in the core the bus tap before the bus levels, the input tap before the input levels, the output tap's channel from the wrong stream.

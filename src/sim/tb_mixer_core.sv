@@ -24,6 +24,10 @@
 // bus stream and the output-level stream obey the stream contract at their
 // stated first/last-beat cycles (pcm_stream_monitor).
 //
+// Phase 13: the three tap ports (input, bus, output levels' streams) obey the
+// stream contract at their stated last beats, and every tap beat equals the
+// model's value at that point of the chain for the current frame.
+//
 // The model also runs once WITHOUT the bus saturation; frames where that
 // changes the output are counted ("bus clips"), so the run shows that the
 // check can tell a saturating bus from a wide one.
@@ -77,6 +81,11 @@ module core_harness
     logic [AW2-1:0] bus_mx_addr;  logic [L2*GW-1:0] bus_mx_data;
     logic [CWO-1:0] out_lvl_addr; logic [GW-1:0] out_lvl_data;
 
+    // tap ports (Phase 13)
+    logic ti_v, tb_v, to_v;
+    logic [CWI-1:0] ti_c;  logic [CWB-1:0] tb_c;  logic [CWO-1:0] to_c;
+    logic [SW-1:0]  ti_d, tb_d, to_d;
+
     mixer_core #(.N_IN (N_IN), .N_BUS (N_BUS), .N_OUT (N_OUT), .SW (SW), .GW (GW), .GF (GF),
                  .L1 (L1), .L2 (L2)) dut (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
@@ -85,7 +94,10 @@ module core_harness
         .in_mx_addr (in_mx_addr),     .in_mx_data (in_mx_data),
         .bus_lvl_addr (bus_lvl_addr), .bus_lvl_data (bus_lvl_data),
         .bus_mx_addr (bus_mx_addr),   .bus_mx_data (bus_mx_data),
-        .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data));
+        .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data),
+        .tap_in_valid (ti_v),  .tap_in_ch (ti_c),  .tap_in_data (ti_d),
+        .tap_bus_valid (tb_v), .tap_bus_ch (tb_c), .tap_bus_data (tb_d),
+        .tap_out_valid (to_v), .tap_out_ch (to_c), .tap_out_data (to_d));
 
     coef_flat_reader #(.W (GW), .N_ROWS (N_IN),  .ROW_LEN (1),     .LANES (1))  u_c0 (
         .mclk, .frame_i (frame), .coefs_flat (g_in), .rd_addr (in_lvl_addr),  .rd_data (in_lvl_data));
@@ -113,8 +125,18 @@ module core_harness
                          .LAST_BEAT  (chain_out_last(N_IN, N_BUS, N_OUT, L1, L2) + GAIN_LAT),
                          .NAME ("outputs")) u_mon_o (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame),
-        .s_valid (dut.f_valid), .s_ch (dut.f_ch),
+        .s_valid (to_v), .s_ch (to_c),                    // the output tap = the output levels' stream
         .errors (mon_err_o), .frames (mon_frames_o));
+
+    // the other two taps: the stream contract at their stated last beats
+    int mon_err_ti, mon_frames_ti, mon_err_tb, mon_frames_tb;
+    pcm_stream_monitor #(.N (N_IN), .FIRST_BEAT (1 + GAIN_LAT), .LAST_BEAT (N_IN + GAIN_LAT),
+                         .CONTIGUOUS (1'b1), .NAME ("tap in")) u_mon_ti (
+        .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (ti_v), .s_ch (ti_c),
+        .errors (mon_err_ti), .frames (mon_frames_ti));
+    pcm_stream_monitor #(.N (N_BUS), .LAST_BEAT (BUS_LAST + GAIN_LAT), .NAME ("tap bus")) u_mon_tb (
+        .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (tb_v), .s_ch (tb_c),
+        .errors (mon_err_tb), .frames (mon_frames_tb));
 
     // ----- the chain model -----
     function automatic longint sat(input longint v);
@@ -124,6 +146,24 @@ module core_harness
     endfunction
     function automatic longint sx(input logic [SW-1:0] v);  return longint'($signed(v)); endfunction
     function automatic longint gx(input logic [GW-1:0] v);  return longint'($signed(v)); endfunction
+
+    // The chain's intermediate points, for the tap ports: input i after its
+    // level, and bus b after its level.
+    function automatic logic [SW-1:0] model_in(input logic [N_IN*SW-1:0] x, input gin_t gi, input int i);
+        longint v;
+        v = sat((sx(x[i*SW +: SW]) * gx(gi[i*GW +: GW])) >>> GF);
+        return v[SW-1:0];
+    endfunction
+    function automatic logic [SW-1:0] model_bus(input logic [N_IN*SW-1:0] x, input gin_t gi,
+                                                input gim_t gm, input gbl_t gb, input int b);
+        longint acc;
+        acc = 0;
+        for (int i = 0; i < N_IN; i++)
+            acc += sx(model_in(x, gi, i)) * gx(gm[(b*N_IN + i)*GW +: GW]);
+        acc = sat(acc >>> GF);
+        acc = sat((acc * gx(gb[b*GW +: GW])) >>> GF);
+        return acc[SW-1:0];
+    endfunction
 
     // y[o] for samples x and the five banks; bus_sat = 0 models a wide bus.
     function automatic logic [SW-1:0] model(input logic [N_IN*SW-1:0] x,
@@ -212,6 +252,29 @@ module core_harness
         bit clipped;
         if (rst_n) begin
             if (frame) x_q.push_back(in_flat);
+            // Taps (Phase 13): during frame k the queues' fronts are frame k's
+            // samples and gains (frame k-1 was popped at its D).
+            if ((ti_v || tb_v || to_v) && (x_q.size() == 0 || gi_q.size() == 0)) begin
+                err++;
+                if (err < 10) $display("[%0t] %0d/%0d/%0d: tap beat outside a frame", $time, N_IN, N_BUS, N_OUT);
+            end else begin
+                if (ti_v && ti_d !== model_in(x_q[0], gi_q[0], int'(ti_c))) begin
+                    err++;
+                    if (err < 10) $display("[%0t] %0d/%0d/%0d: tap in ch%0d = %06h, model %06h", $time,
+                                           N_IN, N_BUS, N_OUT, ti_c, ti_d, model_in(x_q[0], gi_q[0], int'(ti_c)));
+                end
+                if (tb_v && tb_d !== model_bus(x_q[0], gi_q[0], gm_q[0], gb_q[0], int'(tb_c))) begin
+                    err++;
+                    if (err < 10) $display("[%0t] %0d/%0d/%0d: tap bus ch%0d = %06h, model %06h", $time,
+                                           N_IN, N_BUS, N_OUT, tb_c, tb_d,
+                                           model_bus(x_q[0], gi_q[0], gm_q[0], gb_q[0], int'(tb_c)));
+                end
+                if (to_v && to_d !== model(x_q[0], gi_q[0], gm_q[0], gb_q[0], gbm_q[0], go_q[0], int'(to_c), 1'b1)) begin
+                    err++;
+                    if (err < 10) $display("[%0t] %0d/%0d/%0d: tap out ch%0d = %06h", $time,
+                                           N_IN, N_BUS, N_OUT, to_c, to_d);
+                end
+            end
             if (err_o) begin
                 err++;
                 if (err < 10) $display("[%0t] %0d/%0d/%0d: err_o", $time, N_IN, N_BUS, N_OUT);
@@ -259,8 +322,9 @@ module core_harness
         done = 1;
     end
 
-    assign errors = err + mon_err_b + mon_err_o +
-                    ((done && (mon_frames_b < FRAMES || mon_frames_o < FRAMES)) ? 1 : 0);
+    assign errors = err + mon_err_b + mon_err_o + mon_err_ti + mon_err_tb +
+                    ((done && (mon_frames_b < FRAMES || mon_frames_o < FRAMES ||
+                               mon_frames_ti < FRAMES || mon_frames_tb < FRAMES)) ? 1 : 0);
 endmodule
 
 
