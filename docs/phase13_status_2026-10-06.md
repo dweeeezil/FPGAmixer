@@ -2,7 +2,7 @@
 
 *Branch `phase13-metering`, from `phase12-levels-buses` at `2bf1346`. Covers controller-support step 6 (F4: the server's meter protocol) and F4a (the gateware peak detector), planned as "next" by Phase 12 decision L8.*
 
-**State: decided 2026-10-06 (M1–M9 all as recommended, §5); steps 1–2 in simulation (§6.1, §6.2), the Vivado build `p13` (§6.3) and the server (§6.4) done; step 5 (image + bench) next.**
+**State: decided 2026-10-06 (M1–M9 all as recommended, §5); steps 1–2 in simulation (§6.1, §6.2), the Vivado build `p13` (§6.3), the server (§6.4) and the image (§6.5) done; the bench next.**
 
 ---
 
@@ -142,3 +142,11 @@ Each step: build, test, commit, this doc updated.
 **Results:** Windows: `test_osc_mixer_server` + `test_mixer_params` + `test_mixer_meters` all pass (`Metering` 3 extra runs clean: the socket tests are timing-based). **VM (Python 3.12.3): 180 / 180** (`test_mixer_hw`, `test_mixer_meters`, `test_mixer_state`, `test_osc_mixer_server`, `test_mixer_params`, `test_mediaclock`; 1 skip as before).
 
 **Mutation test (VM): 20 of 20 killed**, after one survivor exposed a weak test ("no SNAP requested": the fake windows handed back their peaks anyway; the test now also requires every window's COMMITS to have moved). Killed: the running max overwritten, maxima not restarted, leases never expiring, renewals not extending, a new zone not starting at 0, sequences stepping by 2, the sampler at the lowest rate, dB instead of 0.01 dB, silence not −32768, a little-endian blob, mask bits swapped, the port range unchecked, non-integral floats accepted, a subscription surviving its TCP close, no error without meters, synthetic allowed with `--hw`, the rate unclamped, peaks unmasked, the meter TAP unchecked.
+
+### 6.5 Step 5: the image `p13` (2026-10-06)
+
+- **Caught before building:** the `fpgamixer-osc` recipe installs an explicit list of files, and `mixer_meters.py` wasn't on it: the server would have failed on its import at boot. Added (`e3009a5`); its modules are all in `python3-core`, so `RDEPENDS` is unchanged.
+- **SDT on the VM:** `p12`'s moved to `~/edf/sdt.p12`; `p13`'s copied + `dos2unix`; `firmware-name` `fpgamixer_p13.bit.bin`, the 3 meter nodes, `psu_init.tcl` identical, bitstream MD5 `d1531052…` on both ends. Layer synced at the clean commit `e3009a5`.
+- **Build** (`~/edf/logs/p13-build.sh`): `gen-machine-conf` exit 0; **15,069 tasks, all succeeded**, 7 min 29 s, 22 warnings (the usual).
+- **Checked:** deployed bitstream MD5 = `p13`; the DTB has `M_AXI_INMTR@80009000`, `M_AXI_BUSMTR@8000a000`, `M_AXI_OUTMTR@8000b000` beside the earlier windows; the rootfs has `VERSION` `e3009a5`, `mixer_meters.py`, and the server's `handle_meter_subscribe`.
+- **`build/sd/p13-meters-20261006.wic.xz`** (109 MB, MD5 `9270c349…`, same on both ends).
