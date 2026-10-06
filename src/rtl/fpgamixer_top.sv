@@ -17,6 +17,9 @@
 //                  Phase 12: M_AXI_BUSMX -> matrix_regs_axil u_busmx_regs,
 //                  M_AXI_INLVL / BUSLVL / OUTLVL -> gain_regs_axil
 //                  u_inlvl_regs / u_buslvl_regs / u_outlvl_regs
+//                  Phase 13: the core's tap ports -> peak_regs_axil
+//                  u_inmtr_regs / u_busmtr_regs / u_outmtr_regs <-
+//                  M_AXI_INMTR / BUSMTR / OUTMTR (the meters)
 //                  (without the PS: coef_flat_readers over the reset banks)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
@@ -188,6 +191,13 @@ module fpgamixer_top (
     logic [BMX_AW-1:0] bus_mx_addr;
     logic [L2*GW-1:0]  bus_mx_data;
 
+    // the core's tap ports (Phase 13): the level stages' output streams,
+    // metered in PS builds (unused without the PS)
+    logic                 tap_in_valid, tap_bus_valid, tap_out_valid;
+    logic [CW-1:0]        tap_in_ch, tap_out_ch;
+    logic [$clog2(N_BUS)-1:0] tap_bus_ch;
+    logic [SW-1:0]        tap_in_data, tap_bus_data, tap_out_data;
+
 `ifdef INCLUDE_PS
     // ps_sys_wrapper (the BD) exports M_AXI_CTRL (AXI4-Lite, through a
     // SmartConnect off M_AXI_HPM0_LPD), its clock (pl_clk0) and a synchronized
@@ -239,6 +249,31 @@ module fpgamixer_top (
     logic        olv_awvalid, olv_awready, olv_wvalid, olv_wready;
     logic        olv_bvalid, olv_bready, olv_arvalid, olv_arready;
     logic        olv_rvalid, olv_rready;
+
+    // Phase 13 (decision M4): the three peak-meter windows, the same way:
+    //   M_AXI_INMTR 0x8000_9000 imt_*   M_AXI_BUSMTR 0x8000_A000 bmt_*
+    //   M_AXI_OUTMTR 0x8000_B000 omt_*
+    logic [31:0] imt_awaddr, imt_araddr, imt_wdata, imt_rdata;
+    logic [2:0]  imt_awprot, imt_arprot;
+    logic [3:0]  imt_wstrb;
+    logic [1:0]  imt_bresp, imt_rresp;
+    logic        imt_awvalid, imt_awready, imt_wvalid, imt_wready;
+    logic        imt_bvalid, imt_bready, imt_arvalid, imt_arready;
+    logic        imt_rvalid, imt_rready;
+    logic [31:0] bmt_awaddr, bmt_araddr, bmt_wdata, bmt_rdata;
+    logic [2:0]  bmt_awprot, bmt_arprot;
+    logic [3:0]  bmt_wstrb;
+    logic [1:0]  bmt_bresp, bmt_rresp;
+    logic        bmt_awvalid, bmt_awready, bmt_wvalid, bmt_wready;
+    logic        bmt_bvalid, bmt_bready, bmt_arvalid, bmt_arready;
+    logic        bmt_rvalid, bmt_rready;
+    logic [31:0] omt_awaddr, omt_araddr, omt_wdata, omt_rdata;
+    logic [2:0]  omt_awprot, omt_arprot;
+    logic [3:0]  omt_wstrb;
+    logic [1:0]  omt_bresp, omt_rresp;
+    logic        omt_awvalid, omt_awready, omt_wvalid, omt_wready;
+    logic        omt_bvalid, omt_bready, omt_arvalid, omt_arready;
+    logic        omt_rvalid, omt_rready;
 
 `ifdef INCLUDE_LINK
     // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
@@ -469,6 +504,63 @@ module fpgamixer_top (
         .M_AXI_OUTLVL_rresp   (olv_rresp),
         .M_AXI_OUTLVL_rvalid  (olv_rvalid),
         .M_AXI_OUTLVL_rready  (olv_rready),
+        .M_AXI_INMTR_awaddr   (imt_awaddr),
+        .M_AXI_INMTR_awprot   (imt_awprot),
+        .M_AXI_INMTR_awvalid  (imt_awvalid),
+        .M_AXI_INMTR_awready  (imt_awready),
+        .M_AXI_INMTR_wdata    (imt_wdata),
+        .M_AXI_INMTR_wstrb    (imt_wstrb),
+        .M_AXI_INMTR_wvalid   (imt_wvalid),
+        .M_AXI_INMTR_wready   (imt_wready),
+        .M_AXI_INMTR_bresp    (imt_bresp),
+        .M_AXI_INMTR_bvalid   (imt_bvalid),
+        .M_AXI_INMTR_bready   (imt_bready),
+        .M_AXI_INMTR_araddr   (imt_araddr),
+        .M_AXI_INMTR_arprot   (imt_arprot),
+        .M_AXI_INMTR_arvalid  (imt_arvalid),
+        .M_AXI_INMTR_arready  (imt_arready),
+        .M_AXI_INMTR_rdata    (imt_rdata),
+        .M_AXI_INMTR_rresp    (imt_rresp),
+        .M_AXI_INMTR_rvalid   (imt_rvalid),
+        .M_AXI_INMTR_rready   (imt_rready),
+        .M_AXI_BUSMTR_awaddr  (bmt_awaddr),
+        .M_AXI_BUSMTR_awprot  (bmt_awprot),
+        .M_AXI_BUSMTR_awvalid (bmt_awvalid),
+        .M_AXI_BUSMTR_awready (bmt_awready),
+        .M_AXI_BUSMTR_wdata   (bmt_wdata),
+        .M_AXI_BUSMTR_wstrb   (bmt_wstrb),
+        .M_AXI_BUSMTR_wvalid  (bmt_wvalid),
+        .M_AXI_BUSMTR_wready  (bmt_wready),
+        .M_AXI_BUSMTR_bresp   (bmt_bresp),
+        .M_AXI_BUSMTR_bvalid  (bmt_bvalid),
+        .M_AXI_BUSMTR_bready  (bmt_bready),
+        .M_AXI_BUSMTR_araddr  (bmt_araddr),
+        .M_AXI_BUSMTR_arprot  (bmt_arprot),
+        .M_AXI_BUSMTR_arvalid (bmt_arvalid),
+        .M_AXI_BUSMTR_arready (bmt_arready),
+        .M_AXI_BUSMTR_rdata   (bmt_rdata),
+        .M_AXI_BUSMTR_rresp   (bmt_rresp),
+        .M_AXI_BUSMTR_rvalid  (bmt_rvalid),
+        .M_AXI_BUSMTR_rready  (bmt_rready),
+        .M_AXI_OUTMTR_awaddr  (omt_awaddr),
+        .M_AXI_OUTMTR_awprot  (omt_awprot),
+        .M_AXI_OUTMTR_awvalid (omt_awvalid),
+        .M_AXI_OUTMTR_awready (omt_awready),
+        .M_AXI_OUTMTR_wdata   (omt_wdata),
+        .M_AXI_OUTMTR_wstrb   (omt_wstrb),
+        .M_AXI_OUTMTR_wvalid  (omt_wvalid),
+        .M_AXI_OUTMTR_wready  (omt_wready),
+        .M_AXI_OUTMTR_bresp   (omt_bresp),
+        .M_AXI_OUTMTR_bvalid  (omt_bvalid),
+        .M_AXI_OUTMTR_bready  (omt_bready),
+        .M_AXI_OUTMTR_araddr  (omt_araddr),
+        .M_AXI_OUTMTR_arprot  (omt_arprot),
+        .M_AXI_OUTMTR_arvalid (omt_arvalid),
+        .M_AXI_OUTMTR_arready (omt_arready),
+        .M_AXI_OUTMTR_rdata   (omt_rdata),
+        .M_AXI_OUTMTR_rresp   (omt_rresp),
+        .M_AXI_OUTMTR_rvalid  (omt_rvalid),
+        .M_AXI_OUTMTR_rready  (omt_rready),
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -590,6 +682,56 @@ module fpgamixer_top (
         .s_axi_rvalid  (olv_rvalid), .s_axi_rready (olv_rready),
         .mclk (mclk), .frame_i (jb_rx_valid),
         .coef_addr (out_lvl_addr), .coef_data (out_lvl_data)
+    );
+
+    // Phase 13: a peak meter on each tap (zones inputChannel, busChannel,
+    // outputChannel, post-level); TAP in CONFIG says which is which.
+    peak_regs_axil #(.N (N), .TAP (0), .SW (SW), .ADDR_WIDTH (12)) u_inmtr_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (imt_awaddr[11:0]), .s_axi_awvalid (imt_awvalid),
+        .s_axi_awready (imt_awready),
+        .s_axi_wdata   (imt_wdata),  .s_axi_wstrb  (imt_wstrb),
+        .s_axi_wvalid  (imt_wvalid), .s_axi_wready (imt_wready),
+        .s_axi_bresp   (imt_bresp),  .s_axi_bvalid (imt_bvalid),
+        .s_axi_bready  (imt_bready),
+        .s_axi_araddr  (imt_araddr[11:0]), .s_axi_arvalid (imt_arvalid),
+        .s_axi_arready (imt_arready),
+        .s_axi_rdata   (imt_rdata),  .s_axi_rresp  (imt_rresp),
+        .s_axi_rvalid  (imt_rvalid), .s_axi_rready (imt_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .s_valid (tap_in_valid), .s_ch (tap_in_ch), .s_data (tap_in_data)
+    );
+
+    peak_regs_axil #(.N (N_BUS), .TAP (1), .SW (SW), .ADDR_WIDTH (12)) u_busmtr_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (bmt_awaddr[11:0]), .s_axi_awvalid (bmt_awvalid),
+        .s_axi_awready (bmt_awready),
+        .s_axi_wdata   (bmt_wdata),  .s_axi_wstrb  (bmt_wstrb),
+        .s_axi_wvalid  (bmt_wvalid), .s_axi_wready (bmt_wready),
+        .s_axi_bresp   (bmt_bresp),  .s_axi_bvalid (bmt_bvalid),
+        .s_axi_bready  (bmt_bready),
+        .s_axi_araddr  (bmt_araddr[11:0]), .s_axi_arvalid (bmt_arvalid),
+        .s_axi_arready (bmt_arready),
+        .s_axi_rdata   (bmt_rdata),  .s_axi_rresp  (bmt_rresp),
+        .s_axi_rvalid  (bmt_rvalid), .s_axi_rready (bmt_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .s_valid (tap_bus_valid), .s_ch (tap_bus_ch), .s_data (tap_bus_data)
+    );
+
+    peak_regs_axil #(.N (N), .TAP (2), .SW (SW), .ADDR_WIDTH (12)) u_outmtr_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (omt_awaddr[11:0]), .s_axi_awvalid (omt_awvalid),
+        .s_axi_awready (omt_awready),
+        .s_axi_wdata   (omt_wdata),  .s_axi_wstrb  (omt_wstrb),
+        .s_axi_wvalid  (omt_wvalid), .s_axi_wready (omt_wready),
+        .s_axi_bresp   (omt_bresp),  .s_axi_bvalid (omt_bvalid),
+        .s_axi_bready  (omt_bready),
+        .s_axi_araddr  (omt_araddr[11:0]), .s_axi_arvalid (omt_arvalid),
+        .s_axi_arready (omt_arready),
+        .s_axi_rdata   (omt_rdata),  .s_axi_rresp  (omt_rresp),
+        .s_axi_rvalid  (omt_rvalid), .s_axi_rready (omt_rready),
+        .mclk (mclk), .frame_i (jb_rx_valid),
+        .s_valid (tap_out_valid), .s_ch (tap_out_ch), .s_data (tap_out_data)
     );
 
 `ifdef INCLUDE_LINK
@@ -816,7 +958,10 @@ module fpgamixer_top (
         .in_mx_addr   (in_mx_addr),   .in_mx_data   (in_mx_data),
         .bus_lvl_addr (bus_lvl_addr), .bus_lvl_data (bus_lvl_data),
         .bus_mx_addr  (bus_mx_addr),  .bus_mx_data  (bus_mx_data),
-        .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data)
+        .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data),
+        .tap_in_valid  (tap_in_valid),  .tap_in_ch  (tap_in_ch),  .tap_in_data  (tap_in_data),
+        .tap_bus_valid (tap_bus_valid), .tap_bus_ch (tap_bus_ch), .tap_bus_data (tap_bus_data),
+        .tap_out_valid (tap_out_valid), .tap_out_ch (tap_out_ch), .tap_out_data (tap_out_data)
     );
 
 endmodule

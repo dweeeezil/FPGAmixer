@@ -2,7 +2,7 @@
 
 *Branch `phase13-metering`, from `phase12-levels-buses` at `2bf1346`. Covers controller-support step 6 (F4: the server's meter protocol) and F4a (the gateware peak detector), planned as "next" by Phase 12 decision L8.*
 
-**State: decided 2026-10-06 (M1–M9 all as recommended, §5); step 1 done in simulation (§6.1); step 2 (top + BD) next.**
+**State: decided 2026-10-06 (M1–M9 all as recommended, §5); steps 1–2 done in simulation (§6.1, §6.2); step 3 (Vivado) next.**
 
 ---
 
@@ -100,3 +100,13 @@ Each step: build, test, commit, this doc updated.
 **Results (XSim 2026.1):** `peak` PASS, `core` PASS; **full regression 21 of 21**.
 
 **Mutation test: 12 of 12 killed**, after the first run found a weak spot in my TB: "reads allowed while a snapshot is in flight" survived, because the model's closed window at read time was still the previous one in both cases. The no-wait test now also requires the window to have closed before the read returns. Killed: flip not aligned to the strobe (193 checks), accumulators not cleared (98), the most negative sample not saturated (62), a strobe-edge beat dropped (4), reads during BUSY (5), a SNAP during BUSY dropped, COMMITS not counted, a signed compare (125), CONFIG fields swapped; and in the core the bus tap before the bus levels, the input tap before the input levels, the output tap's channel from the wrong stream.
+
+### 6.2 Step 2: the meter windows in the top and the BD (simulation): PASS
+
+| File | What |
+|---|---|
+| `src/rtl/fpgamixer_top.sv` | the core's tap ports wired in every build; in `INCLUDE_PS` builds `u_inmtr_regs` / `u_busmtr_regs` / `u_outmtr_regs` (`peak_regs_axil`, TAP 0/1/2) on the taps, `ctrl_aclk` and the frame strobe, on `M_AXI_INMTR` / `BUSMTR` / `OUTMTR` |
+| `scripts/create_project.tcl` | `pcm_peak.xdc` scoped to `pcm_peak` in the PS phases; SmartConnect `NUM_MI` = base + 7; the three ports on the next masters (**phase9: M11–M13**) at **0x8000_9000 / A000 / B000**; `ASSOCIATED_BUSIF` extended |
+| `src/sim/ps_sys_wrapper_stub.sv`, `src/sim/tb_top_windows.sv` | three more masters; each meter's ID and CONFIG (`0x14T0_1800`); after the per-window changes, one SNAP to close the window from before them, then **every channel of every meter** against its zone's value (input levels, bus levels, outputs) |
+
+**Results:** full regression **21 of 21** (`linkstat` first failed to start: Defender; passed on the rerun). **Mutation: 4 of 4 valid mutants killed** (bus meter on the output tap, input meter on the bus tap, the output meter with TAP 1, meters without a frame strobe: timeout); one malformed mutant (an input/output swap written with a placeholder the runner correctly rejected) was replaced by the single-edit "input meter on the bus tap".

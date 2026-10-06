@@ -12,6 +12,7 @@
 //   0 M_AXI_CTRL   (input matrix)     1 M_AXI_BUSMX  (bus matrix)
 //   2 M_AXI_INLVL  (input levels)     3 M_AXI_BUSLVL (bus levels)
 //   4 M_AXI_OUTLVL (output levels)
+//   5 M_AXI_INMTR / 6 M_AXI_BUSMTR / 7 M_AXI_OUTMTR (peak meters, Phase 13)
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -45,9 +46,12 @@ module ps_sys_wrapper (
     `AXIL_MASTER_PORTS(M_AXI_BUSMX),
     `AXIL_MASTER_PORTS(M_AXI_INLVL),
     `AXIL_MASTER_PORTS(M_AXI_BUSLVL),
-    `AXIL_MASTER_PORTS(M_AXI_OUTLVL)
+    `AXIL_MASTER_PORTS(M_AXI_OUTLVL),
+    `AXIL_MASTER_PORTS(M_AXI_INMTR),
+    `AXIL_MASTER_PORTS(M_AXI_BUSMTR),
+    `AXIL_MASTER_PORTS(M_AXI_OUTMTR)
 );
-    localparam int NM = 5;
+    localparam int NM = 8;
 
     initial begin ctrl_aclk = 0; ctrl_aresetn = 0; #100 ctrl_aresetn = 1; end
     always #5 ctrl_aclk = ~ctrl_aclk;
@@ -70,6 +74,9 @@ module ps_sys_wrapper (
     `AXIL_MASTER_BIND(M_AXI_INLVL,  2)
     `AXIL_MASTER_BIND(M_AXI_BUSLVL, 3)
     `AXIL_MASTER_BIND(M_AXI_OUTLVL, 4)
+    `AXIL_MASTER_BIND(M_AXI_INMTR,  5)
+    `AXIL_MASTER_BIND(M_AXI_BUSMTR, 6)
+    `AXIL_MASTER_BIND(M_AXI_OUTMTR, 7)
 
     int bus_errors = 0;   // non-OKAY responses
 

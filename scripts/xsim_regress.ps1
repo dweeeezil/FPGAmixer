@@ -50,7 +50,7 @@ $targets = [ordered]@{
   steer       = @("tb_media_clock_steer", "", @("$rtl\axil_reg_window.sv","$rtl\media_clock_ctrl_regs.sv","$rtl\media_clock_steer.sv","$rtl\media_clock_meter.sv","$sim\tb_media_clock_steer.sv"))
   linkstat    = @("tb_link_stat_regs",   "", @("$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\pcm_link_stat_regs.sv","$sim\tb_link_stat_regs.sv"))
   phase3      = @("tb_phase3_datapath",  "SIM_ODDR", ($coreRtl + @("$sim\clk_wiz_audio_stub.sv","$sim\tb_phase3_datapath.sv")))
-  topwin      = @("tb_top_windows",      "INCLUDE_PS SIM_ODDR", ($coreRtl + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
+  topwin      = @("tb_top_windows",      "INCLUDE_PS SIM_ODDR", ($coreRtl + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
   dynamic     = @("tb_phase3_dynamic",  "SIM_ODDR", ($coreRtl + @("$sim\clk_wiz_audio_stub.sv","$sim\tb_phase3_dynamic.sv")))
 }
 

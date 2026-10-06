@@ -91,6 +91,8 @@ if {$current_phase in {phase4 phase5 phase8 phase9}} {
     # Phase 9: the matrix's gains live in coef_bank_ram (the handoff above
     # stays for the reverse-direction status windows).
     lappend scoped_xdc {constraints/coef_bank_ram.xdc coef_bank_ram}
+    # Phase 13: the peak meters behind the meter windows
+    lappend scoped_xdc {constraints/pcm_peak.xdc pcm_peak}
 }
 if {$current_phase in {phase8 phase9}} {
     set include_link 1
@@ -413,10 +415,11 @@ if {$include_ps} {
     # M03 = the media-clock status window and M04 = its steering window,
     # and (P9.5) M05 = formatter #2, M06 = link #2's status window.
     # Phase 12: the four bus-layer windows take the next four masters in
-    # every PS build (M01-M04 in phase5, M03-M06 in phase8, M07-M10 in phase9).
+    # every PS build (M01-M04 in phase5, M03-M06 in phase8, M07-M10 in phase9);
+    # Phase 13: the three meter windows the next three (phase9: M11-M13).
     set n_mi_base [expr {$include_link2 ? 7 : ($include_mclk ? 5 : ($include_link ? 3 : 1))}]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$n_mi_base + 4}]] $smc
+        CONFIG.NUM_MI [expr {$n_mi_base + 7}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -622,9 +625,13 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
     # level stages (gain_regs_axil u_inlvl_regs / u_buslvl_regs /
     # u_outlvl_regs), on the SmartConnect masters after the ones above, at the
     # next free window slots. Still no PS8 setting changes.
+    # Phase 13 (decision M4): the three peak-meter windows (peak_regs_axil
+    # u_inmtr_regs / u_busmtr_regs / u_outmtr_regs) follow, the same way.
     set mi $n_mi_base
     foreach {port offset} {M_AXI_BUSMX  0x80005000 M_AXI_INLVL  0x80006000 \
-                           M_AXI_BUSLVL 0x80007000 M_AXI_OUTLVL 0x80008000} {
+                           M_AXI_BUSLVL 0x80007000 M_AXI_OUTLVL 0x80008000 \
+                           M_AXI_INMTR  0x80009000 M_AXI_BUSMTR 0x8000A000 \
+                           M_AXI_OUTMTR 0x8000B000} {
         set p [create_bd_intf_port -mode Master \
             -vlnv xilinx.com:interface:aximm_rtl:1.0 $port]
         set_property -dict [list \
@@ -642,7 +649,7 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
         incr mi
     }
     set_property CONFIG.ASSOCIATED_BUSIF \
-        "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_BUSMX:M_AXI_INLVL:M_AXI_BUSLVL:M_AXI_OUTLVL" \
+        "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_BUSMX:M_AXI_INLVL:M_AXI_BUSLVL:M_AXI_OUTLVL:M_AXI_INMTR:M_AXI_BUSMTR:M_AXI_OUTMTR" \
         [get_bd_ports ctrl_aclk]
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"

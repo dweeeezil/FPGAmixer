@@ -61,7 +61,24 @@ module tb_top_windows;
     endtask
 
     localparam int CTRL = 0, BUSMX = 1, INLVL = 2, BUSLVL = 3, OUTLVL = 4;
-    string name [5] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels"};
+    localparam int INMTR = 5, BUSMTR = 6, OUTMTR = 7;                    // Phase 13
+    string name [8] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
+                        "input meter", "bus meter", "output meter"};
+
+    function automatic logic [31:0] mag(input logic [SW-1:0] x);       // as pcm_peak
+        if (x == 24'h800000) return 32'h7F_FFFF;
+        return x[SW-1] ? 32'(-x) & 32'hFF_FFFF : 32'(x);
+    endfunction
+
+    // SNAP a meter, wait, and check every channel against `want`
+    task automatic check_meter(input int m, input logic [SW-1:0] want [N], input string tag);
+        logic [31:0] r;
+        commit(m);                                   // CTRL bit0 = SNAP
+        for (int c = 0; c < N; c++) begin
+            rd(m, lv(c), r);
+            check($sformatf("%s %s ch%0d", name[m], tag, c), r, mag(want[c]));
+        end
+    endtask
 
     task automatic wr(input int m, input logic [31:0] a, input logic [31:0] d);
         u_dut.u_ps.axi_write(m, a, d);
@@ -104,6 +121,12 @@ module tb_top_windows;
         rd(BUSLVL, 32'h004, r); check("bus levels CONFIG",    r, 32'h1401_1210);
         rd(OUTLVL, 32'h000, r); check("output levels ID",     r, 32'h474E_5001);
         rd(OUTLVL, 32'h004, r); check("output levels CONFIG", r, 32'h1402_1210);
+        rd(INMTR,  32'h000, r); check("input meter ID",       r, 32'h504B_5001);
+        rd(INMTR,  32'h004, r); check("input meter CONFIG",   r, 32'h1400_1800);
+        rd(BUSMTR, 32'h000, r); check("bus meter ID",         r, 32'h504B_5001);
+        rd(BUSMTR, 32'h004, r); check("bus meter CONFIG",     r, 32'h1401_1800);
+        rd(OUTMTR, 32'h000, r); check("output meter ID",      r, 32'h504B_5001);
+        rd(OUTMTR, 32'h004, r); check("output meter CONFIG",  r, 32'h1402_1800);
 
         $display("-- reset state: identity and unity, output = input");
         repeat (3) @(posedge u_dut.u_core.valid_o);
@@ -129,6 +152,23 @@ module tb_top_windows;
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("out%0d", k), 32'(u_dut.core_out[k*SW +: SW]), 32'(exp_out[k]));
+
+        $display("-- each meter reads its own zone (Phase 13)");
+        begin
+            logic [SW-1:0] want_in [N], want_bus [N];
+            for (int k = 0; k < N; k++) begin
+                want_in[k]  = stim[k*SW +: SW];
+                want_bus[k] = stim[k*SW +: SW];
+            end
+            want_in[0]  = 24'h200000;                   // in0 x 0.5
+            want_bus[0] = 24'h100000;                   // in0 x 0.5, bus0 x 0.5
+            want_bus[2] = 24'h00C000;                   // in2 x 0.25
+            commit(INMTR); commit(BUSMTR); commit(OUTMTR);   // close the windows from before the changes
+            repeat (2) @(posedge u_dut.u_core.valid_o);
+            check_meter(INMTR,  want_in,  "post-level");
+            check_meter(BUSMTR, want_bus, "post-level");
+            check_meter(OUTMTR, exp_out,  "post-level");
+        end
 
         $display("-- the GAIN registers read back");
         rd(INLVL,  lv(0), r);     check("input level 0",  r, 32'h0000_8000);

@@ -205,7 +205,8 @@ topwin: | $(BUILD)
 	@echo ">>> Building tb_top_windows"
 	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -DINCLUDE_PS -s tb_top_windows -o $(BUILD)/tb_top_windows.vvp \
 		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
-		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/fpgamixer_top.sv \
+		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/pcm_peak.sv \
+		$(RTL)/peak_regs_axil.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
 	@$(VVP) $(BUILD)/tb_top_windows.vvp
 

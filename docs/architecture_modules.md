@@ -179,7 +179,10 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 | 0x8000_6000 | input levels (`u_inlvl_regs`, `gain_regs_axil`, ID `0x474E_5001`, TAP 0; zone `inputChannel`); every PS build (`M_AXI_INLVL`) | Phase 12 |
 | 0x8000_7000 | bus levels (`u_buslvl_regs`, TAP 1; zone `busChannel`; `M_AXI_BUSLVL`) | Phase 12 |
 | 0x8000_8000 | output levels (`u_outlvl_regs`, TAP 2; zone `outputChannel`; `M_AXI_OUTLVL`) | Phase 12 |
-| 0x8000_9000… | reserved: DSP blocks | — |
+| 0x8000_9000 | input peak meter (`u_inmtr_regs`, `peak_regs_axil`, ID `0x504B_5001`, TAP 0; tap `tap_in`; `M_AXI_INMTR`); every PS build | Phase 13 |
+| 0x8000_A000 | bus peak meter (`u_busmtr_regs`, TAP 1; `M_AXI_BUSMTR`) | Phase 13 |
+| 0x8000_B000 | output peak meter (`u_outmtr_regs`, TAP 2; `M_AXI_OUTMTR`) | Phase 13 |
+| 0x8000_C000… | reserved: DSP blocks | — |
 | 0x8010_0000 (64K) | AMD Audio Formatter #1 registers (`link_formatter`, card `FPGAmixerLink`): **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
 | 0x8011_0000 (64K) | AMD Audio Formatter #2 registers (`link2_formatter`, card `FPGAmixerLink2`): driver-owned, as #1; `phase9` builds | Phase 9 (P9.5) |
 
