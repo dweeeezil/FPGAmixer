@@ -1,0 +1,18 @@
+[Unit]
+Description=FPGAmixer AVB bridge: AAF streams <-> link #2 (FPGAmixerLink2)
+# Design: docs/phase9_status_2026-09-26.md sec. 6.15-6.16 (P9.7, V1-V6).
+# Needs the network side (VLAN, qdiscs, TAI offset, the ALSA devices and the
+# geometry in /run/fpgamixer/avb-bridge.env), and the system clock following
+# the PHC (phc2sys), since the AAF plugin runs on CLOCK_REALTIME.
+Requires=fpgamixer-avb-net.service
+After=fpgamixer-avb-net.service fpgamixer-phc2sys.service sound.target
+
+[Service]
+EnvironmentFile=/run/fpgamixer/avb-bridge.env
+# root: the AAF plugin opens an AF_PACKET socket
+ExecStart=/usr/bin/fpgamixer-avb-bridge $AVB_BRIDGE_ARGS
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

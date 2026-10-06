@@ -13,8 +13,18 @@
 #                            tools for the gadget and the PL link cards.
 #   fpgamixer-bench-network  bench addressing (end0 = 10.0.0.2/24 + DHCP),
 #                            only with FPGAMIXER_BENCH = 1 (conf/layer.conf)
+#   fpgamixer-gptp           ptp4l + phc2sys on end0 at boot (Phase 9, P9.1);
+#                            pulls in linuxptp
+#   linuxptp-configs ethtool the gPTP spike's bench tools (example configs,
+#                            ethtool -T); were in the VM's local.conf until P9.1
+#   fpgamixer-mediaclock     the loop locking mclk to gPTP (Phase 9, P9.4b),
+#                            enabled at boot since its bench pass
+#   fpgamixer-avb            AVB network setup + the AAF ALSA devices (Phase 9,
+#                            P9.6); pulls in the AAF plugin, libavtp and tc
+#   tcpdump                  bench tool: capturing the AVB streams (P9.6)
 IMAGE_INSTALL:append = " fpgamixer-osc fpgamixer-usb-gadget fpgamixer-usb-bridge \
-    kernel-module-fpgamixer-link-card \
+    kernel-module-fpgamixer-link-card fpgamixer-gptp linuxptp-configs ethtool \
+    fpgamixer-mediaclock fpgamixer-avb tcpdump \
     alsa-utils-alsaloop alsa-utils-aplay alsa-utils-amixer alsa-utils-speakertest \
     ${@'fpgamixer-bench-network' if d.getVar('FPGAMIXER_BENCH') == '1' else ''}"
 

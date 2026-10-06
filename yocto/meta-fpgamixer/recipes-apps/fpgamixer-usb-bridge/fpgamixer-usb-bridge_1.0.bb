@@ -7,9 +7,14 @@ fpgamixer-usb-gadget. See docs/phase8_status_*.md in the repo."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+# bridge_core (shared with fpgamixer-avb-bridge since Phase 9 P9.7) lives in
+# ../fpgamixer-bridge-core: not a recipe, just the common source.
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:${THISDIR}/../fpgamixer-bridge-core:"
 SRC_URI = " \
     file://fpgamixer-usb-bridge.c \
+    file://bridge_core.c \
+    file://bridge_core.h \
+    file://bridge_convert.h \
     file://fpgamixer-usb-bridge.service \
 "
 S = "${WORKDIR}"
@@ -22,8 +27,8 @@ SYSTEMD_SERVICE:${PN} = "fpgamixer-usb-bridge.service"
 SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 do_compile() {
-    ${CC} ${CFLAGS} ${LDFLAGS} -Wall -Wextra -O2 -o fpgamixer-usb-bridge \
-        ${S}/fpgamixer-usb-bridge.c -lasound -lpthread
+    ${CC} ${CFLAGS} ${LDFLAGS} -Wall -Wextra -O2 -I${S} -o fpgamixer-usb-bridge \
+        ${S}/fpgamixer-usb-bridge.c ${S}/bridge_core.c -lasound -lpthread
 }
 
 do_install() {

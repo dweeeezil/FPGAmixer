@@ -10,6 +10,12 @@
 // using 64-bit integer math, not by hardcoded constants. If the RTL and the
 // reference disagree, one of them is wrong -- either way it surfaces a real
 // discrepancy instead of a self-fulfilling hardcode.
+//
+// Phase 9 (P9.A4): the same vectors and reference, now through mixer_core
+// (the time-shared matrix between the stream converters) with the gains from
+// coef_flat_reader; the output must also arrive exactly D cycles after the
+// strobe. Phase 12: mixer_core became the full chain, so the single matrix is
+// tested through matrix_packed_sim (the P9.A4 core body, sim only).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -77,21 +83,33 @@ module tb_pcm_matrix;
         G_ZERO, G_ZERO,  G_ZERO,  G_UNITY
     };
 
-    pcm_matrix #(
-        .N_IN         (N),
-        .N_OUT        (N),
-        .SAMPLE_WIDTH (SAMPLE_WIDTH),
-        .GAIN_WIDTH   (GAIN_WIDTH),
-        .GAIN_FRAC    (GAIN_FRAC)
+    // Phase 9: the time-shared matrix between the converters (packed in/out, as the
+    // parallel matrix had), its gains through a coef_flat_reader.
+    localparam int LANES = pcm_matrix_pkg::matrix_lanes(N, N);
+    localparam int D     = pcm_matrix_pkg::core_latency(N, N, LANES);
+    localparam int AW    = $clog2(pcm_matrix_pkg::matrix_passes(N, LANES) * N);
+    logic [AW-1:0]            coef_addr;
+    logic [LANES*GAIN_WIDTH-1:0] coef_data;
+    logic                     err_o;
+
+    matrix_packed_sim #(
+        .N_IN (N), .N_OUT (N), .SW (SAMPLE_WIDTH),
+        .GW (GAIN_WIDTH), .GF (GAIN_FRAC), .LANES (LANES)
     ) dut (
-        .mclk           (mclk),
-        .rst_n          (rst_n),
-        .sample_valid_i (sample_valid_i),
-        .gains_flat     (TEST_GAINS),
-        .in_flat        (in_flat),
-        .out_flat       (out_flat),
-        .sample_valid_o (sample_valid_o)
+        .mclk      (mclk),
+        .rst_n     (rst_n),
+        .frame_i   (sample_valid_i),
+        .in_flat   (in_flat),
+        .out_flat  (out_flat),
+        .valid_o   (sample_valid_o),
+        .err_o     (err_o),
+        .coef_addr (coef_addr),
+        .coef_data (coef_data)
     );
+
+    coef_flat_reader #(.W (GAIN_WIDTH), .N_ROWS (N), .ROW_LEN (N), .LANES (LANES)) u_coefs (
+        .mclk (mclk), .frame_i (sample_valid_i), .coefs_flat (TEST_GAINS),
+        .rd_addr (coef_addr), .rd_data (coef_data));
 
     // Populate the gain[o][i] table (for the reference model) to match TEST_GAINS.
     initial begin
@@ -121,13 +139,24 @@ module tb_pcm_matrix;
                                    input logic signed [SAMPLE_WIDTH-1:0] v2,
                                    input logic signed [SAMPLE_WIDTH-1:0] v3);
         logic signed [SAMPLE_WIDTH-1:0] exp;
+        int n;
         @(negedge mclk);
         in_samples[0] = v0; in_samples[1] = v1;
         in_samples[2] = v2; in_samples[3] = v3;
         sample_valid_i = 1'b1;
         @(negedge mclk);
         sample_valid_i = 1'b0;
-        @(negedge mclk);   // outputs registered by now (valid pulse + 1)
+        // The time-shared core answers D cycles after the strobe edge.
+        n = 0;
+        while (!sample_valid_o && n < 300) begin @(negedge mclk); n++; end
+        if (n != D) begin
+            $display("    [FAIL] output after %0d cycles, D = %0d", n, D);
+            errors++;
+        end
+        if (err_o) begin $display("    [FAIL] err_o"); errors++; end
+        @(negedge mclk);
+        // Next frame no earlier than a real frame period would allow.
+        repeat (256 - D - 3) @(negedge mclk);
 
         $display("  %s: in = [%06h %06h %06h %06h]", label, v0, v1, v2, v3);
         for (int o = 0; o < N; o++) begin

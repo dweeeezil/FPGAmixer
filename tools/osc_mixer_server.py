@@ -9,10 +9,8 @@ multi-controller broadcast sync, and the same save-on-change/restore-on-boot
 persistence described in your other project docs. Point your control
 software at this instead of hardware and develop against it.
 
-The OSC codec (osc_string / encode_message / decode_message /
-OSCIncomplete / OSCMalformed) is copied verbatim from osc_mixer_test.py so
-both tools speak identically. If you extract a shared module later, this is
-the block to move.
+The OSC codec and the TCP framers are osc_codec.py, shared with every other
+tool in tools/, so they all speak identically.
 
 DESIGN DECISIONS (the standard doc leaves these open; documenting the calls
 made here so you can compare against the real firmware once it exists):
@@ -25,49 +23,104 @@ made here so you can compare against the real firmware once it exists):
     UDP — is broadcast to ALL connected TCP clients, including whichever
     one sent it. That single broadcast IS the echo/confirmation; there's no
     separate "echo the sender, sync everyone else" split.
-  - deviceName: the doc's own caveat ("this may cause sync issues if
-    controllers don't know to start listening to the new address space")
-    implies the address root genuinely changes. So it does: the
-    confirmation of a deviceName set goes out under the OLD root (that's
-    the address the request arrived on), and every message after that must
-    use the NEW root — messages still addressed to the old root are logged
-    and ignored, exactly the footgun the doc describes.
-  - TCP framing: naive and self-delimiting, same assumption as the test
-    client — no length prefix, no reassembly timeout. That means a message
-    left truncated mid-argument (as osc_mixer_test.py's
-    truncated_argument_then_recovery test deliberately does) will corrupt
-    the parse of whatever arrives after it. This is deliberately NOT
-    papered over with a timeout-based buffer reset: it's a real risk of the
-    "no explicit framing" design, and this simulator is meant to let you
-    feel it rather than hide it. A genuinely malformed message (bad type
-    tag, bad address) DOES clear the buffer and recover, since more bytes
-    can never fix those.
-  - Unknown addresses aren't validated — anything under the current
-    address root is accepted, stored, and echoed back generically. The one
-    exception is the crosspoint level, which drives real hardware (below).
-  - Crosspoints (Phase 5): '/<root>/set/inputMatrix/<in>_<out>/level <dB>'
-    sets the gain from input <in> to output <out> of the PL matrix. The
-    hardware has no bus layer yet, so "bus" = output for now. The rules are
-    the same with or without --hw, so the simulator behaves like the board:
-      * indices outside the matrix (--matrix-size, or the size the hardware
-        reports) are ignored: not stored, not echoed;
-      * a non-numeric level is ignored the same way;
-      * levels <= -90 dB mean off (hard zero); levels above the gain
-        ceiling (+6.02 dB for Q2.16) are clamped, and the echo carries the
-        clamped value, since the echo confirms what was applied;
-      * every crosspoint without a stored level is seeded at startup:
-        0 dB on the diagonal, -90 dB (off) elsewhere -- the routing the
-        bitstream resets to -- so a get always reports what is in effect.
-    With --hw the full matrix is written to the PL on startup (restored
-    state included), then each set is applied as it arrives.
-  - Zones and backends: each OSC zone that drives hardware is served by one
-    backend (a Backend subclass), listed in BACKENDS; one backend drives one
-    register window (mixer_hw.WINDOWS). A set goes to the backend for its
-    zone; zones with no backend are stored and echoed generically. A new core
-    block = a new window in mixer_hw + a new Backend + one BACKENDS entry.
+  - Address root (standard: "Mixer name and the /mixer/ alias"): the server
+    answers to its current name AND to the reserved alias 'mixer', on TCP
+    and UDP; any other root is logged and ignored. Everything it sends is
+    under its current name. A mixer never named is called 'mixer'.
+  - deviceName: the address root genuinely changes. The confirmation of an
+    accepted rename is broadcast under the OLD name, and every message after
+    that uses the NEW one; messages still addressed to the old name are
+    ignored (the alias keeps working). Name rules (name_problem): letters,
+    digits, '-', '_', '.', 1-63 bytes, not 'mixer'. A refused rename (or a
+    non-string value) is answered to the sender only with the name that
+    stands, then /<name>/error (D38); over UDP it's only logged. A stored
+    name that breaks the rules (older state files) loads as it is.
+  - TCP framing (--tcp-framing, one per port, rules in osc_codec.py):
+      * len32 (default): OSC 1.0 stream framing, a 4-byte big-endian size
+        before each packet; packets may be bundles, whose messages are
+        handled in order. A packet that doesn't decode (truncated, bad type
+        tag) is dropped on its own and the stream stays in step. An
+        impossible size (> 4 MB) loses the stream position, so the
+        connection is closed.
+      * none: the older unframed stream, messages back to back. A message
+        left truncated mid-argument (as osc_mixer_test.py's
+        truncated_argument_then_recovery test does) corrupts the parse of
+        whatever arrives after it; there is deliberately no timeout-based
+        reset. A malformed message (bad type tag, bad address) clears the
+        buffer, since more bytes can never fix it.
+    Every reply, echo and broadcast is framed the same way.
+  - UDP: one packet per datagram (a message or a bundle), never framed.
+  - Only what the mixer has is accepted (controller decision C2). The
+    parameter model (mixer_params.Model, built from each backend's
+    describe() plus SYSTEM_SETTINGS) decides; a set or get of anything else
+    -- unknown zone, index out of range, module not implemented there,
+    unknown setting -- is refused with an error reply. Values for such paths
+    already in an old state file stay in the file, untouched and unreachable.
+  - Error reply (amendment G): /<name>/error <path> <reason>, to the TCP
+    requester only, for every refused request: unknown path, a set without
+    a value, a value of the wrong kind, a read-only setting, an enum value
+    outside its options, an invalid deviceName. path is the request's tail,
+    normalised (no trailing slash; canonical index once it resolves).
+    Requests over UDP are never answered; refusals are logged.
+  - Values (mixer_params.ModuleSpec.apply, D37): numbers are clamped to the
+    module's range, bools snapped, ints rounded, non-finite numbers remapped
+    first (NaN, -inf -> -99.9; +inf -> +99.9); the echo carries the applied
+    value, rounded to float32. Clamping is not an error.
+  - Levels (Phase 5; the bus layer since Phase 12): the signal flow is
+    inputChannel -> inputMatrix -> busChannel -> busMatrix -> outputChannel.
+    '/<root>/set/inputMatrix/<in>_<bus>/level <dB>' sets the gain from
+    input <in> to bus <bus>; busMatrix/<bus>_<out> from bus to output;
+    inputChannel/<n>/level (and busChannel, outputChannel) a channel's
+    level. One 'level' module everywhere (level_module): -90 dB (off, hard
+    zero) to the gain ceiling read from the windows (+6.02 dB for Q2.16),
+    default off. The rules are the same with or without --hw, so the
+    simulator behaves like the board. At startup every parameter without a
+    stored level gets the reset state the bitstream has: matrices 0 dB on
+    the diagonal and off elsewhere (bus k -> output k, so a state file from
+    before Phase 12, whose inputMatrix was input -> output, sounds the same:
+    decision L3), channel levels 0 dB; stored levels outside the range are
+    brought inside it. With --hw every bank is written to the PL on startup
+    (restored state included), then each set is applied as it arrives. On a
+    bitstream without the bus-layer windows only inputMatrix is served, as
+    input -> output (build_backends).
+  - Zones and backends: each OSC zone is served by one backend (a Backend
+    subclass), listed in BACKENDS; one backend drives one register window
+    (mixer_hw.WINDOWS) and describes its own zone. A new core block = a new
+    window in mixer_hw + a new Backend + one BACKENDS entry; its description
+    comes with it.
+  - system: deviceName (string) and sampleRate (enum 48000, read-only).
+  - Config (amendment B, F1): '/<root>/get/system/config' is answered, to
+    the requester only, with '/<name>/set/system/config "<json>"' built by
+    mixer_params.Model.config from the backends' own descriptions:
+    schemaVersion 1, deviceName, firmware (firmware_version: VERSION from
+    the image, else git, else 'dev'), sampleRate, zones, modules, system,
+    and values (sparse: non-defaults, plus system/deviceName).
+  - Discovery (amendment E, F5): --advertise dnssd publishes
+    _studiorunner._tcp (instance = the mixer name; TXT name, v=1, framing)
+    through systemd-resolved (osc_discovery.py), at startup and after every
+    rename. The board service uses it; the default is none.
+  - Ping (amendment H, F7): '/<root>/ping <int>' -> '/<name>/pong <int>',
+    same token, to the sender (TCP only; UDP never replies).
+  - Metering (standard "Metering", F4; Phase 13): '/<root>/meter/subscribe
+    <port> <rateHz> <zoneMask>' over TCP (handle_meter_subscribe validates;
+    malformed -> error reply); the subscriptions, the 5 s lease and the UDP
+    stream to the TCP peer's address are mixer_meters.MeterHub's. The source
+    is the PL's three peak-meter windows with --hw (all or none: none on a
+    bitstream from before Phase 13), or with --meter-source synthetic a
+    simulated one that follows each channel's level (never with --hw). No
+    source: a subscribe is answered with an error reply. Meter sends never
+    take the control lock.
+  - Ordering (F3): ClientRegistry.lock is held while a change is applied,
+    stored and echoed, while any packet is sent, and while the config
+    snapshot is read and sent. Echoes therefore follow the store order, two
+    threads never write into one socket, and no broadcast falls between a
+    snapshot's read and its send. A controller that stops reading is dropped
+    after ClientRegistry.SEND_TIMEOUT (5 s) and its connection closed.
 
 Usage:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --mixer-name mixer
+    # older controllers that send unframed TCP:
+    python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --tcp-framing none
     # on the board (root), driving the PL matrix; mixer_hw.py must sit
     # next to this script:
     python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001 --hw
@@ -80,121 +133,37 @@ rather than overwritten, and SIGTERM writes anything pending before exiting.
 Default file: mixer_state.json in the working directory; the board service
 uses /var/lib/fpgamixer/mixer_state.json. --state-file '' disables it.
 
-On the wire, before a value reaches the store: non-finite floats are
-remapped (NaN, -inf -> -99.9; +inf -> +99.9, and the echo confirms the
-remapped value), and a set whose path can't fit the tree (a value where a
-branch is, or the reverse; an empty segment) is ignored: not stored, not
-echoed, logged. A get on a missing path or a branch replies 0.0.
+Every stored path is canonical and every stored value has passed its
+module's rules, so it is finite. A set whose path can't fit the tree (only
+possible with a hand-edited state file: a value where a branch is) is
+refused with an error reply.
 --mixer-name is only the default for a state file without a name.
 """
 
 import argparse
+import json
 import math
 import os
+import re
 import signal
 import socket
-import struct
 import sys
 import threading
-import time
-from dataclasses import dataclass, field
 
-
-# ---------------------------------------------------------------------------
-# OSC wire format (identical to osc_mixer_test.py)
-# ---------------------------------------------------------------------------
-
-class OSCIncomplete(Exception):
-    """Buffer doesn't yet hold a complete field. Caller should read more bytes."""
-
-
-class OSCMalformed(Exception):
-    """Buffer holds bytes that are not valid OSC. More bytes won't fix it."""
-
-
-def osc_string(s: str) -> bytes:
-    b = s.encode("ascii") + b"\x00"
-    pad = (-len(b)) % 4
-    return b + b"\x00" * pad
-
-
-def read_osc_string(data: bytes, offset: int):
-    if offset > len(data):
-        raise OSCIncomplete()
-    idx = data.find(b"\x00", offset)
-    if idx == -1:
-        if len(data) - offset > 1024:
-            raise OSCMalformed(f"no NUL terminator within 1024 bytes of offset {offset}")
-        raise OSCIncomplete()
-    length = idx - offset + 1
-    total = ((length + 3) // 4) * 4
-    if offset + total > len(data):
-        raise OSCIncomplete()
-    s = data[offset:idx].decode("ascii", errors="replace")
-    return s, offset + total
-
-
-@dataclass
-class OSCMessage:
-    address: str
-    args: list = field(default_factory=list)
-
-    def __repr__(self):
-        return f"OSCMessage({self.address!r}, {self.args!r})"
-
-
-def encode_message(address: str, args=()) -> bytes:
-    type_tags = ","
-    arg_bytes = b""
-    for a in args:
-        if isinstance(a, bool):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", int(a))
-        elif isinstance(a, float):
-            type_tags += "f"
-            arg_bytes += struct.pack(">f", a)
-        elif isinstance(a, int):
-            type_tags += "i"
-            arg_bytes += struct.pack(">i", a)
-        elif isinstance(a, str):
-            type_tags += "s"
-            arg_bytes += osc_string(a)
-        else:
-            raise TypeError(f"unsupported OSC arg type: {type(a)!r}")
-    return osc_string(address) + osc_string(type_tags) + arg_bytes
-
-
-def decode_message(data: bytes, offset: int = 0):
-    start = offset
-    address, offset = read_osc_string(data, offset)
-    if not address.startswith("/"):
-        raise OSCMalformed(f"address does not start with '/': {address!r}")
-    type_tag_str, offset = read_osc_string(data, offset)
-    if not type_tag_str.startswith(","):
-        raise OSCMalformed(f"type-tag string does not start with ',': {type_tag_str!r}")
-    args = []
-    for tag in type_tag_str[1:]:
-        if tag in ("f", "i"):
-            if offset + 4 > len(data):
-                raise OSCIncomplete()
-            (val,) = struct.unpack_from(">f" if tag == "f" else ">i", data, offset)
-            args.append(val)
-            offset += 4
-        elif tag == "s":
-            s, offset = read_osc_string(data, offset)
-            args.append(s)
-        else:
-            raise OSCMalformed(f"unsupported type tag {tag!r} in {type_tag_str!r}")
-    return OSCMessage(address, args), offset - start
+from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
+                       encode_message, decode_packet, make_framer)
 
 
 # ---------------------------------------------------------------------------
 # Logging + the parameter store (mixer_state.py)
 # ---------------------------------------------------------------------------
 
-from mixer_state import MixerState, split_path, is_device_name, finite_value  # noqa: E402
+from mixer_state import MixerState, split_path, is_device_name  # noqa: E402
+from mixer_params import Model, ModuleSpec, Refused, ZoneSpec, float32  # noqa: E402
+from osc_discovery import DNSSD_FILE, DNSSD_RELOAD, NoAdvertiser, make_advertiser  # noqa: E402
+import mixer_meters  # noqa: E402
 
-DEVICE_NAME_KEY = "system/deviceName/"  # mirrors the doc's own literal example format
+DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
 VERBOSE = False
 
@@ -209,13 +178,43 @@ def log(msg):
 
 
 class ClientRegistry:
-    """Connected TCP controller sockets, for broadcasting set/echo/sync messages."""
+    """Connected TCP controller sockets, and the server's ORDERING LOCK.
 
-    def __init__(self):
-        self.lock = threading.Lock()
+    Every TCP send goes through here (send() or broadcast()), framed with the
+    port's framing (--tcp-framing), and happens while holding self.lock. Every
+    change (apply, store, broadcast: apply_set, the rename) and every config
+    snapshot (reply_config) also runs under it. So:
+      - the echoes of two changes go out in the order the changes were stored,
+        never the reverse;
+      - two threads never write into one socket at once;
+      - no broadcast can fall between reading the state for a snapshot and
+        sending it (contract F3: everything after the snapshot is newer).
+    The lock is re-entrant, so code holding it can call send/broadcast.
+
+    The price: a controller that stops reading holds everyone up, for at most
+    SEND_TIMEOUT; then it is dropped and its connection closed (it reconnects
+    and resyncs from a new snapshot)."""
+
+    SEND_TIMEOUT = 5.0
+
+    def __init__(self, framing=DEFAULT_FRAMING):
+        self.lock = threading.RLock()
         self.clients = set()
+        self.framing = framing
+        self.frame = make_framer(framing).frame
+
+    def send(self, sock, packet: bytes):
+        """One packet to one controller (get replies, errors, the snapshot).
+        A failure drops and closes that controller, then raises."""
+        with self.lock:
+            try:
+                sock.sendall(self.frame(packet))
+            except OSError:
+                self._drop(sock)
+                raise
 
     def add(self, sock):
+        sock.settimeout(self.SEND_TIMEOUT)   # bounds a stalled send (and paces the reader's recv)
         with self.lock:
             self.clients.add(sock)
 
@@ -223,202 +222,445 @@ class ClientRegistry:
         with self.lock:
             self.clients.discard(sock)
 
-    def broadcast(self, data: bytes):
+    def _drop(self, sock):
+        """Forget a controller whose send failed and close its connection, so
+        its reader thread ends instead of serving a client that no longer
+        gets broadcasts (a timed-out sendall may have left half a packet)."""
+        self.clients.discard(sock)
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def broadcast(self, packet: bytes):
+        data = self.frame(packet)
         with self.lock:
-            targets = list(self.clients)
-        dead = []
-        for sock in targets:
-            try:
-                sock.sendall(data)
-            except OSError:
-                dead.append(sock)
-        if dead:
-            with self.lock:
-                for sock in dead:
-                    self.clients.discard(sock)
+            for sock in list(self.clients):
+                try:
+                    sock.sendall(data)
+                except OSError:
+                    self._drop(sock)
 
 
 # ---------------------------------------------------------------------------
 # Protocol handling (shared by TCP and UDP paths)
 # ---------------------------------------------------------------------------
 
+ALIAS = "mixer"            # the reserved address root every mixer answers to
+NAME_MAX_BYTES = 63         # a Bonjour label
+_NAME_CHARS = re.compile(r"[A-Za-z0-9._-]+")
+
+
 def split_after_mixer_name(address, mixer_name):
-    """('set'|'get', 'zone/index/module...') or (None, None) if the address
-    isn't under the currently-active root."""
-    prefix = f"/{mixer_name}/"
-    if not address.startswith(prefix):
+    """(kind, tail) for '/<root>/<kind>/<tail>' when <root> is the current
+    name or the alias; (None, None) for any other root. kind is 'set',
+    'get', ...; tail is everything after it (may be empty)."""
+    root, sep, rest = address[1:].partition("/") if address.startswith("/") else ("", "", "")
+    if not sep or root not in (mixer_name, ALIAS):
         return None, None
-    rest = address[len(prefix):]
     kind, _, tail = rest.partition("/")
     return kind, tail
 
 
+def name_problem(name):
+    """Why `name` can't be the mixer name (standard: "Mixer name and the
+    /mixer/ alias"), or None if it can. 'mixer' is the factory name, which a
+    mixer may have but can't be renamed to."""
+    if not isinstance(name, str):
+        return "the name must be a string"
+    if not name:
+        return "the name can't be empty"
+    if len(name.encode("utf-8")) > NAME_MAX_BYTES:
+        return f"the name can be at most {NAME_MAX_BYTES} bytes"
+    if name == ALIAS:
+        return f"'{ALIAS}' is reserved"
+    if not _NAME_CHARS.fullmatch(name):
+        return "use only letters, digits, '-', '_' and '.'"
+    return None
+
+
+def send_error(reply, state, path, reason, via):
+    """Amendment G: tell the requester why its request was refused. reply is
+    the requester's send function (TCP), or None (UDP: logged only, since UDP
+    never replies)."""
+    log(f"    [{via}] refused {path}: {reason}")
+    if reply is not None:
+        reply(encode_message(f"/{state.mixer_name}/error", [path, reason]))
+
+
 # ---------------------------------------------------------------------------
-# Crosspoint levels -> matrix (hardware, or simulated with the same rules)
+# Levels -> matrices and gain stages (hardware, or simulated with the same rules)
 # ---------------------------------------------------------------------------
 
 MATRIX_ZONE = "inputMatrix"
+BUS_MATRIX_ZONE = "busMatrix"
+LEVEL_ZONES = ("inputChannel", "busChannel", "outputChannel")
 OFF_DB = -90.0            # mirrors mixer_hw.OFF_DB
 SIM_MAX_DB = 20.0 * math.log10(((1 << 17) - 1) / (1 << 16))  # Q2.16 ceiling
 
 
+def level_module(max_db):
+    """The one 'level' module (controller D77): float dB, -90 (off) to the
+    hardware ceiling, default off. Every zone describes it through this, so
+    matrices and channels can't drift apart (the model refuses a module two
+    zones describe differently)."""
+    return ModuleSpec("float", unit="dB", min=OFF_DB, max=float32(max_db),
+                      default=OFF_DB, group="level")
+
+
 class Backend:
-    """Serves one OSC zone. apply() gets the path below the zone (e.g.
-    ('0_1', 'level')) and returns (accepted, value_to_store_and_echo); a
-    backend may ignore paths it doesn't drive by accepting them unchanged.
-    seed_and_push() runs once at startup, after the state file is loaded."""
+    """Serves one OSC zone.
+
+      describe()  -> (ZoneSpec, {module: ModuleSpec}): the zone's shape and
+                     its modules' metadata. This is the only description of
+                     the zone: the server validates against it and the config
+                     reply is built from it (mixer_params).
+      apply(index, module, value) -> the value actually applied. Called only
+                     with a canonical index the zone has, a module it lists,
+                     and a value the module's rules already accepted (clamped,
+                     snapped); the backend drives its hardware and may report
+                     a further-adjusted value.
+      seed_and_push(state) runs once at startup, after the state file loaded.
+    """
 
     def __init__(self, zone):
         self.zone = zone
 
-    def apply(self, rest, value, via):
-        return True, value
+    def describe(self):
+        raise NotImplementedError
+
+    def apply(self, index, module, value):
+        return value
 
     def seed_and_push(self, state):
         pass
 
 
-class MatrixBackend(Backend):
-    """<zone>/<in>_<out>/level -> one pcm_matrix. With hw (a mixer_hw.MatrixHW)
-    the level goes to the PL; with hw None it is only validated and clamped
-    the same way (simulator)."""
+def q_ceiling_db(width, frac):
+    """The largest gain a signed fixed-point Q<width-frac>.<frac> holds, in dB."""
+    return 20.0 * math.log10(((1 << (width - 1)) - 1) / (1 << frac))
 
-    def __init__(self, zone, hw, n_in, n_out):
+
+class MatrixBackend(Backend):
+    """<zone>/<src>_<dst>/level -> one pcm_matrix (inputMatrix: input -> bus;
+    busMatrix: bus -> output). With hw (a mixer_hw.MatrixHW) the level goes to
+    the PL; with hw None the same rules run without it (simulator). Levels:
+    -90 dB (off) to the gain ceiling, default off; at startup crosspoints
+    without a stored level get the reset routing (0 dB on the diagonal)."""
+
+    def __init__(self, zone, hw, n_in, n_out, max_db=SIM_MAX_DB):
         super().__init__(zone)
         self.hw = hw
         self.n_in = n_in
         self.n_out = n_out
+        self.level = level_module(max_db)
+
+    def describe(self):
+        return (ZoneSpec("matrix", ("level",), rows=self.n_in, cols=self.n_out),
+                {"level": self.level})
 
     def crosspoint_key(self, inp, out):
         return f"{self.zone}/{inp}_{out}/level"
 
-    @staticmethod
-    def parse(rest):
-        """(in, out) if rest is ('<in>_<out>', 'level'), else None."""
-        if len(rest) != 2 or rest[1] != "level":
-            return None
-        a, sep, b = rest[0].partition("_")
-        if not (sep and a.isdigit() and b.isdigit()):
-            return None
-        return int(a), int(b)
-
-    def apply(self, rest, value, via):
-        xp = self.parse(rest)
-        if xp is None:
-            return True, value  # e.g. .../delay: no hardware yet, generic store/echo
-        inp, out = xp
-        if not (0 <= inp < self.n_in and 0 <= out < self.n_out):
-            log(f"    [{via}] crosspoint {inp}_{out} outside the "
-                f"{self.n_in}x{self.n_out} matrix, ignored")
-            return False, value
-        if isinstance(value, (str, bool)):
-            log(f"    [{via}] non-numeric level {value!r} for "
-                f"{self.crosspoint_key(inp, out)}, ignored")
-            return False, value
-        db = float(value)  # finite: apply_set remaps NaN/inf first
+    def apply(self, index, module, value):
+        inp, out = (int(x) for x in index.split("_"))
         if self.hw is not None:
-            applied = self.hw.set_db(out, inp, db)
-        else:
-            applied = min(db, SIM_MAX_DB)
-        return True, applied
+            return float32(self.hw.set_db(out, inp, value))
+        return value
 
     def seed_and_push(self, state):
-        """Fill in missing crosspoints with the reset routing, then (hw) push
-        the whole bank in one commit."""
+        """Fill in missing crosspoints with the reset routing, bring stored
+        levels inside the rules (e.g. -99.9 or -120 from older servers become
+        -90), then (hw) push the whole bank in one commit."""
         levels = {}
         seeded = {}
+        normalised = 0
         for inp in range(self.n_in):
             for out in range(self.n_out):
                 key = self.crosspoint_key(inp, out)
-                db = state.get(key, default=None)
-                if isinstance(db, (int, float)) and not isinstance(db, bool):
-                    db = float(db)
-                else:
+                stored = state.get(key, default=None)
+                db, why = self.level.apply(stored) if stored is not None else (None, "missing")
+                if db is None:
                     db = 0.0 if inp == out else OFF_DB
                     seeded[key] = db
+                elif db != stored:
+                    seeded[key] = db
+                    normalised += 1
                 levels[(out, inp)] = db
         if seeded:
             for tail, why in state.set_many(seeded).items():
                 log(f"    could not seed {tail}: {why}")
+        if normalised:
+            log(f"    {normalised} stored {self.zone} level(s) brought inside "
+                f"{self.level.min}..{self.level.max} dB")
         if self.hw is not None:
             self.hw.set_bank_db(levels)
             log(f"Pushed {len(levels)} {self.zone} level(s) to the PL "
                 f"({self.hw.status()})")
 
 
+class GainBackend(Backend):
+    """<zone>/<channel>/level -> one pcm_gain (Phase 12: inputChannel,
+    busChannel, outputChannel). With hw (a mixer_hw.GainHW) the level goes to
+    the PL; with hw None the same rules run without it (simulator). The
+    module is the shared 'level' (default off, D77), so at startup every
+    channel without a stored level is seeded at 0 dB (unity, decision L7: the
+    gain stage's reset), the way the matrix seeds its diagonal; the config
+    then lists those levels explicitly."""
+
+    def __init__(self, zone, hw, n, max_db=SIM_MAX_DB):
+        super().__init__(zone)
+        self.hw = hw
+        self.n = n
+        self.level = level_module(max_db)
+
+    def describe(self):
+        return ZoneSpec("channels", ("level",), count=self.n), {"level": self.level}
+
+    def level_key(self, ch):
+        return f"{self.zone}/{ch}/level"
+
+    def apply(self, index, module, value):
+        if self.hw is not None:
+            return float32(self.hw.set_db(int(index), value))
+        return value
+
+    def seed_and_push(self, state):
+        """Fill in missing levels with 0 dB, bring stored ones inside the
+        rules, then (hw) push the whole bank in one commit."""
+        levels, seeded, normalised = {}, {}, 0
+        for ch in range(self.n):
+            key = self.level_key(ch)
+            stored = state.get(key, default=None)
+            db, why = self.level.apply(stored) if stored is not None else (None, "missing")
+            if db is None:
+                db = 0.0
+                seeded[key] = db
+            elif db != stored:
+                seeded[key] = db
+                normalised += 1
+            levels[ch] = db
+        if seeded:
+            for tail, why in state.set_many(seeded).items():
+                log(f"    could not seed {tail}: {why}")
+        if normalised:
+            log(f"    {normalised} stored {self.zone} level(s) brought inside "
+                f"{self.level.min}..{self.level.max} dB")
+        if self.hw is not None:
+            self.hw.set_bank_db(levels)
+            log(f"Pushed {len(levels)} {self.zone} level(s) to the PL ({self.hw.status()})")
+
+
 BACKENDS = {}  # zone -> Backend, filled in main()
 
 
-def build_backends(use_hw, matrix_size):
+def build_backends(use_hw, matrix_size, bus_layer=True):
     """The zone -> backend table. With use_hw each backend opens its register
-    window (mixer_hw.WINDOWS, checked by ID); without, the same backends run
-    in simulation with the given sizes."""
-    if use_hw:
-        import mixer_hw  # next to this script; needs /dev/mem
-        m = mixer_hw.open_window("matrix")
-        log(f"PL window 'matrix' at 0x{m.base:08x}: {m.describe()}")
-        backends = [MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out)]
-    else:
-        backends = [MatrixBackend(MATRIX_ZONE, None, matrix_size, matrix_size)]
+    window (mixer_hw.WINDOWS, checked by ID; the level windows also by TAP);
+    without, the same backends run in simulation with the given size
+    (bus_layer False: as a bitstream from before Phase 12).
+
+    The bus layer (Phase 12): inputChannel -> inputMatrix -> busChannel ->
+    busMatrix -> outputChannel. Its four windows are present together or not
+    at all; on an older bitstream (none present) only inputMatrix is served,
+    and there it is still input -> output. A partial set, or sizes that don't
+    chain, is refused: the hardware isn't what this server describes."""
+    if not use_hw:
+        n = matrix_size
+        if not bus_layer:
+            return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, None, n, n)}
+        backends = [GainBackend("inputChannel", None, n), MatrixBackend(MATRIX_ZONE, None, n, n),
+                    GainBackend("busChannel", None, n), MatrixBackend(BUS_MATRIX_ZONE, None, n, n),
+                    GainBackend("outputChannel", None, n)]
+        return {b.zone: b for b in backends}
+
+    import mixer_hw  # next to this script; needs /dev/mem
+    m = mixer_hw.open_window("matrix")
+    log(f"PL window 'matrix' at 0x{m.base:08x}: {m.describe()}")
+    max_db = q_ceiling_db(m.gain_width, m.gain_frac)
+    found = {}
+    for name in mixer_hw.BUS_LAYER:
+        try:
+            found[name] = mixer_hw.open_window(name)
+        except mixer_hw.WindowAbsent:
+            continue
+        log(f"PL window '{name}' at 0x{found[name].base:08x}: {found[name].describe()}")
+    if not found:
+        log("No bus-layer windows (a bitstream from before Phase 12): inputMatrix is input -> output")
+        return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db)}
+    missing = [name for name in mixer_hw.BUS_LAYER if name not in found]
+    if missing:
+        raise RuntimeError(f"bus layer incomplete: no window {', '.join(missing)}")
+    bm, il, bl, ol = (found[name] for name in mixer_hw.BUS_LAYER)
+    chain = ((il.n, m.n_in, "input levels / input matrix inputs"),
+             (m.n_out, bm.n_in, "input matrix outputs / bus matrix inputs"),
+             (bl.n, bm.n_in, "bus levels / buses"),
+             (ol.n, bm.n_out, "output levels / bus matrix outputs"))
+    for a, b, what in chain:
+        if a != b:
+            raise RuntimeError(f"bus layer doesn't chain: {what} = {a} / {b}")
+    for w in (bm, il, bl, ol):
+        if (w.gain_width, w.gain_frac) != (m.gain_width, m.gain_frac):
+            raise RuntimeError(f"window at 0x{w.base:08x}: Q{w.gain_width - w.gain_frac}."
+                               f"{w.gain_frac}, the input matrix is Q{m.gain_width - m.gain_frac}."
+                               f"{m.gain_frac} ('level' is one module, D77)")
+    backends = [GainBackend("inputChannel", il, il.n, max_db=max_db),
+                MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db),
+                GainBackend("busChannel", bl, bl.n, max_db=max_db),
+                MatrixBackend(BUS_MATRIX_ZONE, bm, bm.n_in, bm.n_out, max_db=max_db),
+                GainBackend("outputChannel", ol, ol.n, max_db=max_db)]
     return {b.zone: b for b in backends}
 
 
-def apply_set(tail, value, state, registry, via):
-    """The one path every set takes (TCP and UDP): check the value fits the
-    state tree, hand it to its zone's backend (if the zone has one), store,
-    then broadcast the confirmation."""
-    why = state.check(tail)
+# The system zone's settings (standard: "The system zone"). deviceName is
+# handled by the rename path; a read-only setting's value is its default.
+# 'config' is a request, not a setting (handle_get -> reply_config).
+SAMPLE_RATE = 48000      # nominal; the core runs on mclk (roadmap section 4)
+SYSTEM_SETTINGS = {
+    "deviceName": ModuleSpec("string", default=ALIAS),
+    "sampleRate": ModuleSpec("enum", unit="Hz", options=(SAMPLE_RATE,), default=SAMPLE_RATE,
+                             read_only=True),
+}
+CONFIG_PATH = "system/config"
+
+
+def firmware_version(here=os.path.dirname(os.path.abspath(__file__))):
+    """The config's 'firmware': the commit this server was built from.
+    On the board: VERSION next to this file, installed by the fpgamixer-osc
+    recipe from the .synced-from that scripts/sync_buildhost.sh writes (the
+    commit, '-dirty' if the tree had changes). In a checkout: git. Else 'dev'."""
+    try:
+        with open(os.path.join(here, "VERSION")) as f:
+            version = f.read().strip()
+        if version:
+            return version
+    except OSError:
+        pass
+    try:
+        import subprocess    # here, not at the top: only a checkout needs it
+        rev = subprocess.run(["git", "describe", "--always", "--dirty"], cwd=here,
+                             capture_output=True, text=True, timeout=5)
+        if rev.returncode == 0 and rev.stdout.strip():
+            return rev.stdout.strip()
+    except Exception:        # no git, no subprocess module, a timeout: a version is never fatal
+        pass
+    return "dev"
+
+
+FIRMWARE = "dev"     # set once in main()
+ADVERTISER = NoAdvertiser()   # discovery (osc_discovery); set in main() from --advertise
+
+
+def reply_config(state, registry, reply_sock, via):
+    """The config reply (amendment B), to the requester only. The state is
+    read and the reply sent while holding the ordering lock, so no broadcast
+    falls between them (contract F3): any set the controller receives after
+    the snapshot is newer than it."""
+    with registry.lock:
+        body = MODEL.config(state.mixer_name, FIRMWARE, SAMPLE_RATE,
+                            lambda p: current_value(p, state))
+        text = json.dumps(body, separators=(",", ":"), allow_nan=False)
+        registry.send(reply_sock, encode_message(f"/{state.mixer_name}/set/{CONFIG_PATH}", [text]))
+    log(f"    [{via}] config sent ({len(text)} bytes, {len(body['values'])} value(s))")
+
+MODEL = Model()  # what the mixer has: filled from BACKENDS in main() (build_model)
+
+
+def build_model(backends, system_settings):
+    """The parameter model from each backend's own description."""
+    model = Model(system=dict(system_settings))
+    for backend in backends.values():
+        zone_spec, modules = backend.describe()
+        model.add_zone(backend.zone, zone_spec, modules)
+    return model
+
+
+def current_value(param, state):
+    """A parameter's value: stored, else its module's default (state is
+    sparse: never-set parameters of a new zone aren't in the file). A
+    read-only setting is never stored, so its value is its default."""
+    if param.path == "system/deviceName":
+        return state.mixer_name
+    value = state.get(param.path, default=None)
+    return param.spec.default_value() if value is None else value
+
+
+def apply_set(tail, value, state, registry, reply, via):
+    """The one path every set takes (TCP and UDP): resolve the path against
+    the model, apply the module's value rules, hand the value to its zone's
+    backend, store, then broadcast the confirmation (the echo). Any refusal
+    goes back to the requester as an error reply (amendment G); clamping is
+    not a refusal."""
+    try:
+        param = MODEL.resolve(tail)
+    except Refused as r:
+        return send_error(reply, state, r.path, r.reason, via)
+    if param.spec.read_only:
+        return send_error(reply, state, param.path, f"{param.path} is read-only", via)
+    applied, why = param.spec.apply(value)
     if why is not None:
-        log(f"    [{via}] set {tail!r} ignored: {why}")
-        return
-    remapped = finite_value(value)
-    if remapped is not value:
-        log(f"    [{via}] {tail}: non-finite {value!r} remapped to {remapped}")
-        value = remapped
-    path = split_path(tail)
-    backend = BACKENDS.get(path[0])
-    if backend is not None:
-        accepted, value = backend.apply(path[1:], value, via)
-        if not accepted:
-            return
-    state.set(tail, value)
+        return send_error(reply, state, param.path, why, via)
+    conflict = state.check(param.path)
+    if conflict is not None:     # only an old, hand-edited state file can do this
+        return send_error(reply, state, param.path, f"can't store: {conflict}", via)
+    backend = BACKENDS.get(param.zone)
+    with registry.lock:          # apply, store and echo as one step (ClientRegistry)
+        if backend is not None:
+            applied = backend.apply(param.index, param.module, applied)
+        state.set(param.path, applied)
+        registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
     if VERBOSE:
-        log(f"    [{via}] SET {tail} = {value!r}")
-    registry.broadcast(encode_message(f"/{state.mixer_name}/set/{tail}", [value]))
+        log(f"    [{via}] SET {param.path} = {applied!r}")
 
 
-def handle_devicename_change(new_name, state, registry, via):
-    old_name = state.mixer_name
-    confirm_addr = f"/{old_name}/set/{DEVICE_NAME_KEY}"
-    registry.broadcast(encode_message(confirm_addr, [new_name]))
-    state.rename(new_name)
+def handle_devicename_change(new_name, state, registry, reply, via):
+    """A rename. Accepted: broadcast under the old name, then the new name
+    applies (the alias keeps working). Refused (D33 rules): the sender alone
+    gets the name that stands, then an error reply (D38); nobody else hears
+    anything."""
+    with registry.lock:          # the name read, the confirmation and the rename are one step
+        old_name = state.mixer_name
+        why = name_problem(new_name)
+        if why is not None:
+            if reply is not None:
+                reply(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [old_name]))
+            send_error(reply, state, DEVICE_NAME_KEY, why, via)
+            return
+        registry.broadcast(encode_message(f"/{old_name}/set/{DEVICE_NAME_KEY}", [new_name]))
+        state.rename(new_name)
+    ADVERTISER.advertise(new_name)   # outside the lock: may write a file and restart a service
     log(f"    *** [{via}] device name changed: {old_name!r} -> {new_name!r}. "
-          f"Address root is now /{new_name}/ — messages under /{old_name}/ will be ignored. ***")
+          f"Address root is now /{new_name}/ (and /{ALIAS}/); /{old_name}/ is ignored. ***")
 
 
-def handle_set(tail, args, state, registry, via):
+def handle_set(tail, args, state, registry, reply, via):
+    """Every set, TCP and UDP. reply sends to the requester (TCP), or is None
+    (UDP, which never replies)."""
     if not args:
-        log(f"    [{via}] set with no value for {tail!r}, ignoring")
-        return
+        path = "/".join(split_path(tail) or ())
+        return send_error(reply, state, path, "set needs a value", via)
     if len(args) > 1:
         log(f"    [{via}] set for {tail!r} carried {len(args)} args, using the first")
     value = args[0]
 
     if is_device_name(tail):
-        if isinstance(value, str):
-            handle_devicename_change(value, state, registry, via)
-        else:
-            log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
+        handle_devicename_change(value, state, registry, reply, via)
         return
 
-    apply_set(tail, value, state, registry, via)
+    apply_set(tail, value, state, registry, reply, via)
 
 
-def handle_get(tail, state, reply_sock, via):
-    value = state.get(tail, default=0.0)
+def handle_get(tail, state, reply, via):
+    """A get: the value as a set, to the requester only; an unknown path is
+    an error reply (no more 0.0 for a parameter the mixer doesn't have)."""
+    try:
+        param = MODEL.resolve(tail)
+    except Refused as r:
+        return send_error(reply, state, r.path, r.reason, via)
+    value = current_value(param, state)
     if VERBOSE:
-        log(f"    [{via}] GET {tail} -> {value!r}")
-    reply_sock.sendall(encode_message(f"/{state.mixer_name}/set/{tail}", [value]))
+        log(f"    [{via}] GET {param.path} -> {value!r}")
+    reply(encode_message(f"/{state.mixer_name}/set/{param.path}", [value]))
 
 
 def handle_tcp_message(msg, state, registry, reply_sock, via):
@@ -427,12 +669,78 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
         log(f"    [{via}] ignoring message under unknown root: {msg.address!r} "
               f"(currently listening as {state.mixer_name!r})")
         return
+    reply = lambda packet: registry.send(reply_sock, packet)  # noqa: E731
     if kind == "set":
-        handle_set(tail, msg.args, state, registry, via)
+        handle_set(tail, msg.args, state, registry, reply, via)
+    elif kind == "get" and "/".join(split_path(tail) or ()) == CONFIG_PATH:
+        reply_config(state, registry, reply_sock, via)
     elif kind == "get":
-        handle_get(tail, state, reply_sock, via)
+        handle_get(tail, state, reply, via)
+    elif kind == "ping" and not tail:
+        handle_ping(msg.args, state, reply, via)
+    elif kind == "meter" and "/".join(split_path(tail) or ()) == "subscribe":
+        handle_meter_subscribe(msg.args, state, reply, reply_sock, via)
     else:
         log(f"    [{via}] ignoring unknown command kind {kind!r} in {msg.address!r}")
+
+
+def handle_ping(args, state, reply, via):
+    """Amendment H (F7): /<name>/ping <token:int> -> /<name>/pong <token:int>,
+    the same token, to the sender. Anything but one int token is ignored, as
+    the mock does (a ping is optional; no error reply)."""
+    if len(args) != 1 or not isinstance(args[0], int) or isinstance(args[0], bool):
+        log(f"    [{via}] ping without one int token {args!r}; ignored")
+        return
+    reply(encode_message(f"/{state.mixer_name}/pong", [args[0]]))
+
+
+METER_PATH = "meter/subscribe"
+METER_HUB = None   # mixer_meters.MeterHub, or None: this mixer has no meters (main)
+
+
+def handle_meter_subscribe(args, state, reply, conn, via):
+    """Standard "Metering" (F4): /<name>/meter/subscribe <port> <rateHz>
+    <zoneMask>, three integers (OSC i, or f with an integral value); port
+    1..65535; rate clamped 1..120; mask bits for zones the mixer doesn't meter
+    are ignored; mask 0 unsubscribes. The stream goes to the TCP peer's address.
+    Anything else is refused with an error reply (TCP only: UDP never gets
+    here)."""
+    def as_int(v):
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float) and math.isfinite(v) and v.is_integer():
+            return int(v)
+        return None
+
+    if METER_HUB is None:
+        return send_error(reply, state, METER_PATH, "this mixer has no meters", via)
+    ints = [as_int(v) for v in args]
+    if len(args) != 3 or any(v is None for v in ints):
+        return send_error(reply, state, METER_PATH,
+                          "needs three integers: port, rateHz, zoneMask", via)
+    port, rate, mask = ints
+    if not 1 <= port <= 65535:
+        return send_error(reply, state, METER_PATH, f"port {port} outside 1..65535", via)
+    rate = max(mixer_meters.RATE_MIN, min(mixer_meters.RATE_MAX, rate))
+    try:
+        ip = conn.getpeername()[0]
+    except OSError:
+        return
+    METER_HUB.subscribe(conn, ip, port, rate, mixer_meters.zones_from_mask(mask, METER_HUB.available))
+
+
+def handle_packet(packet, state, registry, reply_sock, via):
+    """One TCP packet: a message, or a bundle whose messages run in order.
+    A packet that doesn't decode is dropped whole; nothing in it runs."""
+    try:
+        messages = decode_packet(packet)
+    except OSCMalformed as e:
+        log(f"    [{via}] malformed OSC packet ({e}); dropped {len(packet)} byte(s)")
+        return
+    for msg in messages:
+        handle_tcp_message(msg, state, registry, reply_sock, via)
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +750,9 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
 def handle_tcp_client(conn, addr, state, registry):
     via = f"TCP {addr[0]}:{addr[1]}"
     log(f"[+] {via} connected")   # already in the registry (tcp_accept_loop)
-    buffer = b""
-    conn.settimeout(120.0)  # only to reap a truly dead/idle connection eventually
+    framer = make_framer(registry.framing)
+    # The socket's timeout is the registry's send bound (ClientRegistry.add);
+    # a recv that times out just waits again: an idle controller is fine.
     try:
         while True:
             try:
@@ -452,22 +761,24 @@ def handle_tcp_client(conn, addr, state, registry):
                 continue
             if not chunk:
                 break  # client closed
-            buffer += chunk
-            while True:
-                try:
-                    msg, consumed = decode_message(buffer)
-                except OSCIncomplete:
-                    break  # wait for more bytes
-                except OSCMalformed as e:
-                    log(f"    [{via}] malformed OSC ({e}); dropping {len(buffer)} buffered byte(s)")
-                    buffer = b""
-                    break
-                buffer = buffer[consumed:]
-                handle_tcp_message(msg, state, registry, conn, via)
+            unframed_error = None
+            try:
+                packets = framer.push(chunk)
+            except OSCMalformed as e:   # unframed only: the buffer was cleared
+                packets, unframed_error = e.packets, e
+            except FramingLost as e:    # len32 only: stream position lost
+                log(f"    [{via}] {e}; closing the connection")
+                break
+            for packet in packets:
+                handle_packet(packet, state, registry, conn, via)
+            if unframed_error is not None:
+                log(f"    [{via}] malformed OSC ({unframed_error}); dropped the buffered bytes")
     except (ConnectionResetError, OSError) as e:
         log(f"    [{via}] connection error: {e}")
     finally:
         registry.remove(conn)
+        if METER_HUB is not None:
+            METER_HUB.drop(conn)     # "Closing the TCP connection ends the subscription"
         try:
             conn.close()
         except OSError:
@@ -503,46 +814,70 @@ def udp_serve(host, port, state, registry):
     log(f"UDP OSC server listening on {host}:{port}")
     while True:
         try:
-            data, addr = sock.recvfrom(4096)
+            data, addr = sock.recvfrom(65535)
         except OSError:
             break
         via = f"UDP {addr[0]}:{addr[1]}"
         try:
-            msg, consumed = decode_message(data)
-        except (OSCIncomplete, OSCMalformed) as e:
+            messages = decode_packet(data)   # a message or a bundle; nothing else
+        except OSCMalformed as e:
             log(f"    [{via}] malformed datagram, ignoring: {e}")
             continue
-        if consumed < len(data):
-            log(f"    [{via}] {len(data) - consumed} trailing byte(s) after the first "
-                  f"message in this datagram — ignored (no bundle/multi-message support)")
+        for msg in messages:
+            handle_udp_message(msg, state, registry, via)
 
-        kind, tail = split_after_mixer_name(msg.address, state.mixer_name)
-        if kind is None:
-            log(f"    [{via}] ignoring message under unknown root: {msg.address!r}")
-            continue
-        if kind != "set":
-            log(f"    [{via}] ignoring non-set command over UDP (write-only): {msg.address!r}")
-            continue
-        if not msg.args:
-            continue
-        value = msg.args[0]
 
-        if is_device_name(tail):
-            if isinstance(value, str):
-                handle_devicename_change(value, state, registry, via)
-            else:
-                log(f"    [{via}] deviceName must be a string, got {value!r}; ignored")
-            continue
-
-        apply_set(tail, value, state, registry, via)
+def handle_udp_message(msg, state, registry, via):
+    kind, tail = split_after_mixer_name(msg.address, state.mixer_name)
+    if kind is None:
+        log(f"    [{via}] ignoring message under unknown root: {msg.address!r}")
+        return
+    if kind != "set":
+        log(f"    [{via}] ignoring non-set command over UDP (write-only): {msg.address!r}")
+        return
+    handle_set(tail, msg.args, state, registry, None, via)   # None: UDP never replies
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
+def build_meter_source(use_hw, kind, backends, state):
+    """The meters (Phase 13), or None. With use_hw the PL's three peak-meter
+    windows, all or none (none = a bitstream from before Phase 13: no meters),
+    each matching its channel zone's size; without, the synthetic source if
+    asked for (decision M8: never on hardware)."""
+    sizes = {z: b.n for z, b in backends.items() if z in mixer_meters.METER_ZONES}
+    if use_hw:
+        import mixer_hw
+        found = {}
+        for name, zone in zip(mixer_hw.METERS, mixer_meters.METER_ZONES):
+            try:
+                found[zone] = mixer_hw.open_window(name)
+            except mixer_hw.WindowAbsent:
+                continue
+            log(f"PL window '{name}' at 0x{found[zone].base:08x}: {found[zone].describe()}")
+        if not found:
+            log("No meter windows (a bitstream from before Phase 13): no meters")
+            return None
+        if len(found) != len(mixer_meters.METER_ZONES):
+            missing = [z for z in mixer_meters.METER_ZONES if z not in found]
+            raise RuntimeError(f"meters incomplete: none for {', '.join(missing)}")
+        for zone, w in found.items():
+            if sizes.get(zone) != w.n:
+                raise RuntimeError(f"{zone} meter has {w.n} channels, the zone {sizes.get(zone)}")
+        return mixer_meters.HardwareMeterSource(found)
+    if kind == "synthetic" and sizes:
+        def level_of(zone, ch):
+            v = state.get(f"{zone}/{ch}/level", default=None)
+            return v if isinstance(v, (int, float)) else None
+        log("Meters: SYNTHETIC source (--meter-source synthetic; for tests, never on hardware)")
+        return mixer_meters.SyntheticMeterSource(sizes, level_of)
+    return None
+
+
 def main():
-    global VERBOSE
+    global VERBOSE, MODEL, FIRMWARE, ADVERTISER, METER_HUB
     p = argparse.ArgumentParser(description="Reference/simulator server for the FPGA mixer OSC protocol.")
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
@@ -556,19 +891,52 @@ def main():
     p.add_argument("--hw", action="store_true",
                    help="drive the PL register windows (mixer_hw.WINDOWS) through /dev/mem "
                         "(on the board, as root; Phase 5+ bitstream only)")
-    p.add_argument("--matrix-size", type=int, default=12,
-                   help="simulated matrix size N (NxN) without --hw (default: 12, the "
-                        "Phase 8 hardware: 4 Pmod + 8 link channels)")
+    p.add_argument("--matrix-size", type=int, default=20,
+                   help="simulated size N without --hw: N inputs, N buses, N outputs "
+                        "(default: 20, the hardware: 4 Pmod + 8 link #1 (USB) + 8 link #2 "
+                        "(AVB) channels)")
+    p.add_argument("--no-bus-layer", action="store_true",
+                   help="simulate a bitstream from before Phase 12: inputMatrix only, "
+                        "input -> output (with --hw the windows decide)")
+    p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
+                   help="TCP stream framing: len32 = OSC 1.0 4-byte size prefix per packet "
+                        "(default); none = unframed messages back to back (older controllers)")
+    p.add_argument("--advertise", choices=("none", "dnssd"), default="none",
+                   help="discovery: dnssd = publish _studiorunner._tcp through systemd-resolved "
+                        "(the board service); none = don't (default)")
+    p.add_argument("--dnssd-file", default=DNSSD_FILE, help=f"(dnssd) the file to write (default {DNSSD_FILE})")
+    p.add_argument("--dnssd-reload", default=DNSSD_RELOAD,
+                   help=f"(dnssd) command run after the file changes (default '{DNSSD_RELOAD}'; '' = none)")
+    p.add_argument("--meter-source", choices=("none", "synthetic"), default="none",
+                   help="without --hw: synthetic = meters that follow each channel's level "
+                        "(tests, the simulator); none = no meters (default). With --hw the "
+                        "PL's meter windows are used if the bitstream has them")
     args = p.parse_args()
     VERBOSE = args.verbose
+    if args.hw and args.meter_source != "none":
+        p.error("--meter-source is for the simulator; with --hw the meters are the PL's (decision M8)")
 
     state = MixerState(args.mixer_name, args.state_file or None, log=log)
-    BACKENDS.update(build_backends(args.hw, args.matrix_size))
+    BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer))
+    MODEL = build_model(BACKENDS, SYSTEM_SETTINGS)
+    FIRMWARE = firmware_version()
+    log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}")
     for backend in BACKENDS.values():
         backend.seed_and_push(state)
-    registry = ClientRegistry()
+    registry = ClientRegistry(args.tcp_framing)
+    log(f"TCP framing: {args.tcp_framing}")
+    ADVERTISER = make_advertiser(args.advertise, args.tcp_port, args.tcp_framing,
+                                 args.dnssd_file, args.dnssd_reload, log)
+    ADVERTISER.advertise(state.mixer_name)
 
     threading.Thread(target=udp_serve, args=(args.host, args.udp_port, state, registry), daemon=True).start()
+
+    source = build_meter_source(args.hw, args.meter_source, BACKENDS, state)
+    if source is not None:
+        meter_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        METER_HUB = mixer_meters.MeterHub(source, meter_sock.sendto, lambda: state.mixer_name, log=log)
+        threading.Thread(target=METER_HUB.run, daemon=True).start()
+        log(f"Meters: {', '.join(f'{z} ({n})' for z, n in source.zones().items())}")
 
     # systemd stops the service with SIGTERM: turn it into a normal exit so
     # the finally-block writes any batched, not-yet-saved state.

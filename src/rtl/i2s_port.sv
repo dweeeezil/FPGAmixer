@@ -10,7 +10,8 @@
 //
 // PCM side: 2 channels, packed, channel 0 = left at [0 +: SW], channel 1 =
 // right at [SW +: SW], signed. rx_valid pulses once per frame. tx_flat is
-// sampled by the transmitter at its frame boundary.
+// sampled once per frame, both channels together, at the LRCK falling edge
+// (the start of the DAC's frame; see STEREO PAIRING below).
 //
 // Clocks: mclk/sclk/lrck come from audio_clocking and are SHARED by every
 // port, which is what keeps all ports sample-synchronous. This module only
@@ -79,12 +80,39 @@ module i2s_port #(
     // ----- DAC: PCM -> I2S -----
     // sdata leaves through the same SDR ODDR pattern as SCLK/LRCK above, so
     // the mid-cell launch phase fixed in i2s_transmitter survives at the pin.
-    logic sdin_int;
+    //
+    // STEREO PAIRING: the transmitter loads L at the LRCK falling edge and R
+    // half a frame later, at the rising edge. Fed straight from tx_flat, R
+    // would come from a later core frame than L whenever the core updates
+    // tx_flat in between (it did: R led L by one sample, seen in
+    // tb_phase3_dynamic, phase9_status_2026-09-26.md 5.3). So the pair is
+    // sampled ONCE, when L is loaded: L goes to the transmitter directly and R
+    // is held for the rising edge. Both halves of every DAC frame now come
+    // from one core frame, whatever the core's timing.
+    //
+    // Deadline this sets for the core: tx_flat must hold the new frame by the
+    // LRCK falling edge (the cycle the transmitter loads L). lrck_q uses the
+    // same 1FF detection as the transmitter, so the two see the edge on the
+    // same mclk cycle.
+    logic          sdin_int;
+    logic          lrck_q;
+    logic [SW-1:0] tx_r_hold;
+
+    always_ff @(posedge mclk or negedge rst_n) begin
+        if (!rst_n) begin
+            lrck_q    <= 1'b0;
+            tx_r_hold <= '0;
+        end else begin
+            lrck_q <= lrck;
+            if (lrck_q && !lrck)                 // falling edge: L loads now
+                tx_r_hold <= tx_flat[SW +: SW];
+        end
+    end
 
     i2s_transmitter #(.DATA_WIDTH(SW)) u_tx (
         .mclk (mclk), .rst_n (rst_n), .sclk_i (sclk), .lrck_i (lrck),
         .left_data  (tx_flat[0 +: SW]),
-        .right_data (tx_flat[SW +: SW]),
+        .right_data (tx_r_hold),
         .sdata_o (sdin_int)
     );
 

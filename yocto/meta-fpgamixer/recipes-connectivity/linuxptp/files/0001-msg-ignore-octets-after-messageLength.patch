@@ -1,0 +1,35 @@
+From: FPGAmixer project
+Subject: [PATCH] msg: ignore octets after messageLength
+
+msg_post_recv() parsed TLVs over everything received and then required
+the header plus TLVs to equal messageLength. macOS's gPTP (seen with an
+OWC Thunderbolt Ethernet adapter, 2026-09-30) sends Follow_Up with
+messageLength 96 (the 802.1AS Follow_Up information TLV and a 16-byte
+Apple organization TLV) followed by a further 54-byte Apple organization
+TLV outside the message. ptp4l parsed that too, found 150 bytes where the
+message says 96, and logged "bad message" for every Follow_Up, so the
+port never left UNCALIBRATED. Octets beyond messageLength are not part of
+the message (as with Ethernet padding); ignore them.
+
+FPGAmixer docs/phase10_status_2026-09-29.md sec. 10.
+
+Upstream-Status: Pending
+
+--- a/msg.c
++++ b/msg.c
+@@ -352,6 +352,15 @@
+ 	if (err)
+ 		return err;
+
++	/*
++	 * Octets after the message's own length are not part of it (e.g.
++	 * Ethernet padding). macOS's gPTP appends an Apple organization
++	 * TLV after messageLength on Follow_Up; parsing it made every
++	 * Follow_Up a "bad message".
++	 */
++	if (cnt > m->header.messageLength)
++		cnt = m->header.messageLength;
++
+ 	type = msg_type(m);
+
+ 	switch (type) {

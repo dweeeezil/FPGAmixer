@@ -9,9 +9,11 @@
 //   - shadow reset = RESET_GAINS (identity), read back sign-extended
 //   - shadow writes do NOT reach the matrix until COMMIT
 //   - COMMIT applies the whole bank; COMMITS counts; BUSY clears
-//   - atomicity: on every mclk edge gains_flat is exactly the old bank or the
-//     new bank, never a mix
-//   - COMMIT while BUSY is queued and applied with the latest shadow
+//   - atomicity: every frame, the bank the matrix actually READ through its
+//     coefficient port (rebuilt from the read port) is exactly the old bank
+//     or the new bank, never a mix (Phase 9: coef_bank_ram, swap at the frame)
+//   - COMMIT while BUSY is queued; writes after it wait until it launches,
+//     then the last COMMIT applies them
 //   - WSTRB byte-lane writes
 //   - end to end: matrix output for a known input under the committed gains
 // -----------------------------------------------------------------------------
@@ -50,7 +52,15 @@ module tb_matrix_regs;
     logic [3:0]  wstrb;
     logic [1:0]  bresp, rresp;
 
-    logic [N*N*GW-1:0] gains;
+    // Phase 9: the window feeds the matrix through a coefficient read port
+    // (coef_bank_ram); the matrix is the time-shared one (since Phase 12
+    // through matrix_packed_sim, the single-matrix core), run with a real
+    // 256-mclk frame.
+    localparam int LANES = pcm_matrix_pkg::matrix_lanes(N, N);
+    localparam int AW    = $clog2(pcm_matrix_pkg::matrix_passes(N, LANES) * N);
+    logic [AW-1:0]       coef_addr;
+    logic [LANES*GW-1:0] coef_data;
+    logic                frame = 0;
 
     matrix_regs_axil #(
         .N_IN (N), .N_OUT (N), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .ADDR_WIDTH (12),
@@ -64,12 +74,12 @@ module tb_matrix_regs;
         .s_axi_araddr (araddr), .s_axi_arvalid (arvalid), .s_axi_arready (arready),
         .s_axi_rdata  (rdata),  .s_axi_rresp   (rresp),
         .s_axi_rvalid (rvalid), .s_axi_rready  (rready),
-        .mclk (mclk), .mrst_n (mrst_n),
-        .gains_flat (gains)
+        .mclk (mclk), .frame_i (frame),
+        .coef_addr (coef_addr), .coef_data (coef_data)
     );
 
-    // ----- Matrix, fed a constant test vector every 8 mclks -----
-    logic              sv_in = 0, sv_out;
+    // ----- Core, fed a constant test vector, one frame every 256 mclks -----
+    logic              sv_out, core_err;
     logic [N*SW-1:0]   in_flat, out_flat;
     int                mcnt = 0;
 
@@ -78,14 +88,36 @@ module tb_matrix_regs;
 
     always @(posedge mclk) begin
         mcnt  <= mcnt + 1;
-        sv_in <= (mcnt % 8 == 0);
+        frame <= (mcnt % 256 == 0);
     end
 
-    pcm_matrix #(.N_IN (N), .N_OUT (N), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_mtx (
-        .mclk (mclk), .rst_n (mrst_n), .sample_valid_i (sv_in),
-        .gains_flat (gains), .in_flat (in_flat), .out_flat (out_flat),
-        .sample_valid_o (sv_out)
+    matrix_packed_sim #(.N_IN (N), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF), .LANES (LANES)) u_core (
+        .mclk (mclk), .rst_n (mrst_n), .frame_i (frame),
+        .in_flat (in_flat), .out_flat (out_flat), .valid_o (sv_out), .err_o (core_err),
+        .coef_addr (coef_addr), .coef_data (coef_data)
     );
+
+    // ----- The bank the matrix actually read, rebuilt per frame -----
+    // A read issued in one cycle returns the next; word t, lane l holds
+    // k = ((t / N)*LANES + l)*N + t % N (rows = outputs, round-robin lanes).
+    logic [N*N*GW-1:0] gains = '0;        // last complete frame's bank
+    logic [N*N*GW-1:0] rebuild;
+    logic [AW-1:0]     addr_q;
+    logic              rd_q = 0;
+    int                nread = 0;
+    always @(posedge mclk) begin
+        if (rd_q)
+            for (int l = 0; l < LANES; l++) begin
+                int o, kk;
+                o  = (int'(addr_q) / N) * LANES + l;
+                kk = o * N + int'(addr_q) % N;
+                if (o < N) rebuild[kk*GW +: GW] = coef_data[l*GW +: GW];
+            end
+        if (rd_q && int'(addr_q) == pcm_matrix_pkg::matrix_passes(N, LANES)*N - 1)
+            gains = rebuild;              // the frame's last word
+        rd_q   <= u_core.u_matrix.run;
+        addr_q <= coef_addr;
+    end
 
     // ----- Scoreboard -----
     int errors = 0;
@@ -140,7 +172,7 @@ module tb_matrix_regs;
     logic              mon_en = 0;
     always @(posedge mclk) if (mon_en) begin
         if (gains !== legal_a && gains !== legal_b) begin
-            $display("  FAIL atomicity: gains_flat is neither old nor new bank at %0t", $time);
+            $display("  FAIL atomicity: the bank read in a frame is neither old nor new at %0t", $time);
             errors++;
         end
     end
@@ -213,7 +245,7 @@ module tb_matrix_regs;
         legal_b = bank1;
         axi_write(12'h008, 32'h1);
         wait_idle();
-        repeat (4) @(posedge mclk);
+        @(posedge sv_out);          // a whole frame read after the swap
         check("gains == bank1", 32'(gains == bank1), 1);
         axi_read(12'h00C, r); check("COMMITS", r, 1);
         check_outputs(bank1, "bank1");
@@ -232,7 +264,7 @@ module tb_matrix_regs;
         axi_read(12'h008, r);
         $display("  info CTRL right after 2nd commit = 0x%08h (queued if bit1)", r);
         wait_idle();
-        repeat (4) @(posedge mclk);
+        @(posedge sv_out);
         check("gains == bank2", 32'(gains == bank2), 1);
         axi_read(12'h00C, r); check("COMMITS", r, 3);
         check_outputs(bank2, "bank2");

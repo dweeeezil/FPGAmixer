@@ -38,11 +38,25 @@ when the bitstream has the window. No node -> refuse, without touching the bus.
 
 As a bring-up CLI, on the board:
     python3 mixer_hw.py info                  # every window: ID, CONFIG, CTRL
-    python3 mixer_hw.py dump                  # matrix gains, in dB
-    python3 mixer_hw.py set <out> <in> <dB>   # one crosspoint, then COMMIT
-    python3 mixer_hw.py identity              # unity diagonal, rest off
+    python3 mixer_hw.py dump [window]         # gains in dB: matrix (default),
+                                              # busmatrix, inlevel, buslevel, outlevel
+    python3 mixer_hw.py set <out> <in> <dB> [window]   # one crosspoint, then COMMIT
+                                              # (window: matrix or busmatrix)
+    python3 mixer_hw.py level <window> <ch> <dB>       # one channel of a level
+                                              # stage (Phase 12), then COMMIT
+    python3 mixer_hw.py identity [window]     # unity diagonal, rest off
+    python3 mixer_hw.py meter <window>        # peaks since the last snapshot (Phase 13:
+                                              # inmeter, busmeter, outmeter); steals one
+                                              # window from the OSC server's meters
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
+    python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
+                                              # P9.5, card FPGAmixerLink2)
+    python3 mixer_hw.py mclk [seconds]        # mclk vs gPTP (Phase 9 P9.3): the
+                                              # last interval, or every interval
+                                              # for <seconds> and the mean, in ppm
+    python3 mixer_hw.py steer [ppm]           # mclk steering (P9.4b): show, or set
+                                              # a frequency change by hand (+ = faster)
 """
 
 import math
@@ -51,6 +65,7 @@ import os
 import struct
 import sys
 import threading
+import time
 
 WINDOW_SIZE = 0x1000
 
@@ -82,6 +97,12 @@ def dt_node_for(base, root=None, max_depth=4):
     return None
 
 
+class WindowAbsent(RuntimeError):
+    """The running device tree has no node for this window: the bitstream
+    doesn't have it. Raised before the bus is touched; callers that treat a
+    window as optional (an older bitstream) catch exactly this."""
+
+
 class RegWindow:
     """One axil_coef_window, mapped from /dev/mem."""
 
@@ -91,7 +112,7 @@ class RegWindow:
         self.base = base
         self._lock = threading.Lock()
         if dev == "/dev/mem" and not dt_node_for(base):
-            raise RuntimeError(
+            raise WindowAbsent(
                 f"no device-tree node for a register window at 0x{base:08x} under "
                 f"{DEVICE_TREE}: this image's bitstream doesn't have it (pre-Phase 5?). "
                 f"Refusing to touch the bus, since an access there would hang it.")
@@ -200,6 +221,127 @@ class MatrixHW(RegWindow):
                           for (o, i), db in levels.items()})
 
 
+class GainHW(RegWindow):
+    """A pcm_gain window (src/rtl/gain_regs_axil.sv, Phase 12): one level per
+    channel, in dB. CONFIG = [31:24] channels, [23:16] TAP (0 input, 1 bus,
+    2 output), [15:8] gain width, [7:0] gain fraction bits; COEF[c] = gain
+    of channel c. The three level stages share the ID; a subclass names the
+    TAP it expects, so opening the wrong one of the three is refused like a
+    wrong ID."""
+
+    ID = 0x474E_5001
+    TAP = None
+    TAP_NAMES = {0: "input", 1: "bus", 2: "output"}
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.tap = (self.config >> 16) & 0xFF
+        self.gain_width = (self.config >> 8) & 0xFF
+        self.gain_frac = self.config & 0xFF
+        if self.TAP is not None and self.tap != self.TAP:
+            raise RuntimeError(f"window at 0x{base:08x}: gain stage TAP {self.tap}, expected "
+                               f"{self.TAP} ({self.TAP_NAMES.get(self.TAP)} levels; wrong address map?)")
+
+    def describe(self):
+        return (f"{self.TAP_NAMES.get(self.tap, f'tap {self.tap}')} levels, {self.n} channels, "
+                f"Q{self.gain_width - self.gain_frac}.{self.gain_frac}")
+
+    def _c(self, ch):
+        if not 0 <= ch < self.n:
+            raise IndexError(f"channel {ch} outside {self.n} channels")
+        return ch
+
+    def read_db(self, ch):
+        return code_to_db(self.read_coef(self._c(ch)), self.gain_frac)
+
+    def set_db(self, ch, db, commit=True):
+        """Set one channel's level in dB. Returns the dB actually applied."""
+        code, applied = db_to_code(db, self.gain_frac, self.gain_width)
+        self.write_coefs({self._c(ch): code}, commit=commit)
+        return applied
+
+    def set_bank_db(self, levels):
+        """levels: {channel: dB}; one COMMIT for the lot."""
+        self.write_coefs({self._c(c): db_to_code(db, self.gain_frac, self.gain_width)[0]
+                          for c, db in levels.items()})
+
+
+class InputLevelHW(GainHW):
+    TAP = 0
+
+
+class BusLevelHW(GainHW):
+    TAP = 1
+
+
+class OutputLevelHW(GainHW):
+    TAP = 2
+
+
+class PeakHW(RegWindow):
+    """A peak-meter window (src/rtl/peak_regs_axil.sv, Phase 13): per-channel
+    peak magnitudes of one zone. CONFIG = [31:24] channels, [23:16] TAP (0
+    input, 1 bus, 2 output), [15:8] sample width; PEAK[c] at COEF[c], the
+    largest |sample| (0 .. 2^23-1) over the frames since the previous SNAP.
+    CTRL bit0 written = SNAP (close the window at the next frame strobe);
+    BUSY/QUEUED read as for a commit. ONE reader: every SNAP starts a new
+    window, so two readers would split the peaks between them (the OSC server
+    is the reader on the board)."""
+
+    ID = 0x504B_5001
+    TAP = None
+    TAP_NAMES = GainHW.TAP_NAMES
+    SNAP_TIMEOUT_S = 0.05      # a snapshot takes about one frame (21 us)
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.tap = (self.config >> 16) & 0xFF
+        self.width = (self.config >> 8) & 0xFF
+        if self.TAP is not None and self.tap != self.TAP:
+            raise RuntimeError(f"window at 0x{base:08x}: meter TAP {self.tap}, expected "
+                               f"{self.TAP} ({self.TAP_NAMES.get(self.TAP)} meter; wrong address map?)")
+
+    def describe(self):
+        return (f"{self.TAP_NAMES.get(self.tap, f'tap {self.tap}')} meter, {self.n} channels, "
+                f"{self.width}-bit")
+
+    def request_snap(self):
+        """Close the current window at the next frame strobe."""
+        with self._lock:
+            self.wr(REG_CTRL, 1)
+
+    def wait_and_read(self):
+        """Wait for the snapshot (BUSY and QUEUED clear), then read every
+        channel's peak. Raises TimeoutError if the PL doesn't finish (no
+        frames: mclk stopped)."""
+        deadline = time.monotonic() + self.SNAP_TIMEOUT_S
+        while self.rd(REG_CTRL) & 3:
+            time.sleep(0)          # yield the GIL: the server's TCP threads keep running
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"meter at 0x{self.base:08x}: snapshot not done "
+                                   f"after {self.SNAP_TIMEOUT_S * 1000:.0f} ms (no audio frames?)")
+        mask = (1 << self.width) - 1
+        return [self.rd(REG_COEF0 + 4 * c) & mask for c in range(self.n)]
+
+    def snapshot(self):
+        self.request_snap()
+        return self.wait_and_read()
+
+
+class InputMeterHW(PeakHW):
+    TAP = 0
+
+
+class BusMeterHW(PeakHW):
+    TAP = 1
+
+
+class OutputMeterHW(PeakHW):
+    TAP = 2
+
+
 class LinkStatHW(RegWindow):
     """A pcm_link status window (src/rtl/pcm_link_stat_regs.sv, Phase 8):
     read-only, same header, 0x00C = snapshot sequence. Counters are
@@ -237,12 +379,142 @@ class LinkStatHW(RegWindow):
         return vals
 
 
+U32 = 0xFFFF_FFFF
+
+
+def mclk_ppm(cycles, seconds, nominal):
+    """Frequency offset of mclk against the reference, in ppm, from a cycle
+    count over a whole number of reference seconds."""
+    return (cycles / (seconds * nominal) - 1.0) * 1e6
+
+
+class MediaClockHW(RegWindow):
+    """The media-clock meter's window (src/rtl/media_clock_stat_regs.sv,
+    Phase 9 P9.3): mclk measured against a 1PPS on the gPTP second (the GEM
+    TSU counter's bit 45, inverted). Read-only, same header, 0x00C = snapshot
+    sequence; CONFIG = nominal mclk cycles per second (12,288,000). The PL
+    only captures; frequency and phase are computed here (decision T2).
+    Counts wrap at 32 bits (CYC_* every ~349 s): take differences mod 2^32."""
+
+    ID = 0x4D43_5001
+    WORDS = ("pps_count", "cyc_at_pps", "cyc_at_prev", "frames_at_pps",
+             "phase_at_pps", "implausible", "cyc_now")
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.nominal = self.config
+
+    def describe(self):
+        return f"media-clock meter, nominal {self.nominal} mclk cycles per reference second"
+
+    def status(self):
+        return {"snapshots": self.rd(REG_COMMITS)}
+
+    def read_all(self):
+        """All words from one snapshot (re-read if a new one landed)."""
+        for _ in range(5):
+            seq = self.rd(REG_COMMITS)
+            vals = {n: self.rd(REG_COEF0 + 4 * k) for k, n in enumerate(self.WORDS)}
+            if self.rd(REG_COMMITS) == seq:
+                break
+        vals["snapshots"] = seq
+        return vals
+
+    def interval(self, v):
+        """mclk cycles between the last two reference edges."""
+        return (v["cyc_at_pps"] - v["cyc_at_prev"]) & U32
+
+    def ref_alive(self, v):
+        """True if a reference edge came within the last 1.5 s of mclk."""
+        return v["pps_count"] > 0 and ((v["cyc_now"] - v["cyc_at_pps"]) & U32) < 1.5 * self.nominal
+
+
+class MediaClockSteerHW(RegWindow):
+    """The media-clock steering window (src/rtl/media_clock_ctrl_regs.sv,
+    Phase 9 P9.4b): one RW word, RATE, driving the MMCM's fine phase shift,
+    plus status. CONFIG = PSCLK in Hz; VCO_HZ and PS_DIV (steps per VCO
+    period) are read-only words, so the conversion below uses what the
+    hardware reports rather than constants.
+
+    Sign convention here: ppm is the change applied to mclk's FREQUENCY,
+    + = faster. The hardware's RATE is the opposite way round (> 0 = phase
+    increments = slower), which this class hides."""
+
+    ID = 0x4D53_5001
+    REG_RATE = REG_COEF0 + 0x00
+    REG_STEPS_INC = REG_COEF0 + 0x04
+    REG_STEPS_DEC = REG_COEF0 + 0x08
+    REG_DROPPED = REG_COEF0 + 0x0C
+    REG_FLAGS = REG_COEF0 + 0x10
+    REG_VCO_HZ = REG_COEF0 + 0x14
+    REG_PS_DIV = REG_COEF0 + 0x18
+    CYCLES_PER_STEP = 14          # PSEN, PSDONE 12 cycles later, next PSEN after it
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.psclk_hz = self.config
+        self.vco_hz = self.rd(self.REG_VCO_HZ)
+        self.ps_div = self.rd(self.REG_PS_DIV)
+        self.step_s = 1.0 / (self.vco_hz * self.ps_div)       # phase per step, seconds
+        self.max_ppm = self.psclk_hz / self.CYCLES_PER_STEP * self.step_s * 1e6
+
+    def describe(self):
+        return (f"media-clock steering, PSCLK {self.psclk_hz / 1e6:g} MHz, "
+                f"step {self.step_s * 1e12:.3f} ps, max +/-{self.max_ppm:.1f} ppm")
+
+    def status(self):
+        f = self.rd(self.REG_FLAGS)
+        return {"ppm": round(self.get_ppm(), 4), "locked": bool(f & 1),
+                "steps_inc": self.rd(self.REG_STEPS_INC),
+                "steps_dec": self.rd(self.REG_STEPS_DEC),
+                "dropped": self.rd(self.REG_DROPPED)}
+
+    def rate_for_ppm(self, ppm):
+        """RATE register value (two's complement) for a frequency change of
+        ppm (+ = faster), clamped to what the MMCM can do."""
+        ppm = max(-self.max_ppm, min(self.max_ppm, ppm))
+        steps_per_cycle = ppm * 1e-6 / self.step_s / self.psclk_hz
+        rate = -int(round(steps_per_cycle * 2 ** 32))          # + ppm = decrements
+        return rate & U32
+
+    def ppm_for_rate(self, reg):
+        rate = reg - (1 << 32) if reg & 0x8000_0000 else reg
+        return -rate / 2 ** 32 * self.psclk_hz * self.step_s * 1e6
+
+    def set_ppm(self, ppm):
+        self.wr(self.REG_RATE, self.rate_for_ppm(ppm))
+        return self.get_ppm()
+
+    def get_ppm(self):
+        return self.ppm_for_rate(self.rd(self.REG_RATE))
+
+
 # name -> (physical base, class). Mirrors assign_bd_address; see ADDRESS MAP.
 # (The Audio Formatter at 0x8010_0000 is driver-owned, not listed here.)
 WINDOWS = {
     "matrix":   (0x8000_0000, MatrixHW),
     "linkstat": (0x8000_1000, LinkStatHW),     # Phase 8 bitstreams only
+    "mclk":     (0x8000_2000, MediaClockHW),   # Phase 9 (phase9 bitstreams) only
+    "mclkctl":  (0x8000_3000, MediaClockSteerHW),  # Phase 9 P9.4b bitstreams only
+    "linkstat2": (0x8000_4000, LinkStatHW),    # link #2, Phase 9 P9.5 bitstreams only
+    # Phase 12 (every PS bitstream from then on): the bus layer. "matrix" is
+    # then the input matrix (input -> bus); "busmatrix" is bus -> output.
+    "busmatrix": (0x8000_5000, MatrixHW),
+    "inlevel":   (0x8000_6000, InputLevelHW),
+    "buslevel":  (0x8000_7000, BusLevelHW),
+    "outlevel":  (0x8000_8000, OutputLevelHW),
+    # Phase 13: the peak meters on the level stages' outputs (decision M4)
+    "inmeter":   (0x8000_9000, InputMeterHW),
+    "busmeter":  (0x8000_A000, BusMeterHW),
+    "outmeter":  (0x8000_B000, OutputMeterHW),
 }
+
+# The meters: present all together (a Phase 13 bitstream) or not at all.
+METERS = ("inmeter", "busmeter", "outmeter")
+
+# The bus layer's windows: present all together (a Phase 12 bitstream) or not
+# at all (older ones, where "matrix" is input -> output).
+BUS_LAYER = ("busmatrix", "inlevel", "buslevel", "outlevel")
 
 COUNTERS = ("frames_rx", "frames_tx", "underruns", "starved", "overruns", "tid_errors")
 
@@ -262,16 +534,16 @@ def _main(argv):
             try:
                 w = open_window(name)
             except RuntimeError as e:    # absent from this bitstream: say so, go on
-                print(f"{name:8} @ 0x{WINDOWS[name][0]:08x}: not available ({e})")
+                print(f"{name:9} @ 0x{WINDOWS[name][0]:08x}: not available ({e})")
                 continue
-            print(f"{name:8} @ 0x{w.base:08x}: {w.describe()}  ({RegWindow.describe(w)}), "
+            print(f"{name:9} @ 0x{w.base:08x}: {w.describe()}  ({RegWindow.describe(w)}), "
                   f"{w.status()}")
         return 0
 
-    if cmd == "link":
-        # link           one reading
+    if cmd in ("link", "link2"):
+        # link           one reading (link2: the same for link #2)
         # link <sec>     two readings <sec> apart: counter deltas and rates
-        ls = open_window("linkstat")
+        ls = open_window("linkstat" if cmd == "link" else "linkstat2")
         a = ls.read_all()
         if len(argv) == 3:
             import time
@@ -290,22 +562,101 @@ def _main(argv):
         print(f"rx_running   {a['rx_running']}   snapshots {a['snapshots']}")
         return 0
 
-    hw = open_window("matrix")
-    if cmd == "dump":
+    if cmd == "mclk":
+        # mclk           one reading: the last interval
+        # mclk <sec>     watch for <sec> seconds: every interval, then the mean
+        import time
+        mc = open_window("mclk")
+        v = mc.read_all()
+        alive = mc.ref_alive(v)
+        print(f"reference {'alive' if alive else 'NOT SEEN (no 1PPS in the last 1.5 s)'}, "
+              f"{v['pps_count']} edges, {v['implausible']} implausible intervals")
+        if len(argv) != 3:
+            if v["pps_count"] >= 2:
+                n = mc.interval(v)
+                print(f"last interval {n} cycles = {mclk_ppm(n, 1, mc.nominal):+.3f} ppm vs gPTP, "
+                      f"frame phase {v['phase_at_pps']} cycles at the second")
+            return 0
+        end = time.monotonic() + float(argv[2])
+        ivals, last = [], v
+        while time.monotonic() < end:
+            time.sleep(0.25)
+            v = mc.read_all()
+            new = (v["pps_count"] - last["pps_count"]) & U32
+            if new == 0:
+                continue
+            if new == 1 and v["implausible"] == last["implausible"]:
+                n = mc.interval(v)
+                ivals.append(n)
+                print(f"#{v['pps_count']:<6} {n} cycles  {mclk_ppm(n, 1, mc.nominal):+9.3f} ppm  "
+                      f"phase {v['phase_at_pps']:3}  frames {v['frames_at_pps']}")
+            else:
+                print(f"#{v['pps_count']:<6} skipped: {new} edges since the last read, "
+                      f"implausible +{(v['implausible'] - last['implausible']) & U32}")
+            last = v
+        if ivals:
+            total = sum(ivals)
+            lo, hi = min(ivals), max(ivals)
+            print(f"{len(ivals)} intervals: mean {mclk_ppm(total, len(ivals), mc.nominal):+.3f} ppm "
+                  f"(single intervals {mclk_ppm(lo, 1, mc.nominal):+.3f} .. "
+                  f"{mclk_ppm(hi, 1, mc.nominal):+.3f})")
+        return 0
+
+    if cmd == "steer":
+        # steer          show the steering state
+        # steer <ppm>    set mclk's frequency change by hand (+ = faster), open
+        #                loop; the fpgamixer-mediaclock service overwrites it
+        st = open_window("mclkctl")
+        if len(argv) == 3:
+            applied = st.set_ppm(float(argv[2]))
+            print(f"rate set: {applied:+.4f} ppm (register 0x{st.rd(st.REG_RATE):08x})")
+        print(f"{st.describe()}: {st.status()}")
+        return 0
+
+    def fmt(db):
+        return f"{'off':>9}" if db == float("-inf") else f"{db:9.2f}"
+
+    if cmd == "meter" and len(argv) == 3:
+        # One SNAP + read. The OSC server is the meters' reader: this takes
+        # the window away from its next sample (one meter update shows less).
+        mt = open_window(argv[2])
+        if not isinstance(mt, PeakHW):
+            print(f"{argv[2]} is not a meter window ({', '.join(METERS)})")
+            return 2
+        print(mt.describe())
+        for c, p in enumerate(mt.snapshot()):
+            db = 20.0 * math.log10(p / (1 << 23)) if p else float("-inf")
+            print(f"{c:>6} {p:#08x} {'silence' if not p else f'{db:7.2f} dBFS'}")
+        return 0
+
+    if cmd == "level" and len(argv) == 5:
+        lv = open_window(argv[2])
+        if not isinstance(lv, GainHW):
+            print(f"{argv[2]} is not a level window ({', '.join(BUS_LAYER[1:])})")
+            return 2
+        applied = lv.set_db(int(argv[3]), float(argv[4]))
+        print(f"{argv[2]} ch {argv[3]}: {applied:.2f} dB, {lv.status()}")
+        return 0
+
+    # dump [window]; set <out> <in> <dB> [window]; identity [window]
+    name = {"dump": 2, "set": 5, "identity": 2}.get(cmd)
+    name = argv[name] if name is not None and len(argv) > name else "matrix"
+    hw = open_window(name)
+    if cmd == "dump" and isinstance(hw, GainHW):
+        print(f"{hw.describe()}")
+        for c in range(hw.n):
+            print(f"{c:>6} {fmt(hw.read_db(c))}")
+    elif cmd == "dump":
         print("out\\in " + "".join(f"{i:>9}" for i in range(hw.n_in)))
         for o in range(hw.n_out):
-            cells = []
-            for i in range(hw.n_in):
-                db = hw.read_db(o, i)
-                cells.append(f"{'off':>9}" if db == float("-inf") else f"{db:9.2f}")
-            print(f"{o:>6} " + "".join(cells))
-    elif cmd == "set" and len(argv) == 5:
+            print(f"{o:>6} " + "".join(fmt(hw.read_db(o, i)) for i in range(hw.n_in)))
+    elif cmd == "set" and len(argv) in (5, 6) and isinstance(hw, MatrixHW):
         applied = hw.set_db(int(argv[2]), int(argv[3]), float(argv[4]))
-        print(f"out {argv[2]} <- in {argv[3]}: {applied:.2f} dB, {hw.status()}")
-    elif cmd == "identity":
+        print(f"{name}: out {argv[2]} <- in {argv[3]}: {applied:.2f} dB, {hw.status()}")
+    elif cmd == "identity" and isinstance(hw, MatrixHW):
         hw.set_bank_db({(o, i): (0.0 if o == i else OFF_DB)
                         for o in range(hw.n_out) for i in range(hw.n_in)})
-        print(f"identity applied, {hw.status()}")
+        print(f"{name}: identity applied, {hw.status()}")
     else:
         print(__doc__)
         return 2

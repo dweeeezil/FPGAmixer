@@ -16,8 +16,27 @@ module clk_wiz_audio (
     input  logic clk_in1,
     input  logic reset,
     output logic clk_out1,
-    output logic locked
+    output logic locked,
+    // dynamic phase shift (Phase 9, P9.4b): the handshake only -- PSDONE one
+    // PSCLK cycle long, 12 cycles after PSEN, as UG572 specifies -- with no
+    // effect on clk_out1. tb_media_clock_steer has a model that moves the
+    // clock; the integration TBs only need the port to answer.
+    input  logic psclk,
+    input  logic psen,
+    input  logic psincdec,
+    output logic psdone
 );
+    initial psdone = 1'b0;
+    int ps_cnt = 0;
+    always @(posedge psclk) begin
+        psdone <= 1'b0;
+        if (ps_cnt > 0) begin
+            ps_cnt <= ps_cnt - 1;
+            if (ps_cnt == 1) psdone <= 1'b1;
+        end else if (psen) begin
+            ps_cnt <= 12;
+        end
+    end
     // ~12.288 MHz -> period 81.38 ns -> half 40.69 ns
     localparam real HALF_NS = 40.69;
 

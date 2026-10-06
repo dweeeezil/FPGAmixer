@@ -14,6 +14,8 @@
 // each output must therefore show (a) its OWN channel tag every frame, and
 // (b) a frame counter that increments by exactly 1 per captured frame. A wrong
 // tag = routing/swap bug; a broken increment = a frame-boundary datapath bug.
+// (c) Since Phase 9: L and R of each output frame carry the SAME counter (the
+// stereo pair stays together).
 //
 // Drive timing is the same timing already validated in the fixed unit TBs
 // (MSB on the first falling SCLK after the LRCK edge, self-aligning trailing
@@ -120,6 +122,17 @@ module tb_phase3_dynamic;
         end
     endtask
 
+    // L and R of one output I2S frame must come from the same input frame
+    // (the ADC and DAC both treat one LRCK period's pair as one instant).
+    // Added in Phase 9 (C7): before the i2s_port fix, R led L by one frame.
+    task automatic pairchk(input string port, input logic [11:0] l, input logic [11:0] r);
+        if (l !== r) begin
+            $display("  [FAIL] %s L/R pair from different frames: L %03h, R %03h (stereo skew)",
+                     port, l, r);
+            errors++;
+        end
+    endtask
+
     initial begin
         logic [11:0] p_jbl, p_jbr, p_jcl, p_jcr;
         bit have_prev;
@@ -143,6 +156,8 @@ module tb_phase3_dynamic;
                 incchk("JB_R", mon_jb_r[11:0], p_jbr, have_prev);
                 incchk("JC_L", mon_jc_l[11:0], p_jcl, have_prev);
                 incchk("JC_R", mon_jc_r[11:0], p_jcr, have_prev);
+                pairchk("JB", mon_jb_l[11:0], mon_jb_r[11:0]);
+                pairchk("JC", mon_jc_l[11:0], mon_jc_r[11:0]);
                 p_jbl = mon_jb_l[11:0]; p_jbr = mon_jb_r[11:0];
                 p_jcl = mon_jc_l[11:0]; p_jcr = mon_jc_r[11:0];
                 have_prev = 1;

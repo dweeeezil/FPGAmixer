@@ -1,0 +1,24 @@
+[Unit]
+Description=FPGAmixer gPTP (802.1AS) on end0, hardware timestamping
+# Design: docs/phase9_status_2026-09-26.md (P9.1) and docs/gptp_spike_2026-09-24.md
+# linuxptp's own ptp4l@.service reads the default profile, not gPTP; this unit
+# uses the FPGAmixer config (role, logging) instead.
+Wants=sys-subsystem-net-devices-end0.device
+After=sys-subsystem-net-devices-end0.device
+
+[Service]
+# end0 must be administratively UP before ptp4l starts: macb refuses
+# SIOCSHWTSTAMP on an interface that isn't running (macb_hwtstamp_set,
+# -EINVAL), ptp4l sets hardware timestamping only once at start-up, and its
+# fault recovery never retries it, so the port stays FAULTY for good (seen on
+# the first P9.1 boot: "ioctl SIOCSHWTSTAMP failed: Invalid argument" 12.7 s
+# after boot). Bringing the link up here is idempotent and independent of
+# whatever configures addresses; carrier coming and going later is handled by
+# ptp4l itself.
+ExecStartPre=/usr/sbin/ip link set dev end0 up
+ExecStart=/usr/sbin/ptp4l -f /etc/fpgamixer/gptp.cfg -i end0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

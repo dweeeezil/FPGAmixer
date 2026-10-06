@@ -2,18 +2,32 @@
 """
 Phase 8 bench test S4 (the Phase 6 follow-up): the power-cycle restore test
 with real audio on every crosspoint. Standard library only, so the same file
-runs on the Pi, the board and the Mac.
+runs on the Pi, the board and the Mac. `set` also needs the shared
+osc_codec.py next to it (TCP framing: --tcp-framing, default len32); the
+other subcommands run from this file alone.
 
-The idea: every one of the 144 crosspoints gets its own level (PATTERN). The
-Mac plays one tone per USB input (TONES_HZ, FPGAmixer outputs 1-8 = core
-inputs 4-11) and records FPGAmixer inputs 1-8 (core outputs 4-11). Each
-recording is then a mix of the 8 tones at 8 known levels, so measuring every
-tone's amplitude in every recording recovers the gain of all 64 USB -> USB
-crosspoints. The 80 crosspoints that touch the Pmods (whose input signals are
-unknown) are checked through the gain registers, and JB_L/JC_L by ear.
+The idea: every one of the 400 crosspoints of the 20 x 20 core (Phase 9,
+P9.5: 4 Pmod + 8 USB (link #1) + 8 AVB (link #2) channels) gets its own
+level (PATTERN). The Mac plays one tone per USB input (TONES_HZ, FPGAmixer
+outputs 1-8 = core inputs 4-11) and records FPGAmixer inputs 1-8 (core
+outputs 4-11). Each recording is then a mix of the 8 tones at 8 known levels,
+so measuring every tone's amplitude in every recording recovers the gain of
+all 64 USB -> USB crosspoints. The other 336 (those that touch the Pmods,
+whose input signals are unknown, and the AVB channels, which have no source
+on this bench yet) are checked through the gain registers, and JB_L/JC_L by
+ear. The 144 levels of the Phase 8 (12 x 12) test are unchanged; the 256 AVB
+crosspoints use level ranges of their own (build_pattern), so a bank written
+to the wrong place can't match by accident.
 
-    set      (Pi)     send all 144 levels over OSC, check each echo
-    check-hw (board)  read all 144 gain registers, compare with PATTERN
+Phase 12 adds the bus layer: input levels -> inputMatrix (now input -> bus)
+-> bus levels -> busMatrix -> output levels. BUS_PATTERN gives 32 of those
+parameters their own levels, on the AVB channels only, so everything above
+still holds (input k -> bus k -> output k at 0 dB elsewhere); check-hw reads
+all four bus-layer windows too (860 registers in all). --no-bus-layer: the
+old 400 only.
+
+    set      (Mac)    send all 400 (+32) levels over OSC, check each echo
+    check-hw (board)  read all gain registers, compare with the patterns
     analyze  (Mac)    measure the 64 USB crosspoints from a recording
     compare  (any)    two analyze results (before / after the power pull)
     pattern  (any)    print the table
@@ -38,14 +52,14 @@ pass threshold is 0.5 dB.
 import argparse
 import json
 import math
-import socket
-import struct
+import os
 import sys
 import wave
 
-N = 12
+N = 20
 PMOD = range(0, 4)          # core channels 0-3: JB_L, JB_R, JC_L, JC_R
-USB = range(4, 12)          # core channels 4-11: link / USB 1-8
+USB = range(4, 12)          # core channels 4-11: link #1 / USB 1-8
+AVB = range(12, 20)         # core channels 12-19: link #2 / AVB 1-8 (P9.5)
 TONES_HZ = [211, 307, 401, 503, 601, 701, 809, 907]   # USB in 1..8 (primes)
 OFF_DB = -90.0
 PASS_DB = 0.5
@@ -82,6 +96,40 @@ def build_pattern():
         for i in PMOD:
             p[(i, o)] = -70.0 - 0.25 * k
             k += 1
+    # --- P9.5: the AVB channels (link #2). Ranges disjoint from the above
+    # and from each other; the finest steps are below the Q2.16 resolution
+    # at the lowest levels, so not every code is unique there, only every
+    # range.
+    # AVB -> AVB: like USB -> USB, on the quarter dB (-6.25 .. -37.75).
+    for o in AVB:
+        for i in AVB:
+            k = (o - 12) * 8 + (i - 12)
+            p[(i, o)] = -6.25 - 0.5 * ((k * 29) % 64)
+    # USB -> AVB: -38.0 .. -45.875
+    k = 0
+    for o in AVB:
+        for i in USB:
+            p[(i, o)] = -38.0 - 0.125 * k
+            k += 1
+    # AVB -> Pmod: -46.0 .. -49.875
+    k = 0
+    for o in PMOD:
+        for i in AVB:
+            p[(i, o)] = -46.0 - 0.125 * k
+            k += 1
+    # Pmod -> AVB: -64.0 .. -67.875
+    k = 0
+    for o in AVB:
+        for i in PMOD:
+            p[(i, o)] = -64.0 - 0.125 * k
+            k += 1
+    # AVB -> USB: the lowest (-78.0 .. -85.875), so an AVB source, once there
+    # is one, barely touches the USB tone measurement.
+    k = 0
+    for o in USB:
+        for i in AVB:
+            p[(i, o)] = -78.0 - 0.125 * k
+            k += 1
     assert len(p) == N * N
     return p
 
@@ -89,70 +137,77 @@ def build_pattern():
 PATTERN = build_pattern()
 
 
+def build_bus_pattern():
+    """Phase 12: {OSC tail: dB} for the bus layer, ON THE AVB CHANNELS ONLY
+    (they have no source on the bench), so the USB audio analysis and the
+    Pmods by ear still see input k -> bus k -> output k at 0 dB. Ranges
+    disjoint from each other: input levels -1.0 .. -2.75, bus levels
+    -3.0 .. -4.75, output levels -5.0 .. -6.75, and AVB bus b -> AVB output
+    b+1 (wrapping) at -20.0 .. -21.75 in the bus matrix."""
+    p = {}
+    for n, c in enumerate(AVB):
+        p[f"inputChannel/{c}/level"] = -1.0 - 0.25 * n
+        p[f"busChannel/{c}/level"] = -3.0 - 0.25 * n
+        p[f"outputChannel/{c}/level"] = -5.0 - 0.25 * n
+        p[f"busMatrix/{c}_{AVB[(n + 1) % len(AVB)]}/level"] = -20.0 - 0.25 * n
+    return p
+
+
+BUS_PATTERN = build_bus_pattern()
+
+
+def bus_layer_expected():
+    """What the four bus-layer windows must hold after `set`: the reset state
+    (bus matrix identity, levels 0 dB) with BUS_PATTERN on top.
+    {window: {index: dB}}, index (out, bus) for the bus matrix, else channel."""
+    exp = {"busmatrix": {(o, b): (0.0 if o == b else OFF_DB) for o in range(N) for b in range(N)},
+           "inlevel": {c: 0.0 for c in range(N)},
+           "buslevel": {c: 0.0 for c in range(N)},
+           "outlevel": {c: 0.0 for c in range(N)}}
+    window = {"inputChannel": "inlevel", "busChannel": "buslevel", "outputChannel": "outlevel"}
+    for tail, db in BUS_PATTERN.items():
+        zone, index, _module = tail.split("/")
+        if zone == "busMatrix":
+            b, o = (int(x) for x in index.split("_"))
+            exp["busmatrix"][(o, b)] = db
+        else:
+            exp[window[zone]][int(index)] = db
+    return exp
+
+
 # ----------------------------------------------------------------- OSC (set)
 
-def _osc_str(s):
-    b = s.encode() + b"\0"
-    return b + b"\0" * (-len(b) % 4)
-
-
-def _osc_msg(addr, value):
-    return _osc_str(addr) + _osc_str(",f") + struct.pack(">f", value)
-
-
-def _read_str(buf, off):
-    end = buf.index(b"\0", off)
-    s = buf[off:end].decode()
-    return s, off + ((end - off) // 4 + 1) * 4
-
-
-def _decode(buf):
-    """(address, [args], consumed) or None if incomplete."""
-    try:
-        addr, off = _read_str(buf, 0)
-        tags, off = _read_str(buf, off)
-    except ValueError:
-        return None
-    args = []
-    for t in tags[1:]:
-        if len(buf) < off + 4:
-            return None
-        if t == "f":
-            args.append(struct.unpack_from(">f", buf, off)[0])
-            off += 4
-        elif t == "i":
-            args.append(struct.unpack_from(">i", buf, off)[0])
-            off += 4
-        elif t == "s":
-            s, off = _read_str(buf, off)
-            args.append(s)
-    return addr, args, off
-
-
 def cmd_set(a):
-    sock = socket.create_connection((a.host, a.port), timeout=3)
-    buf = b""
+    # Only `set` speaks OSC, so only it needs the shared codec next to this
+    # file; analyze/compare/pattern still run from this file alone (the Mac).
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from osc_codec import TCPLink
+    link = TCPLink(a.host, a.port, timeout=3, framing=a.tcp_framing).connect()
+    params = [(f"inputMatrix/{i}_{o}/level", db)
+              for (i, o), db in sorted(PATTERN.items(), key=lambda x: (x[0][1], x[0][0]))]
+    if not a.no_bus_layer:
+        params += sorted(BUS_PATTERN.items())
     bad = 0
-    for (i, o), db in sorted(PATTERN.items(), key=lambda x: (x[0][1], x[0][0])):
-        addr = f"/{a.name}/set/inputMatrix/{i}_{o}/level"
-        sock.sendall(_osc_msg(addr, db))
-        while True:                                  # wait for this echo
-            m = _decode(buf)
-            if m is None:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    sys.exit("connection closed by the server")
-                buf += chunk
-                continue
-            buf = buf[m[2]:]
-            if m[0] == addr:
+    for tail, db in params:
+        addr = f"/{a.name}/set/{tail}"
+        link.send_message(addr, [float(db)])
+        while True:                                  # wait for this echo (or its refusal)
+            try:
+                m = link.read_message()
+            except ConnectionResetError:
+                sys.exit("connection closed by the server")
+            if m.address == addr or (m.address.endswith("/error") and m.args and m.args[0] == tail):
                 break
-        got = m[1][0] if m[1] else None
-        if got is None or abs(got - db) > 0.01:
-            print(f"  {i}_{o}: sent {db}, echoed {got}")
+        if m.address != addr:
+            print(f"  {tail}: refused ({m.args[1] if len(m.args) > 1 else '?'})")
             bad += 1
-    sock.close()
-    print(f"set: 144 crosspoints sent, {144 - bad} echoed as sent, {bad} differ")
+            continue
+        got = m.args[0] if m.args else None
+        if got is None or abs(got - db) > 0.01:
+            print(f"  {tail}: sent {db}, echoed {got}")
+            bad += 1
+    link.close()
+    print(f"set: {len(params)} levels sent, {len(params) - bad} echoed as sent, {bad} differ")
     return 1 if bad else 0
 
 
@@ -164,14 +219,25 @@ def cmd_check_hw(a):
     m = mixer_hw.open_window("matrix")
     if (m.n_in, m.n_out) != (N, N):
         sys.exit(f"matrix is {m.n_in}x{m.n_out}, expected {N}x{N}")
-    bad = 0
+    bad = total = 0
     for (i, o), db in sorted(PATTERN.items()):
         want = mixer_hw.db_to_code(db, m.gain_frac, m.gain_width)[0]
         got = m.read_coef(o * m.n_in + i)
+        total += 1
         if got != want:
-            print(f"  {i}_{o}: register {got:#x}, expected {want:#x} ({db} dB)")
+            print(f"  inputMatrix {i}_{o}: register {got:#x}, expected {want:#x} ({db} dB)")
             bad += 1
-    print(f"check-hw: {144 - bad}/144 gain registers match the pattern")
+    if not a.no_bus_layer:                           # Phase 12: the four bus-layer windows
+        for name, levels in bus_layer_expected().items():
+            w = mixer_hw.open_window(name)
+            for index, db in sorted(levels.items()):
+                want = mixer_hw.db_to_code(db, w.gain_frac, w.gain_width)[0]
+                got = w.read_coef(index[0] * w.n_in + index[1] if name == "busmatrix" else index)
+                total += 1
+                if got != want:
+                    print(f"  {name} {index}: register {got:#x}, expected {want:#x} ({db} dB)")
+                    bad += 1
+    print(f"check-hw: {total - bad}/{total} gain registers match the pattern")
     return 1 if bad else 0
 
 
@@ -288,8 +354,14 @@ def main():
     s.add_argument("--host", default="10.0.0.2")
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--name", default="mixer", help="mixer name (OSC address root)")
+    s.add_argument("--tcp-framing", choices=("len32", "none"), default="len32",
+                   help="TCP framing the mixer uses (default len32; none for older firmware)")
+    s.add_argument("--no-bus-layer", action="store_true",
+                   help="inputMatrix only (a mixer from before Phase 12)")
     s = sub.add_parser("check-hw")
     s.add_argument("--tools", default="/usr/lib/fpgamixer", help="where mixer_hw.py is")
+    s.add_argument("--no-bus-layer", action="store_true",
+                   help="the input matrix only (a bitstream from before Phase 12)")
     s = sub.add_parser("analyze")
     s.add_argument("wav", nargs="+")
     s.add_argument("--save")

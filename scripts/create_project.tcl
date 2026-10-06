@@ -38,14 +38,14 @@ if {[file isdirectory $xhub_boards]} {
 # ------ Phase selection -------------------------------------------------------
 # current_phase drives the synthesis top module, which XDC is used, and (phase4
 # onwards) whether the PS block design is built.
-set current_phase "phase8"
+set current_phase "phase9"
 set synth_top     "${current_phase}_top"
 set sim_top       "tb_phase3_datapath"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 
 # phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top).
-# phase3          : fpgamixer_top WITHOUT the PS -- the static matrix, gains
-#                   tied to MATRIX_GAINS.
+# phase3          : fpgamixer_top WITHOUT the PS -- the static core, every
+#                   coefficient tied to its reset bank (identity, unity).
 # phase4, phase5  : fpgamixer_top WITH the PS (INCLUDE_PS): the BD, the
 #                   M_AXI_CTRL port and the matrix gain registers. Since the
 #                   Phase 5 control plane landed these are the same build; the
@@ -55,6 +55,16 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 #                   fpgamixer_top, and the matrix grown to 12 x 12
 #                   (docs/phase8_status_2026-09-25.md). The phase5 build (4 x 4,
 #                   no link) is in git history before this change.
+# phase9          : phase8 + the media-clock meter (INCLUDE_MCLK): the GEM
+#                   TSU counter exported from the PS (tsu_timer_cnt, no PS
+#                   setting changed) and a status window at 0x8000_2000
+#                   (docs/phase9_status_2026-09-26.md, P9.3); its steering
+#                   window at 0x8000_3000 (P9.4b); and since P9.5 link #2
+#                   (INCLUDE_LINK2): a second Audio Formatter at 0x8011_0000
+#                   + pcm_link + status window at 0x8000_4000, the AVB front
+#                   door's PL half. phase8 stays selectable and builds its
+#                   BD as before (the core is 20 x 20 in every build since
+#                   P9.5, the link #2 channels silent without link #2).
 #
 # The top-level XDC names a few instances by path (u_clk/u_mmcm and
 # u_jb|u_jc/u_fwd_*/u_oddr). Adding hierarchy ABOVE fpgamixer_top, or renaming
@@ -68,18 +78,31 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 # naming instance paths in the top-level XDC (docs/architecture_modules.md).
 set include_ps   0
 set include_link 0
+set include_mclk 0
+set include_link2 0
 set scoped_xdc {}
-if {$current_phase in {phase3 phase4 phase5 phase8}} {
+if {$current_phase in {phase3 phase4 phase5 phase8 phase9}} {
     set synth_top "fpgamixer_top"
     set xdc_file  "constraints/fpgamixer_genesys_zu.xdc"
 }
-if {$current_phase in {phase4 phase5 phase8}} {
+if {$current_phase in {phase4 phase5 phase8 phase9}} {
     set include_ps 1
     lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
+    # Phase 9: the matrix's gains live in coef_bank_ram (the handoff above
+    # stays for the reverse-direction status windows).
+    lappend scoped_xdc {constraints/coef_bank_ram.xdc coef_bank_ram}
+    # Phase 13: the peak meters behind the meter windows
+    lappend scoped_xdc {constraints/pcm_peak.xdc pcm_peak}
 }
-if {$current_phase in {phase8}} {
+if {$current_phase in {phase8 phase9}} {
     set include_link 1
     lappend scoped_xdc {constraints/async_fifo.xdc async_fifo}
+}
+if {$current_phase in {phase9}} {
+    set include_mclk 1
+    set include_link2 1
+    lappend scoped_xdc {constraints/media_clock_meter.xdc media_clock_meter}
+    lappend scoped_xdc {constraints/media_clock_steer.xdc media_clock_steer}
 }
 
 # ------ Verify we're at the repo root ------
@@ -98,6 +121,8 @@ set rtl_files [glob -nocomplain src/rtl/*.sv]
 set sim_files {}
 foreach f [glob -nocomplain src/sim/*.sv] {
     if {[string match "*clk_wiz_audio_stub.sv" $f]} continue
+    # the BD wrapper's sim stand-in (tb_top_windows); the real one is generated
+    if {[string match "*ps_sys_wrapper_stub.sv" $f]} continue
     lappend sim_files $f
 }
 
@@ -191,7 +216,96 @@ set_property -dict [list \
     CONFIG.USE_LOCKED                  {true} \
 ] [get_ips clk_wiz_audio]
 
+# Phase 9 (P9.4a, docs/phase9_status_2026-09-26.md): the dividers are FORCED.
+# Left to itself the wizard picks 25 x 40.625 / 82.625 (VCO 1015.6 MHz) =
+# 12.29198 MHz, +324 ppm: too far off for the media clock's phase-step
+# steering (18.4 M steps/s). No single-MMCM setting reaches 12.288 MHz from
+# 25 MHz; the closest all-integer one is 25 x 58 / 118 (VCO 1450 MHz) =
+# 12.28814 MHz, +11.03 ppm, with a 12.3 ps fine-phase step (VCO/56).
+# Integer dividers keep fine phase shift free of any fractional-divide
+# restriction. The wizard only takes forced values in override mode; its
+# own jitter figure then isn't recomputed, so the real jitter is read from
+# Vivado's clock analysis after implementation (report_clocks / timing).
+# (Requesting 12.288136 MHz instead gets the same ratio as 43.5 / 88.5, VCO
+# 1087.5 MHz, fractional -- not used.)
+#
+# Phase 9 (P9.4b): dynamic fine phase shift on clk_out1 (mclk), driven by
+# media_clock_steer. TRAP: in override mode USE_DYN_PHASE_SHIFT only adds the
+# psclk/psen/psincdec/psdone ports -- the generated MMCM still had
+# CLKOUT0_USE_FINE_PS("FALSE") (checked 2026-09-27), so the steering would
+# silently do nothing. MMCM_CLKOUT0_USE_FINE_PS must be forced too, and is
+# printed below. Builds without the steerer tie psen low.
+set_property CONFIG.USE_DYN_PHASE_SHIFT {true} [get_ips clk_wiz_audio]
+set_property -dict [list \
+    CONFIG.OVERRIDE_MMCM               {true} \
+    CONFIG.MMCM_DIVCLK_DIVIDE          {1} \
+    CONFIG.MMCM_CLKFBOUT_MULT_F        {58.000} \
+    CONFIG.MMCM_CLKOUT0_DIVIDE_F       {118.000} \
+    CONFIG.MMCM_CLKOUT0_USE_FINE_PS    {true} \
+] [get_ips clk_wiz_audio]
+puts "INFO: clk_wiz_audio forced: D=[get_property CONFIG.MMCM_DIVCLK_DIVIDE [get_ips clk_wiz_audio]]\
+ M=[get_property CONFIG.MMCM_CLKFBOUT_MULT_F [get_ips clk_wiz_audio]]\
+ O=[get_property CONFIG.MMCM_CLKOUT0_DIVIDE_F [get_ips clk_wiz_audio]]\
+ dyn_ps=[get_property CONFIG.USE_DYN_PHASE_SHIFT [get_ips clk_wiz_audio]]\
+ clkout0_fine_ps=[get_property CONFIG.MMCM_CLKOUT0_USE_FINE_PS [get_ips clk_wiz_audio]]"
+if {[get_property CONFIG.MMCM_CLKOUT0_USE_FINE_PS [get_ips clk_wiz_audio]] ne "true"} {
+    puts "ERROR: clk_wiz_audio: CLKOUT0 fine phase shift is not enabled; the media-clock steering would do nothing"
+    return
+}
+
 generate_target all [get_files -of_objects [get_ips clk_wiz_audio]]
+
+# ------ One PS <-> PL link's BD half (Phase 8; link #2 in P9.5) --------------
+# An AMD Audio Formatter named <cell>, 8 ch each way, formats at the IP
+# defaults (see the Phase 8 block below): AXI/AXIS on pl_clk0, its registers on
+# control-SmartConnect master <smc_mi>, its two DMA masters on <dma_smc> slave
+# ports <dma_si> and <dma_si>+1, its IRQs on <irqs> inputs <irq_in> and
+# <irq_in>+1, aud_mclk / aud_mreset from the shared link_mclk / link_mreset
+# ports, and its streams exported as M_AXIS_<tag>_MM2S / S_AXIS_<tag>_S2MM.
+# The caller assigns its register address. Returns the cell.
+proc add_link_formatter {cell smc smc_mi dma_smc dma_si irqs irq_in tag rst pl_clk0_hz} {
+    set fmt [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == audio_formatter}] $cell]
+    set_property -dict [list \
+        CONFIG.C_INCLUDE_MM2S          {1} \
+        CONFIG.C_INCLUDE_S2MM          {1} \
+        CONFIG.C_MAX_NUM_CHANNELS_MM2S {8} \
+        CONFIG.C_MAX_NUM_CHANNELS_S2MM {8} \
+        CONFIG.C_PACKING_MODE_MM2S     {0} \
+        CONFIG.C_PACKING_MODE_S2MM     {0} \
+    ] $fmt
+
+    foreach p {s_axi_lite_aclk m_axis_mm2s_aclk s_axis_s2mm_aclk} {
+        connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $fmt/$p]
+    }
+    foreach p {s_axi_lite_aresetn m_axis_mm2s_aresetn s_axis_s2mm_aresetn} {
+        connect_bd_net [get_bd_pins $rst/peripheral_aresetn] [get_bd_pins $fmt/$p]
+    }
+    connect_bd_intf_net [get_bd_intf_pins $smc/$smc_mi] [get_bd_intf_pins $fmt/s_axi_lite]
+
+    connect_bd_net [get_bd_ports link_mclk]   [get_bd_pins $fmt/aud_mclk]
+    connect_bd_net [get_bd_ports link_mreset] [get_bd_pins $fmt/aud_mreset]
+
+    connect_bd_intf_net [get_bd_intf_pins $fmt/m_axi_mm2s] \
+        [get_bd_intf_pins $dma_smc/[format S%02d_AXI $dma_si]]
+    connect_bd_intf_net [get_bd_intf_pins $fmt/m_axi_s2mm] \
+        [get_bd_intf_pins $dma_smc/[format S%02d_AXI [expr {$dma_si + 1}]]]
+
+    connect_bd_net [get_bd_pins $fmt/irq_mm2s] [get_bd_pins $irqs/In$irq_in]
+    connect_bd_net [get_bd_pins $fmt/irq_s2mm] [get_bd_pins $irqs/In[expr {$irq_in + 1}]]
+
+    set m_mm2s [create_bd_intf_port -mode Master \
+        -vlnv xilinx.com:interface:axis_rtl:1.0 M_AXIS_${tag}_MM2S]
+    connect_bd_intf_net [get_bd_intf_pins $fmt/m_axis_mm2s] $m_mm2s
+    set s_s2mm [create_bd_intf_port -mode Slave \
+        -vlnv xilinx.com:interface:axis_rtl:1.0 S_AXIS_${tag}_S2MM]
+    set_property -dict [list \
+        CONFIG.TDATA_NUM_BYTES {4} CONFIG.TID_WIDTH {8} \
+        CONFIG.HAS_TREADY {1} CONFIG.FREQ_HZ $pl_clk0_hz \
+    ] $s_s2mm
+    connect_bd_intf_net $s_s2mm [get_bd_intf_pins $fmt/s_axis_s2mm]
+    return $fmt
+}
 
 # ------ PS block design (phase4+) --------------------------------------------
 # The BD holds the Zynq UltraScale+ PS plus one constant (the GEM0 TSU
@@ -297,9 +411,15 @@ if {$include_ps} {
     set smc [create_bd_cell -type ip \
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc]
     # M00 = matrix window; with the link also M01 = link status window and
-    # M02 = the Audio Formatter's own registers (below).
+    # M02 = the Audio Formatter's own registers (below); phase9 adds
+    # M03 = the media-clock status window and M04 = its steering window,
+    # and (P9.5) M05 = formatter #2, M06 = link #2's status window.
+    # Phase 12: the four bus-layer windows take the next four masters in
+    # every PS build (M01-M04 in phase5, M03-M06 in phase8, M07-M10 in phase9);
+    # Phase 13: the three meter windows the next three (phase9: M11-M13).
+    set n_mi_base [expr {$include_link2 ? 7 : ($include_mclk ? 5 : ($include_link ? 3 : 1))}]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$include_link ? 3 : 1}]] $smc
+        CONFIG.NUM_MI [expr {$n_mi_base + 7}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -357,59 +477,34 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
     # Formatter modes are its defaults: MM2S PCM -> AES and S2MM AES -> PCM,
     # i.e. PCM (S24_LE) in memory and the AES3-subframe layout on the stream
     # (sample at TDATA[27:4]), which is what pcm_link expects.
+    #
+    # P9.5 (link #2, phase9): a second formatter, link2_formatter, built by the
+    # same proc (add_link_formatter): registers on M05 at 0x8011_0000, DMA on
+    # the same SmartConnect (4 slaves) into HPC0, IRQs on the same concat (4
+    # inputs) into pl_ps_irq0, the SAME aud_mclk (link_mclk), streams
+    # M_AXIS_LINK2_MM2S / S_AXIS_LINK2_S2MM. Still no PS8 setting changes.
     if {$include_link} {
-        set fmt [create_bd_cell -type ip \
-            -vlnv [get_ipdefs -filter {NAME == audio_formatter}] link_formatter]
-        set_property -dict [list \
-            CONFIG.C_INCLUDE_MM2S          {1} \
-            CONFIG.C_INCLUDE_S2MM          {1} \
-            CONFIG.C_MAX_NUM_CHANNELS_MM2S {8} \
-            CONFIG.C_MAX_NUM_CHANNELS_S2MM {8} \
-            CONFIG.C_PACKING_MODE_MM2S     {0} \
-            CONFIG.C_PACKING_MODE_S2MM     {0} \
-        ] $fmt
-
-        foreach p {s_axi_lite_aclk m_axis_mm2s_aclk s_axis_s2mm_aclk} {
-            connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $fmt/$p]
-        }
-        foreach p {s_axi_lite_aresetn m_axis_mm2s_aresetn s_axis_s2mm_aresetn} {
-            connect_bd_net [get_bd_pins $rst/peripheral_aresetn] [get_bd_pins $fmt/$p]
-        }
-        connect_bd_intf_net [get_bd_intf_pins $smc/M02_AXI] [get_bd_intf_pins $fmt/s_axi_lite]
+        set n_links [expr {$include_link2 ? 2 : 1}]
 
         set link_mclk [create_bd_port -dir I -type clk -freq_hz 12288000 link_mclk]
-        connect_bd_net $link_mclk [get_bd_pins $fmt/aud_mclk]
         set link_mreset [create_bd_port -dir I -type rst link_mreset]
         set_property CONFIG.POLARITY {ACTIVE_HIGH} $link_mreset
-        connect_bd_net $link_mreset [get_bd_pins $fmt/aud_mreset]
 
         set dma_smc [create_bd_cell -type ip \
             -vlnv [get_ipdefs -filter {NAME == smartconnect}] link_dma_smc]
-        set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] $dma_smc
+        set_property -dict [list CONFIG.NUM_SI [expr {2 * $n_links}] CONFIG.NUM_MI {1}] $dma_smc
         connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $dma_smc/aclk]
         connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $dma_smc/aresetn]
-        connect_bd_intf_net [get_bd_intf_pins $fmt/m_axi_mm2s] [get_bd_intf_pins $dma_smc/S00_AXI]
-        connect_bd_intf_net [get_bd_intf_pins $fmt/m_axi_s2mm] [get_bd_intf_pins $dma_smc/S01_AXI]
         connect_bd_intf_net [get_bd_intf_pins $dma_smc/M00_AXI] \
                             [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HPC0_FPD]
 
         set irqs [create_bd_cell -type ip \
             -vlnv [get_ipdefs -filter {NAME == xlconcat}] link_irqs]
-        set_property CONFIG.NUM_PORTS {2} $irqs
-        connect_bd_net [get_bd_pins $fmt/irq_mm2s] [get_bd_pins $irqs/In0]
-        connect_bd_net [get_bd_pins $fmt/irq_s2mm] [get_bd_pins $irqs/In1]
+        set_property CONFIG.NUM_PORTS [expr {2 * $n_links}] $irqs
         connect_bd_net [get_bd_pins $irqs/dout] [get_bd_pins zynq_ultra_ps_e_0/pl_ps_irq0]
 
-        set m_mm2s [create_bd_intf_port -mode Master \
-            -vlnv xilinx.com:interface:axis_rtl:1.0 M_AXIS_LINK_MM2S]
-        connect_bd_intf_net [get_bd_intf_pins $fmt/m_axis_mm2s] $m_mm2s
-        set s_s2mm [create_bd_intf_port -mode Slave \
-            -vlnv xilinx.com:interface:axis_rtl:1.0 S_AXIS_LINK_S2MM]
-        set_property -dict [list \
-            CONFIG.TDATA_NUM_BYTES {4} CONFIG.TID_WIDTH {8} \
-            CONFIG.HAS_TREADY {1} CONFIG.FREQ_HZ $pl_clk0_hz \
-        ] $s_s2mm
-        connect_bd_intf_net $s_s2mm [get_bd_intf_pins $fmt/s_axis_s2mm]
+        set fmt [add_link_formatter link_formatter $smc M02_AXI $dma_smc 0 $irqs 0 \
+                     LINK $rst $pl_clk0_hz]
 
         # Link status window: plain RTL (pcm_link_stat_regs) outside the BD,
         # like the matrix window.
@@ -423,6 +518,7 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
         ] $m_stat
         connect_bd_intf_net [get_bd_intf_pins $smc/M01_AXI] $m_stat
 
+        # (phase9 appends M_AXI_MCLKSTAT below, once that port exists.)
         set_property CONFIG.ASSOCIATED_BUSIF \
             {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
             [get_bd_ports ctrl_aclk]
@@ -430,22 +526,131 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
         assign_bd_address -offset 0x80001000 -range 4K \
             -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
             [get_bd_addr_segs M_AXI_LINKSTAT/Reg]
+
+        # ----- Phase 9 (P9.3): media-clock meter -----
+        # The GEM0 TSU counter is already a PS output (it appeared when the
+        # TSU was enabled in Phase 4); exporting it to the RTL changes no PS
+        # setting. The RTL uses the inverse of bit 45 as a 1PPS (UG1085 v2.5
+        # p. 1061). Its status window is plain RTL (media_clock_stat_regs),
+        # like the other windows.
+        if {$include_mclk} {
+            set tsu_cnt [create_bd_port -dir O -from 93 -to 0 tsu_timer_cnt]
+            connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/emio_enet0_enet_tsu_timer_cnt] $tsu_cnt
+
+            set m_mclk [create_bd_intf_port -mode Master \
+                -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_MCLKSTAT]
+            set_property -dict [list \
+                CONFIG.PROTOCOL   {AXI4LITE} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.ADDR_WIDTH {32} \
+                CONFIG.FREQ_HZ    $pl_clk0_hz \
+            ] $m_mclk
+            connect_bd_intf_net [get_bd_intf_pins $smc/M03_AXI] $m_mclk
+            assign_bd_address -offset 0x80002000 -range 4K \
+                -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+                [get_bd_addr_segs M_AXI_MCLKSTAT/Reg]
+
+            # P9.4b: the steering window (media_clock_ctrl_regs, RW)
+            set m_mctl [create_bd_intf_port -mode Master \
+                -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_MCLKCTRL]
+            set_property -dict [list \
+                CONFIG.PROTOCOL   {AXI4LITE} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.ADDR_WIDTH {32} \
+                CONFIG.FREQ_HZ    $pl_clk0_hz \
+            ] $m_mctl
+            connect_bd_intf_net [get_bd_intf_pins $smc/M04_AXI] $m_mctl
+            assign_bd_address -offset 0x80003000 -range 4K \
+                -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+                [get_bd_addr_segs M_AXI_MCLKCTRL/Reg]
+
+            set_property CONFIG.ASSOCIATED_BUSIF \
+                {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXI_MCLKSTAT:M_AXI_MCLKCTRL:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM} \
+                [get_bd_ports ctrl_aclk]
+        }
         assign_bd_address -offset 0x80100000 -range 64K \
             -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
             [get_bd_addr_segs $fmt/s_axi_lite/reg0]
-        # The formatter's two DMA masters see DDR through HPC0.
+        set fmts [list $fmt]
+
+        # ----- Phase 9 (P9.5): link #2, the AVB front door's PL half -----
+        # Formatter #2 on M05 at 0x8011_0000 (driver-owned range, like #1);
+        # its status window (pcm_link_stat_regs u_link2_stat) on M06 at
+        # 0x8000_4000, the next free window slot (decision L3).
+        if {$include_link2} {
+            set fmt2 [add_link_formatter link2_formatter $smc M05_AXI $dma_smc 2 $irqs 2 \
+                          LINK2 $rst $pl_clk0_hz]
+            assign_bd_address -offset 0x80110000 -range 64K \
+                -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+                [get_bd_addr_segs $fmt2/s_axi_lite/reg0]
+            lappend fmts $fmt2
+
+            set m_stat2 [create_bd_intf_port -mode Master \
+                -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_LINK2STAT]
+            set_property -dict [list \
+                CONFIG.PROTOCOL   {AXI4LITE} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.ADDR_WIDTH {32} \
+                CONFIG.FREQ_HZ    $pl_clk0_hz \
+            ] $m_stat2
+            connect_bd_intf_net [get_bd_intf_pins $smc/M06_AXI] $m_stat2
+            assign_bd_address -offset 0x80004000 -range 4K \
+                -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+                [get_bd_addr_segs M_AXI_LINK2STAT/Reg]
+
+            set_property CONFIG.ASSOCIATED_BUSIF \
+                {M_AXI_CTRL:M_AXI_LINKSTAT:M_AXI_MCLKSTAT:M_AXI_MCLKCTRL:M_AXI_LINK2STAT:M_AXIS_LINK_MM2S:S_AXIS_LINK_S2MM:M_AXIS_LINK2_MM2S:S_AXIS_LINK2_S2MM} \
+                [get_bd_ports ctrl_aclk]
+        }
+
+        # The formatters' DMA masters see DDR through HPC0.
         assign_bd_address
         foreach seg [get_bd_addr_segs -of_objects [get_bd_addr_spaces zynq_ultra_ps_e_0/Data]] {
             puts "INFO: PS address map: [get_property NAME $seg] \
 [get_property OFFSET $seg] [get_property RANGE $seg]"
         }
-        foreach sp [get_bd_addr_spaces $fmt/*] {
-            foreach seg [get_bd_addr_segs -of_objects $sp] {
-                puts "INFO: [get_property NAME $sp] -> [get_property NAME $seg] \
-[get_property OFFSET $seg] [get_property RANGE $seg]"
+        foreach f $fmts {
+            foreach sp [get_bd_addr_spaces $f/*] {
+                foreach seg [get_bd_addr_segs -of_objects $sp] {
+                    puts "INFO: [get_property NAME $f] [get_property NAME $sp] -> \
+[get_property NAME $seg] [get_property OFFSET $seg] [get_property RANGE $seg]"
+                }
             }
         }
     }
+
+    # ----- Phase 12: the bus layer's windows (decision L6) -----
+    # Plain RTL bindings in fpgamixer_top, like the matrix window: the bus
+    # matrix (matrix_regs_axil u_busmx_regs) and the input / bus / output
+    # level stages (gain_regs_axil u_inlvl_regs / u_buslvl_regs /
+    # u_outlvl_regs), on the SmartConnect masters after the ones above, at the
+    # next free window slots. Still no PS8 setting changes.
+    # Phase 13 (decision M4): the three peak-meter windows (peak_regs_axil
+    # u_inmtr_regs / u_busmtr_regs / u_outmtr_regs) follow, the same way.
+    set mi $n_mi_base
+    foreach {port offset} {M_AXI_BUSMX  0x80005000 M_AXI_INLVL  0x80006000 \
+                           M_AXI_BUSLVL 0x80007000 M_AXI_OUTLVL 0x80008000 \
+                           M_AXI_INMTR  0x80009000 M_AXI_BUSMTR 0x8000A000 \
+                           M_AXI_OUTMTR 0x8000B000} {
+        set p [create_bd_intf_port -mode Master \
+            -vlnv xilinx.com:interface:aximm_rtl:1.0 $port]
+        set_property -dict [list \
+            CONFIG.PROTOCOL   {AXI4LITE} \
+            CONFIG.DATA_WIDTH {32} \
+            CONFIG.ADDR_WIDTH {32} \
+            CONFIG.FREQ_HZ    $pl_clk0_hz \
+        ] $p
+        connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] $p
+        assign_bd_address -offset $offset -range 4K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs $port/Reg]
+        puts "INFO: $port = [get_property OFFSET [get_bd_addr_segs \
+zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
+        incr mi
+    }
+    set_property CONFIG.ASSOCIATED_BUSIF \
+        "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_BUSMX:M_AXI_INLVL:M_AXI_BUSLVL:M_AXI_OUTLVL:M_AXI_INMTR:M_AXI_BUSMTR:M_AXI_OUTMTR" \
+        [get_bd_ports ctrl_aclk]
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
     puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \
@@ -466,7 +671,13 @@ dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
     add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
 
     # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in fpgamixer_top.
-    if {$include_link} {
+    if {$include_link2} {
+        set_property verilog_define {INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2} [get_filesets sources_1]
+        puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2 -- + media clock, link #2"
+    } elseif {$include_mclk} {
+        set_property verilog_define {INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK} [get_filesets sources_1]
+        puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK -- + media-clock meter"
+    } elseif {$include_link} {
         set_property verilog_define {INCLUDE_PS INCLUDE_LINK} [get_filesets sources_1]
         puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK -- PS + PS<->PL audio link"
     } else {
