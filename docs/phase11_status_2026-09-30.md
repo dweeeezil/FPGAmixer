@@ -186,6 +186,13 @@ Plugged into a Type-A port with the board running; the user's terminal output:
 
 **Compile check (bitbake, the board's toolchain):** `fpgamixer-usbhost`, `fpgamixer-usb-bridge`, `fpgamixer-avb` all compile with `-Wall -Wextra`, **0 warnings** (the latter two prove the changed core still builds them unchanged).
 
+**First H.2 bench (2026-10-07, image `p11h2-usbhost-20261006`, user's terminal):**
+
+- `fpgamixer-rate-test` on the board: **PASS**, the same numbers as on the VM (the aarch64 build is bit-identical in behaviour).
+- **CPU per direction, 2 ch, on one A53 core:** sinc fastest **8.2 %**, medium 16.9 %, best 56.3 %, linear 0.9 %. Both directions together at "fastest": ~16 % of one of four cores. Quality stays **fastest** (decision H3: chosen after the measurement; "best" would cost more than a whole core for both directions).
+- The bridge started (it stopped the USB device bridge, by `Conflicts=`), both directions ~48,000 frames/s, **xruns 0/0, coarse fixes 0** over 80 s; the queues within ±62 frames of target. **The servos hadn't settled** in 80 s: A's ratio +71 → +93 → +24 ppm, B's −10 → −60 ppm (A and B should end up equal and opposite: the same two clocks). Tuning is for the soak (H.5).
+- **By ear: only noise from the M2's headphones.** Suspect, from reading the code: the rate stage is the first consumer that uses a link card's **whole** int32 capture word; every earlier bridge only took its low three bytes, and `bridge_convert.h`'s "sign-extended" for the formatter's S24_LE capture was never measured. If the top byte isn't the sign, every negative sample reaching the resampler on direction B is a huge positive one. **Fix (`b43be18`):** `s24le_to_s32` sign-extends from bit 23 on unpack, whatever the top byte holds (tested; a mutant without it fails 3 checks); no change for the USB/AVB bridges, which never read the top byte. Image `p11h2b` built with it; the evidence (the top byte as captured) asked of the bench.
+
 **Image `p11h2-usbhost-20261006`** (2026-10-07 03:06 UTC; layer at the clean commit `19d1fe6`; bitstream unchanged, `p13`, MD5 `d1531052…`; no `gen-machine-conf`): 15,088 tasks, all succeeded, 4 min 21 s. Checked in the rootfs: `VERSION` `19d1fe6`; `/usr/bin/fpgamixer-usbhost-bridge`, `/usr/bin/fpgamixer-rate-test`, `/etc/fpgamixer/usbhost.conf`, `libsamplerate.so.0.2.2`, the unit **not enabled** (no `multi-user.target.wants` link), the USB device bridge still enabled. **`build/sd/p11h2-usbhost-20261006.wic.xz`** (109 MB, MD5 `47c9fbe7…`, same on both ends).
 
 ## 7. Log
