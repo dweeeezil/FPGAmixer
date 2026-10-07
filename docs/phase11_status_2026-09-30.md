@@ -147,6 +147,20 @@ What the Pmods hold up today, read from the tree:
 
 H-1 (bench, no change, on the current image `p13-meters-20261006`) → H.1 (rate stage + libsamplerate, CPU on the board) → H.2 (the bridge on link #1, the USB-device bridge stopped; **by ear on the MOTU's headphones**, not the Pmods) → H.3 (link #3 at 0x8000_C000 / 0x8012_0000, core 28/28/28, the ADC pulldowns per P1; XSim, Vivado, SDT) → H.4 (card node, `mixer_hw` `linkstat3`, server seeding, restore test at 28, image; bench) → H.5 (60-min soak).
 
+### 8.4 H-1: what the MOTU M2 reports (bench, 2026-10-06, image `p13-meters-20261006`, no change)
+
+Plugged into a Type-A port with the board running; the user's terminal output:
+
+| Item | Reading | Consequence |
+|---|---|---|
+| ALSA card | **3, id `M2`** ("MOTU M2 at usb-xhci-hcd.3.auto-1.1, high speed"), beside `FPGAmixerLink`, `FPGAmixerLink2`, `UAC2Gadget` | `snd-usb-audio` binds with no kernel change (H-1's question answered); the bridge opens it by id (`hw:M2`), not by number |
+| USB | VID `07fd`, PID `000b`, bcdDevice 2.07, high speed, behind the board's USB2513B hub (`1-1.1`) | for `usbhost.conf` (the bridge can wait for this card id) |
+| Playback | interface 1, **S32_LE, 24 valid bits, 2 ch (FL FR)**, rates 44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz, endpoint 0x02 **ASYNC**, 125 µs packets, **implicit feedback** from the capture endpoint 0x82 | the M2 is its own clock master; its capture stream paces its playback. Run it at **48 kHz**; the bridge **must resample** both ways (H3/H4 as decided) |
+| Capture | interface 2, S32_LE, 24 bits, 2 ch, endpoint 0x82 ASYNC | the same clock as playback (one rate to estimate, not two) |
+| Extra | `cdc_acm 1-1.1:1.5: ttyACM0` | the M2's control/serial port; ignored |
+
+**H1 confirmed:** 2 × 2 (H2's cap at 8 is moot). The format S32_LE with 24 valid bits is the link's own sample layout, so no bit-depth conversion beyond what `bridge_convert.h` already does.
+
 ## 7. Log
 
 - **2026-09-30:** proposal written from the Phase 8 §9.2 scope, the P9.5 link template and `bridge_core`. Build VM unreachable at the first try (8 s connect timeout).

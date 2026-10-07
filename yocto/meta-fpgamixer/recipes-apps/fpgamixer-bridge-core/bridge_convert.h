@@ -72,4 +72,29 @@ static inline void s32_to_s32be(const int32_t *in, uint8_t *out, size_t n)
 	}
 }
 
+/*
+ * S32_LE carrying 24-bit audio (Phase 11: the MOTU M2 through snd-usb-audio,
+ * "Format: S32_LE, Bits: 24"): the 24 bits left-justified in a little-endian
+ * 32-bit word. Same layout as S32_BE above, the other byte order. Read as
+ * bytes, so it is correct on any host.
+ */
+static inline void s32le_to_s32(const uint8_t *in, int32_t *out, size_t n)
+{
+	for (size_t i = 0; i < n; i++, in += 4) {
+		uint32_t v = in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
+			     ((uint32_t)in[3] << 24);
+		out[i] = (int32_t)v >> 8;
+	}
+}
+
+static inline void s32_to_s32le(const int32_t *in, uint8_t *out, size_t n)
+{
+	for (size_t i = 0; i < n; i++, out += 4) {
+		out[0] = 0;
+		out[1] = (uint8_t)in[i];
+		out[2] = (uint8_t)(in[i] >> 8);
+		out[3] = (uint8_t)(in[i] >> 16);
+	}
+}
+
 #endif
