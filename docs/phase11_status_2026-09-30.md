@@ -159,7 +159,34 @@ Plugged into a Type-A port with the board running; the user's terminal output:
 | Capture | interface 2, S32_LE, 24 bits, 2 ch, endpoint 0x82 ASYNC | the same clock as playback (one rate to estimate, not two) |
 | Extra | `cdc_acm 1-1.1:1.5: ttyACM0` | the M2's control/serial port; ignored |
 
-**H1 confirmed:** 2 × 2 (H2's cap at 8 is moot). The format S32_LE with 24 valid bits is the link's own sample layout, so no bit-depth conversion beyond what `bridge_convert.h` already does.
+**H1 confirmed:** 2 × 2 (H2's cap at 8 is moot). S32_LE with 24 valid bits is left-justified (as the AAF devices' S32_BE), so one new converter pair (`s32le_to_s32` / `s32_to_s32le`) covers it.
+
+### 8.5 H.1: the rate stage (VM): PASS
+
+| File | What |
+|---|---|
+| `fpgamixer-bridge-core/bridge_core.{h,c}` | **`struct bridge_rate`** (start / process / set_ratio / describe / stop), optional per direction (`bridge_dir.resampler`; NULL keeps the 1:1 path, so the USB and AVB bridges are unchanged); **`play_channels`** (the first min(capture, playback) channels carried, extra playback channels zero: the link card always opens at 8); **S32_LE**. The data path became unpack → narrow → [rate] → widen → pack; a rate stage may return 0 frames (still filling), and its describe joins the 10 s log line |
+| `fpgamixer-bridge-core/bridge_convert.h` | `s32le_to_s32` / `s32_to_s32le` (24 bits left-justified, little-endian; read as bytes, host-independent) |
+| `fpgamixer-bridge-core/bridge_rate_src.{h,c}` (new) | the libsamplerate stage: int32 ↔ float / 2²³, `src_process` with `end_of_input = 0` (state kept across blocks), the ratio passed per block (libsamplerate moves to it smoothly), rounding and **clamping** to 24 bits on the way back. Its own file: only the host bridge links it and libsamplerate (H4) |
+| `fpgamixer-bridge-core/test_bridge_rate.c` (new) | at 48 kHz in 256-frame blocks: frame counts follow the ratio; a 1 kHz tone's crossings per output frame scale by exactly 1/ratio at −1000, 0, +1000 ppm; a ratio step mid-stream: no sample jump above the tone's own slope; a full-scale square (Gibbs overshoot) against a float reference: every output equals the reference rounded and clamped; channel 1 stays silent. `--bench`: CPU per converter |
+| `fpgamixer-bridge-core/test_bridge_convert.c` | S32_LE layout, sign, low byte dropped, round trips |
+
+**Results (VM, gcc 13.3, libsamplerate 0.2.2 built from the Yocto download into `/tmp/lsr`; the VM's system packages untouched):** `test_bridge_convert` PASS; `test_bridge_rate` **PASS**: 480,000 in → 479,501 / 479,980 / 480,460 out at −1000 / 0 / +1000 ppm (the converter's ~20-frame delay), the tone's crossings within 2·10⁻⁴; the ratio step's largest sample step 548,370 vs the tone's slope 549,033; the square: 48,113 frames, **23,958 overshoots clamped, 0 mismatches**. Benchmark on the VM (x86, for scale only): sinc fastest 0.21 %, medium 0.40 %, best 1.18 % of a core per direction (2 ch). **The board's number comes from `fpgamixer-rate-test --bench` at the H.2 bench.**
+
+**Mutation (VM, baseline first): 9 of 9 killed**: ratio ignored, no clamp at +/− full scale, the wrong scale back, the converter state reset every block, truncation instead of rounding, `set_ratio` ignored, an S32_LE logical shift, S32_LE bytes shifted.
+
+### 8.6 H.2: the host bridge (code; bench next)
+
+| File | What |
+|---|---|
+| `recipes-apps/fpgamixer-usbhost/files/fpgamixer-usbhost-bridge.c` (new) | two directions: **A** interface capture (S32_LE, 2 ch) → resample → link playback (S24_LE, 8 ch); **B** link capture (8 ch) → resample → interface playback (2 ch). Each direction's ratio from a **PI servo on its playback queue** (the USB bridge's constants: KP 0.5 ppm/frame, KI 0.05 ppm/frame·s, ±1000 ppm, anti-windup); a queue above target lowers the ratio (fewer frames), the same sign both ways. Period 192 (4 ms), 4 periods, target 2 periods. **Hot plug:** exits when the card id is absent or disappears (a 1 s check), systemd restarts it every 2 s |
+| `…/files/fpgamixer-usbhost-bridge.service`, `…/files/usbhost.conf` (new) | `EnvironmentFile=/etc/fpgamixer/usbhost.conf` (card `M2`, link, channels 2, quality `fastest`); `Restart=always`, `RestartSec=2`; **`Conflicts=fpgamixer-usb-bridge.service`** while the link is #1 (H.2; removed in H.4) |
+| `…/fpgamixer-usbhost_1.0.bb` (new) | builds the bridge and **`fpgamixer-rate-test`** (the unit test and `--bench`, on the board); `DEPENDS` alsa-lib, libsamplerate0; the unit installed **but not enabled** (H.2 starts it by hand) |
+| `recipes-extended/images/edf-linux-disk-image.bbappend` | `fpgamixer-usbhost` in the image: the one line that trims the Linux half |
+
+**Compile check (bitbake, the board's toolchain):** `fpgamixer-usbhost`, `fpgamixer-usb-bridge`, `fpgamixer-avb` all compile with `-Wall -Wextra`, **0 warnings** (the latter two prove the changed core still builds them unchanged).
+
+**Image `p11h2-usbhost-20261006`** (2026-10-07 03:06 UTC; layer at the clean commit `19d1fe6`; bitstream unchanged, `p13`, MD5 `d1531052…`; no `gen-machine-conf`): 15,088 tasks, all succeeded, 4 min 21 s. Checked in the rootfs: `VERSION` `19d1fe6`; `/usr/bin/fpgamixer-usbhost-bridge`, `/usr/bin/fpgamixer-rate-test`, `/etc/fpgamixer/usbhost.conf`, `libsamplerate.so.0.2.2`, the unit **not enabled** (no `multi-user.target.wants` link), the USB device bridge still enabled. **`build/sd/p11h2-usbhost-20261006.wic.xz`** (109 MB, MD5 `47c9fbe7…`, same on both ends).
 
 ## 7. Log
 
