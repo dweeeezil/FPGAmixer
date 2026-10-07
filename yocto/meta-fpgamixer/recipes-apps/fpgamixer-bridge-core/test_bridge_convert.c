@@ -51,6 +51,16 @@ int main(void)
 	CHECK(o2[0] == -8388608, "S32_BE -> s32 [0]: %d", o2[0]);
 	CHECK(o2[1] == 1, "S32_BE -> s32 [1]: %d", o2[1]);
 
+	/* S24_LE from a link card: sign from bit 23, whatever the top byte holds
+	 * (zero, garbage, or a proper extension) */
+	const int32_t s24w[5] = { 0x00FFFFFE, (int32_t)0xFFFFFFFE, 0x007FFFFF,
+				  (int32_t)0xAB800000, 0x12000001 };
+	const int32_t s24want[5] = { -2, -2, 8388607, -8388608, 1 };
+	int32_t s24o[5];
+	s24le_to_s32(s24w, s24o, 5);
+	for (int i = 0; i < 5; i++)
+		CHECK(s24o[i] == s24want[i], "S24_LE word -> s32 [%d]: %d, want %d", i, s24o[i], s24want[i]);
+
 	/* S32_LE with 24-bit audio (Phase 11, the MOTU M2): left-justified in a
 	 * little-endian word, low byte zero; the incoming low byte dropped */
 	s32_to_s32le(v, b4, 2);

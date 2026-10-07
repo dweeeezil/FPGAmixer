@@ -4,7 +4,8 @@
  * ALSA dependency so it can be unit-tested anywhere (test_bridge_convert.c).
  *
  * The link cards (FPGAmixerLink, FPGAmixerLink2) use S24_LE: 24 bits
- * LSB-justified in a 32-bit word, sign-extended; here an int32_t. The other
+ * LSB-justified in a 32-bit word; here an int32_t, sign-extended on the way
+ * in by s24le_to_s32 (the top byte isn't relied on). The other
  * ends use 3-byte packed samples: the UAC2 gadget S24_3LE, the AAF devices
  * S24_3BE (docs/phase9_status_2026-09-26.md sec. 6.12, decision A4).
  */
@@ -13,6 +14,19 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+/*
+ * S24_LE as read from a link card: 24 bits in the low three bytes of a
+ * 32-bit word. The top byte is NOT trusted to be the sign extension (never
+ * measured for the formatter's capture side; Phase 11 H.2: the first user
+ * that reads the whole int32, the resampler, heard noise): sign-extend from
+ * bit 23 here, whatever the top byte holds.
+ */
+static inline void s24le_to_s32(const int32_t *in, int32_t *out, size_t n)
+{
+	for (size_t i = 0; i < n; i++)
+		out[i] = (int32_t)((uint32_t)in[i] << 8) >> 8;
+}
 
 static inline void s24_3le_to_s32(const uint8_t *in, int32_t *out, size_t n)
 {

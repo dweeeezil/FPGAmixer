@@ -78,7 +78,7 @@ static void unpack(const void *in, snd_pcm_format_t fmt, int32_t *out, size_t sa
 	case SND_PCM_FORMAT_S24_3BE: s24_3be_to_s32(in, out, samples); break;
 	case SND_PCM_FORMAT_S32_BE:  s32be_to_s32(in, out, samples); break;
 	case SND_PCM_FORMAT_S32_LE:  s32le_to_s32(in, out, samples); break;
-	default: memcpy(out, in, samples * 4); break;  /* S24_LE already */
+	default: s24le_to_s32(in, out, samples); break; /* S24_LE: sign from bit 23 */
 	}
 }
 
