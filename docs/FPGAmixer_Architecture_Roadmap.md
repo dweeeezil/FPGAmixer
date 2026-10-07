@@ -155,7 +155,8 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 7. ~~When the first multichannel front door (USB or AVB) works: repeat the power-cycle restore test with real multichannel audio on every crosspoint~~ Done 2026-09-26 with the USB front door: all 144 crosspoints restored exactly after a power pull, audio verified (`phase8_status_2026-09-25.md` §19).
 8. ~~Phase 8 remainder, Phases 9, 10, controller support, 12~~ Done or mostly done, see the table. **Open as of 2026-10-06**, in no fixed order (the user picks):
    - ~~Metering~~ Done 2026-10-06 (Phase 13).
-   - **Next (user, 2026-10-06): channel sources (I/O patching), virtual groups, snapshots**, in a new session: `docs/prompt_phase14_qol.md`.
+   - **Next (user, 2026-10-06 17:40 PDT): Phase 11, USB host mode** (the MOTU M2 as the board's headphone/mic I/O), and **retiring the Pmods** (`phase11_status_2026-09-30.md` §8).
+   - **Then: snapshots → virtual groups → channel sources (I/O patching)**: dated plans in `docs/plans/`, bundled in `docs/prompt_phase14_qol.md`.
    - **The F1–F9 checks on the board** (controller-support step 8: `osc_mixer_test.py` from the Mac).
    - **AVB loose ends:** a clean boot with no manual steps, two streams to one listener, P9.7 checks, P9.8 soak, a multi-hop soak through a switch.
    - **Phase 11, USB host mode** (MOTU M2): decided, bench H-1 next.

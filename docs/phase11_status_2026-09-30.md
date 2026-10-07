@@ -2,7 +2,7 @@
 
 **Branch:** `phase9/time-shared-core` (continued). **Starting image:** `p10e-names-20260930`.
 
-**Status: decided (§6.1), nothing built yet.** Next: bench step H-1 (what the MOTU M2 reports to Linux).
+**Status: decided (§6.1), nothing built yet. Resumed 2026-10-06 (§8: re-check against Phases 12–13, the Pmods, decision P1).** Next: bench step H-1 (what the MOTU M2 reports to Linux).
 
 ---
 
@@ -114,7 +114,41 @@ The user's purpose: the interface holds their main headphone and mic preamps, so
 
 **Removing the block later (the user's question):** the state file stores only `inputMatrix/<in>_<out>/level`, generic indices, so levels recorded for 20–27 do no harm while the core doesn't have those channels: they are skipped. **One rule to keep:** if the block is removed, indices 20–27 are **retired, not reused**. Otherwise the next block appended at 20 (e.g. the board's own analog IO) would inherit the MOTU's saved levels. (Alternatively, delete those keys when a different block takes the indices.)
 
+## 8. Resumed 2026-10-06 17:40 PDT: re-check against today's tree, and the Pmods
+
+The user, 2026-10-06: *"I think it's time to ditch the pmods. … Let's finish implementing USB host mode so the board can talk to my headphones without the pmods."* The MOTU M2 becomes the board's analog I/O (headphones, mic preamps). Branch **`phase11-usb-host`**, from `phase13-metering` (`d3c1587` + the plans in `docs/plans/`).
+
+### 8.1 What changed since §2–§5 (Phases 12 and 13), checked in the tree
+
+| Then (§2–§5) | Now | Consequence |
+|---|---|---|
+| Core 28 × 28, one matrix, 4 lanes, D 233 | the core is a chain: 28 inputs → levels → 28 × 28 input matrix → 28 buses → levels → 28 × 28 bus matrix → levels → 28 outputs (`mixer_core_pkg`, `N_BUS = N`) | the chooser gives **10 + 10 lanes, D = 233** at 28/28/28 (`tb_mixer_core` covers this size already): 20 + 3 = **23 DSP48E2s** of 360. Every level stage and meter grows to 28 by parameter |
+| Link #3 status window at **0x8000_5000** | 0x8000_5000–B000 are now the bus matrix, levels and meters | **link #3 status at 0x8000_C000** (the next free slot); formatter #3 at 0x8012_0000 unchanged |
+| Control SmartConnect 7 → 9 masters | phase9 builds use **14** (7 + the 7 Phase 12/13 windows) | link #3 needs 2 more (formatter #3, its status window): **16, the SmartConnect maximum**. Fine for this phase; the next window after it needs a second SmartConnect (or a cascade). To record in `create_project.tcl` |
+| Seeding: identity on every crosspoint; H5 "all off" for 20–27 | two matrices and three level stages | H5 applies to the **input matrix** only: input 20–27 → anything off. The bus matrix stays identity (bus k → output k carries nothing unless an input is routed to bus k), levels 0 dB. The "identity ranges" server setting (§6.1) becomes "input-matrix identity ranges" |
+| Meters | none | the meters cover 20–27 by parameter (N = 28) |
+| Restore test N = 20 | 860 registers | becomes 28 × 28: 784 + 784 input/bus crosspoints + 3 × 28 levels; the USB analysis unchanged |
+
+### 8.2 The Pmods (decision P1)
+
+What the Pmods hold up today, read from the tree:
+
+- **The frame strobe** for the whole core, both links, the meters and the coefficient banks is **`jb_rx_valid`**, the Pmod JB I2S receiver's word strobe (`fpgamixer_top`). The I2S clock divider runs without a Pmod, so the strobe keeps working when the module is unplugged, but the RTL can't simply be deleted.
+- **D_MAX = 250** comes from `i2s_port` sampling its pair on edge 254. Without the I2S transmitters the limit becomes the links' capture at the next strobe.
+- **Core channels 0–3** are the Pmods' (in and out). Per §6.1's rule they would be **retired, not reused**.
+- **Unplugged, their ADC data pins float:** `jb_ad_sdout` / `jc_ad_sdout` have no pull resistor in `fpgamixer_genesys_zu.xdc`, so channels 1–4 would read noise (visible on the meters, audible if routed).
+
+| Option | What | For / against |
+|---|---|---|
+| **(a)** (recommended) | **Unplug the Pmods now; keep their RTL for this phase**, with a **PULLDOWN** on the two ADC data pins (in the H.3 bitstream) so channels 1–4 read silence. Remove the Pmod RTL properly with the channel-sources work, where physical ports stop defining channel numbers (`plan_channel_sources_2026-10-06.md`): a frame-strobe generator from the clock divider, D_MAX re-derived, ports 0–3 retired | no dead strips appear before patching exists; the build stays close to known-good; one XDC line |
+| (b) | Remove the Pmod RTL in this phase | channels 0–3 become 4 permanently silent strips in the app until patching exists; the frame strobe and D_MAX change in the same build as link #3 (two risks in one bench) |
+
+### 8.3 Steps, updated
+
+H-1 (bench, no change, on the current image `p13-meters-20261006`) → H.1 (rate stage + libsamplerate, CPU on the board) → H.2 (the bridge on link #1, the USB-device bridge stopped; **by ear on the MOTU's headphones**, not the Pmods) → H.3 (link #3 at 0x8000_C000 / 0x8012_0000, core 28/28/28, the ADC pulldowns per P1; XSim, Vivado, SDT) → H.4 (card node, `mixer_hw` `linkstat3`, server seeding, restore test at 28, image; bench) → H.5 (60-min soak).
+
 ## 7. Log
 
 - **2026-09-30:** proposal written from the Phase 8 §9.2 scope, the P9.5 link template and `bridge_core`. Build VM unreachable at the first try (8 s connect timeout).
 - **2026-09-30:** decisions H0–H6 (§6.1): MOTU M2, 2 × 2; all off; trimmable. VM reached: `SND_USB_AUDIO=y` confirmed, libsamplerate0 / speexdsp recipes present. Next: bench H-1.
+- **2026-10-06 17:40 PDT:** resumed after Phases 12–13; user: retire the Pmods, the MOTU becomes the board's headphone/mic I/O. §8: addresses moved (link #3 status 0x8000_C000), SmartConnect at its 16-master limit, core 28/28/28 = 23 DSPs, D 233, H5 narrowed to the input matrix, floating ADC pins found; decision P1 asked.

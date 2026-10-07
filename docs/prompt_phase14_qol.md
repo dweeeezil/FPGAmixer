@@ -1,5 +1,7 @@
 # Prompt: channel sources, virtual groups, snapshots
 
+> **Update 2026-10-06 17:40 PDT:** the user put **Phase 11 (USB host mode, the MOTU M2) first**, and decided to **retire the Pmods**. Each feature below also has its own dated plan in `docs/plans/` (`plan_snapshots_2026-10-06.md`, `plan_virtual_groups_2026-10-06.md`, `plan_channel_sources_2026-10-06.md`); those are the reference, this prompt bundles them for a session. Read `docs/phase11_status_2026-09-30.md` §8 for what Phase 11 changed (addresses, channel numbers, the Pmods) before starting.
+
 *Written 2026-10-06 at the end of the Phase 12–13 session (`phase12_status_2026-10-04.md`, `phase13_status_2026-10-06.md`), as the opening prompt for a fresh session in the **FPGAmixer** repo. The StudioRunner app is next to it at `../StudioRunner-controller` (read it with `git show origin/main:<path>` after a `git fetch`; never edit it).*
 
 ---
