@@ -40,10 +40,16 @@ if {[file isdirectory $xhub_boards]} {
 # onwards) whether the PS block design is built.
 set current_phase "phase9"
 set synth_top     "${current_phase}_top"
-set sim_top       "tb_phase3_datapath"
+# tb_mixer_core: the core alone, which builds against the real IP (the
+# tb_phase3_* top-level TBs went with the Pmods, Phase 11 H.3; tb_top_windows
+# needs the PS stub, which collides with the BD wrapper here).
+set sim_top       "tb_mixer_core"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 
-# phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top).
+# phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top);
+#                   archived in src/archive/ since Phase 11 H.3, so these two
+#                   no longer build from this tree. phase3 still builds but,
+#                   with the Pmods gone, has no audio in or out.
 # phase3          : fpgamixer_top WITHOUT the PS -- the static core, every
 #                   coefficient tied to its reset bank (identity, unity).
 # phase4, phase5  : fpgamixer_top WITH the PS (INCLUDE_PS): the BD, the

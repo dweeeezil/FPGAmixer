@@ -52,6 +52,8 @@ As a bring-up CLI, on the board:
                                               # with seconds: deltas and rates
     python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
                                               # P9.5, card FPGAmixerLink2)
+    python3 mixer_hw.py link3 [seconds]       # the same for link #3 (Phase 11
+                                              # H.3, card FPGAmixerLink3, USB host)
     python3 mixer_hw.py mclk [seconds]        # mclk vs gPTP (Phase 9 P9.3): the
                                               # last interval, or every interval
                                               # for <seconds> and the mean, in ppm
@@ -507,6 +509,8 @@ WINDOWS = {
     "inmeter":   (0x8000_9000, InputMeterHW),
     "busmeter":  (0x8000_A000, BusMeterHW),
     "outmeter":  (0x8000_B000, OutputMeterHW),
+    # Phase 11 (H.3): link #3, the USB host front door (core channels 0-3)
+    "linkstat3": (0x8000_C000, LinkStatHW),
 }
 
 # The meters: present all together (a Phase 13 bitstream) or not at all.
@@ -540,10 +544,11 @@ def _main(argv):
                   f"{w.status()}")
         return 0
 
-    if cmd in ("link", "link2"):
-        # link           one reading (link2: the same for link #2)
+    if cmd in ("link", "link2", "link3"):
+        # link           one reading (link2 / link3: the same for link #2 / #3)
         # link <sec>     two readings <sec> apart: counter deltas and rates
-        ls = open_window("linkstat" if cmd == "link" else "linkstat2")
+        ls = open_window({"link": "linkstat", "link2": "linkstat2",
+                          "link3": "linkstat3"}[cmd])
         a = ls.read_all()
         if len(argv) == 3:
             import time

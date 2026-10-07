@@ -7,15 +7,17 @@ osc_codec.py next to it (TCP framing: --tcp-framing, default len32); the
 other subcommands run from this file alone.
 
 The idea: every one of the 400 crosspoints of the 20 x 20 core (Phase 9,
-P9.5: 4 Pmod + 8 USB (link #1) + 8 AVB (link #2) channels) gets its own
+P9.5: 4 USB host (link #3; the Pmods until Phase 11) + 8 USB (link #1) +
+8 AVB (link #2) channels) gets its own
 level (PATTERN). The Mac plays one tone per USB input (TONES_HZ, FPGAmixer
 outputs 1-8 = core inputs 4-11) and records FPGAmixer inputs 1-8 (core
 outputs 4-11). Each recording is then a mix of the 8 tones at 8 known levels,
 so measuring every tone's amplitude in every recording recovers the gain of
-all 64 USB -> USB crosspoints. The other 336 (those that touch the Pmods,
-whose input signals are unknown, and the AVB channels, which have no source
-on this bench yet) are checked through the gain registers, and JB_L/JC_L by
-ear. The 144 levels of the Phase 8 (12 x 12) test are unchanged; the 256 AVB
+all 64 USB -> USB crosspoints. The other 336 (those that touch the USB host
+interface, whose input signals are unknown, and the AVB channels, which have
+no source on this bench yet) are checked through the gain registers, and the
+M2's L/R by ear (Phase 11: these were the Pmods' JB_L/JC_L, so a pattern
+before then routed USB 2 to core output 2, not 1). The 144 levels of the Phase 8 (12 x 12) test are unchanged; the 256 AVB
 crosspoints use level ranges of their own (build_pattern), so a bank written
 to the wrong place can't match by accident.
 
@@ -57,7 +59,8 @@ import sys
 import wave
 
 N = 20
-PMOD = range(0, 4)          # core channels 0-3: JB_L, JB_R, JC_L, JC_R
+HOST = range(0, 4)          # core channels 0-3: link #3, the USB host interface
+                            # (the MOTU M2: 0 = L, 1 = R; the Pmods until Phase 11)
 USB = range(4, 12)          # core channels 4-11: link #1 / USB 1-8
 AVB = range(12, 20)         # core channels 12-19: link #2 / AVB 1-8 (P9.5)
 TONES_HZ = [211, 307, 401, 503, 601, 701, 809, 907]   # USB in 1..8 (primes)
@@ -74,26 +77,26 @@ def build_pattern():
         for i in USB:
             k = (o - 4) * 8 + (i - 4)
             p[(i, o)] = -6.0 - 0.5 * ((k * 29) % 64)
-    # USB -> Pmod: the two audible routes, the rest quiet and distinct.
+    # USB -> host: the two audible routes, the rest quiet and distinct.
     k = 0
-    for o in PMOD:
+    for o in HOST:
         for i in USB:
             p[(i, o)] = -50.0 - 0.25 * k
             k += 1
-    p[(4, 0)] = -6.0        # USB 1 (211 Hz) -> JB_L: audible
-    p[(5, 2)] = -6.0        # USB 2 (307 Hz) -> JC_L: audible
-    # Pmod -> Pmod: the analog passthrough on the heard outputs, rest quiet.
+    p[(4, 0)] = -6.0        # USB 1 (211 Hz) -> M2 L: audible
+    p[(5, 1)] = -6.0        # USB 2 (307 Hz) -> M2 R: audible
+    # host -> host: the analog passthrough on the heard outputs, rest quiet.
     k = 0
-    for o in PMOD:
-        for i in PMOD:
+    for o in HOST:
+        for i in HOST:
             p[(i, o)] = -60.0 - 0.25 * k
             k += 1
-    p[(0, 0)] = -12.0       # JB_L in -> JB_L out
-    p[(2, 2)] = -12.0       # JC_L in -> JC_L out
-    # Pmod -> USB: very low, so an analog source barely touches the tones.
+    p[(0, 0)] = -12.0       # M2 in 1 -> M2 out L
+    p[(1, 1)] = -12.0       # M2 in 2 -> M2 out R
+    # host -> USB: very low, so an analog source barely touches the tones.
     k = 0
     for o in USB:
-        for i in PMOD:
+        for i in HOST:
             p[(i, o)] = -70.0 - 0.25 * k
             k += 1
     # --- P9.5: the AVB channels (link #2). Ranges disjoint from the above
@@ -111,16 +114,16 @@ def build_pattern():
         for i in USB:
             p[(i, o)] = -38.0 - 0.125 * k
             k += 1
-    # AVB -> Pmod: -46.0 .. -49.875
+    # AVB -> host: -46.0 .. -49.875
     k = 0
-    for o in PMOD:
+    for o in HOST:
         for i in AVB:
             p[(i, o)] = -46.0 - 0.125 * k
             k += 1
-    # Pmod -> AVB: -64.0 .. -67.875
+    # host -> AVB: -64.0 .. -67.875
     k = 0
     for o in AVB:
-        for i in PMOD:
+        for i in HOST:
             p[(i, o)] = -64.0 - 0.125 * k
             k += 1
     # AVB -> USB: the lowest (-78.0 .. -85.875), so an AVB source, once there
@@ -140,7 +143,7 @@ PATTERN = build_pattern()
 def build_bus_pattern():
     """Phase 12: {OSC tail: dB} for the bus layer, ON THE AVB CHANNELS ONLY
     (they have no source on the bench), so the USB audio analysis and the
-    Pmods by ear still see input k -> bus k -> output k at 0 dB. Ranges
+    M2 by ear still see input k -> bus k -> output k at 0 dB. Ranges
     disjoint from each other: input levels -1.0 .. -2.75, bus levels
     -3.0 .. -4.75, output levels -5.0 .. -6.75, and AVB bus b -> AVB output
     b+1 (wrapping) at -20.0 .. -21.75 in the bus matrix."""

@@ -29,9 +29,9 @@ DEPENDS = "alsa-lib libsamplerate0"
 inherit systemd
 
 SYSTEMD_SERVICE:${PN} = "fpgamixer-usbhost-bridge.service"
-# H.2: installed but not enabled (it shares link #1 with the USB device bridge
-# and is started by hand for the test). H.4 enables it, on link #3.
-SYSTEMD_AUTO_ENABLE:${PN} = "disable"
+# Enabled since H.4, on its own link #3 (in H.2 it borrowed link #1 and was
+# started by hand). With no interface plugged in it just waits.
+SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 do_compile() {
     ${CC} ${CFLAGS} ${LDFLAGS} -Wall -Wextra -O2 -I${S} -o fpgamixer-usbhost-bridge \

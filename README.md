@@ -1,7 +1,8 @@
 # FPGAmixer
 
 FPGA-based digital matrix mixer on the Digilent Genesys ZU-3EG (Zynq
-UltraScale+ MPSoC), with analog (Pmod I2S2), USB and network audio (AVB) as
+UltraScale+ MPSoC), with a USB audio interface on its host port, USB to a
+computer and network audio (AVB) as
 interchangeable "front doors" into one PCM core, controlled from the
 StudioRunner macOS app over OSC, with every setting surviving a power cycle.
 
@@ -13,16 +14,18 @@ allowed to connect.
 ## What it does today (October 2026)
 
 ```
- 4 Pmod in ─┐                                                 ┌─ 4 Pmod out
- 8 USB in  ─┼─ input   → input   → bus    → bus     → output ─┼─ 8 USB out
- 8 AVB in  ─┘  levels    matrix    levels   matrix    levels   └─ 8 AVB out
+ 4 USB host in ─┐                                             ┌─ 4 USB host out
+ 8 USB in  ─────┼─ input  → input  → bus    → bus    → output ─┼─ 8 USB out
+ 8 AVB in  ─────┘  levels   matrix   levels   matrix   levels  └─ 8 AVB out
                (20)      (20→20)   (20)     (20→20)   (20)
 ```
 
 - **20 inputs, 20 buses, 20 outputs**, a level on every one of them, and two
   20 × 20 crosspoint matrices (input → bus, bus → output). All of it runs in
   the PL inside one audio frame on 11 DSP48E2s (Phase 12).
-- **Front doors:** two Pmod I2S2 modules (JB, JC); the Mac sees the board as an
+- **Front doors:** a class-compliant USB audio interface on the Type-A port
+  (a MOTU M2, 2 × 2, on core channels 1–2; resampled to `mclk` in Linux;
+  Phase 11, replacing the Pmod I2S2 modules); the Mac sees the board as an
   8 × 8 USB audio device (UAC2 gadget on the Type-C port); and as an AVB device
   on Ethernet (gPTP on the PS GEM, AAF streams, AVDECC entity), 8 channels each
   way. `mclk` is steered onto gPTP time, so the network disciplines the core's
@@ -36,7 +39,8 @@ allowed to connect.
   crash-safely and restored at boot.
 
 Phase status, open items and what's next: the roadmap's table and §5. The
-newest status doc is `docs/phase12_status_2026-10-04.md`.
+newest status doc is `docs/phase11_status_2026-09-30.md` (USB host mode, built
+after Phases 12 and 13).
 
 ## Repo layout
 
@@ -47,7 +51,7 @@ FPGAmixer/
 ├── src/
 │   ├── rtl/                 synthesizable SystemVerilog (core, front doors, control plane, top)
 │   └── sim/                 testbenches, stream monitor, sim-only stubs
-├── constraints/             XDC (board pins and codec timing; scoped CDC constraints per module)
+├── constraints/             XDC (the board clock pin; scoped CDC constraints per module)
 ├── scripts/
 │   ├── create_project.tcl   regenerates the Vivado project and the PS block design
 │   ├── build.tcl            batch synthesis → bitstream → reports + XSA (methodology gate)
@@ -102,8 +106,9 @@ being blocked (Defender), not a test failure: rerun.
 ## Hardware
 
 - Genesys ZU-3EG (Zynq UltraScale+ MPSoC, `xczu3eg-sfvc784-1-e`)
-- 2× Digilent Pmod I2S2 (CS5343 ADC + CS4344 DAC) on the digital Pmods **JB**
-  and **JC** (JA is the analog XADC Pmod)
+- A MOTU M2 (class-compliant USB audio, 2 × 2) on a Type-A port (PS USB1,
+  host mode): the board's analog I/O since Phase 11. The two Pmod I2S2
+  modules used before are gone; their RTL is in `src/archive/`
 - Gigabit Ethernet (TI DP83867 → RGMII → PS GEM0) with 1588 hardware
   timestamping: gPTP and AVB
 - USB Type-C (PS USB0) in device mode: the Mac's 8 × 8 soundcard

@@ -517,6 +517,24 @@ class InProcess(unittest.TestCase):
         self.srv.MatrixBackend("inputMatrix", hw, 2, 2, max_db=6.0).seed_and_push(self.state)
         self.assertEqual(hw.banks, [{(0, 0): 0.0, (1, 1): 0.0, (1, 0): -90.0, (0, 1): -12.0}])
 
+    def test_seed_identity_from_leaves_the_first_inputs_off_but_keeps_stored(self):
+        """Phase 11 H5: the USB host's inputs (0-3 on the board) start off;
+        a level the user stored there is still restored."""
+        hw = FakeMatrixHW()
+        self.state.set("inputMatrix/1_1/level", -6.0)
+        self.srv.MatrixBackend("inputMatrix", hw, 3, 3, max_db=6.0,
+                               identity_from=2).seed_and_push(self.state)
+        bank = hw.banks[0]
+        self.assertEqual((bank[(0, 0)], bank[(1, 1)], bank[(2, 2)]), (-90.0, -6.0, 0.0))
+        self.assertEqual(self.state.get("inputMatrix/0_0/level"), -90.0)   # seeded into the store
+
+    def test_identity_from_reaches_the_input_matrix_only(self):
+        backends = self.srv.build_backends(False, 6, identity_from=4)
+        self.assertEqual(backends["inputMatrix"].identity_from, 4)
+        self.assertEqual(backends["busMatrix"].identity_from, 0)
+        self.assertEqual(self.srv.build_backends(False, 6, bus_layer=False,
+                                                 identity_from=4)["inputMatrix"].identity_from, 4)
+
     def test_describe(self):
         spec, modules = self.srv.MatrixBackend("inputMatrix", None, 3, 2, max_db=6.0).describe()
         self.assertEqual((spec.kind, spec.rows, spec.cols, spec.modules), ("matrix", 3, 2, ("level",)))

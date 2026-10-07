@@ -112,6 +112,27 @@
 };
 
 /*
+ * PS <-> PL link #3 (Phase 11, H.3/H.4, docs/phase11_status_2026-09-30.md
+ * sec. 8.7): the USB host front door's PL half (fpgamixer-usbhost-bridge
+ * opens it), core channels 0-3 (its channels 4-7 aren't connected).
+ * link3_formatter needs a p11h3+ (phase9) bitstream/XSA. The same rules as
+ * above.
+ */
+/ {
+	fpgamixer_link3: fpgamixer-link3 {
+		compatible = "fpgamixer,pcm-link-card";
+		audio-formatter = <&link3_formatter>;
+		mclk-frequency = <12288000>;
+		fpgamixer,card-name = "FPGAmixerLink3";
+	};
+};
+
+&link3_formatter {
+	xlnx,tx = <&fpgamixer_link3>;
+	xlnx,rx = <&fpgamixer_link3>;
+};
+
+/*
  * GEM0 + TI DP83867 PHY. The generated node has no PHY child, so macb scans the
  * MDIO bus and the PHY device has no of_node; dp83867_of_init() then returns
  * -ENODEV, the probe fails silently and phylib falls back to "Generic PHY".

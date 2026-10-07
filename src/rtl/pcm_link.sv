@@ -8,7 +8,7 @@
 // it knows nothing about USB, the matrix, or who is on the Linux side.
 //
 //   s_axis (formatter MM2S, PS -> PL) -> async_fifo -> frame assembler
-//        -> rx_flat / rx_valid  (samples INTO the core, like i2s_port's rx)
+//        -> rx_flat / rx_valid  (samples INTO the core)
 //   tx_flat (samples OUT of the core) -> frame serializer -> async_fifo
 //        -> m_axis (formatter S2MM, PL -> PS)
 //
@@ -25,7 +25,7 @@
 //   - rx_flat takes the next complete frame from the PS (or all zeros if none
 //     is ready: an UNDERRUN, never stale or partial samples), and rx_valid
 //     pulses. The matrix samples rx_flat on its next frame, so this door adds
-//     one frame of latency, like the I2S receiver.
+//     one frame of latency.
 //   - tx_flat is captured and queued towards the PS; if the FIFO can't take a
 //     whole frame, the frame is dropped (an OVERRUN).
 //

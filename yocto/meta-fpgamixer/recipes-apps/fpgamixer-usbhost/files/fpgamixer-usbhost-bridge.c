@@ -19,15 +19,16 @@
  * Only the interface's channels are resampled (2); the link card always
  * opens at 8 and the other 6 get zeros (bridge_core's channel remap).
  *
- * Hot plug: the bridge exits when the interface isn't there or goes away
- * (a 1 s check of its card id); systemd restarts it every RestartSec, so
- * plugging the interface in starts the audio. An unplugged interface is
- * silence on its core channels (pcm_link plays zeros when starved).
+ * Hot plug: at start the bridge waits for the interface (a 1 s check of its
+ * card id, logged once); it exits when the interface goes away and systemd
+ * restarts it after RestartSec, back into that wait, so plugging the
+ * interface in starts the audio. An unplugged interface is silence on its
+ * core channels (pcm_link plays zeros when starved).
  *
  * Usage: fpgamixer-usbhost-bridge [-c CARD_ID] [-l LINK] [-n CHANNELS]
  *                                 [-q fastest|medium|best|linear] [-v]
  *        defaults M2, hw:FPGAmixerLink3, 2, fastest
- * (H.2 runs it against hw:FPGAmixerLink with the USB bridge stopped.)
+ * (H.2 ran it against hw:FPGAmixerLink with the USB bridge stopped.)
  */
 #define _GNU_SOURCE
 #include "bridge_core.h"
@@ -126,9 +127,13 @@ int main(int argc, char **argv)
 		fprintf(stderr, "bad -q or -n\n");
 		return 2;
 	}
+	/* Wait here for the interface, logging once, rather than exiting into a
+	 * restart every RestartSec: unplugged is a normal state, not an error. */
 	if (snd_card_get_index(card) < 0) {
-		bridge_log("interface '%s' not present; waiting (systemd restarts this)", card);
-		return 1;
+		bridge_log("interface '%s' not present; waiting for it", card);
+		while (snd_card_get_index(card) < 0)
+			sleep(1);
+		bridge_log("interface '%s' appeared", card);
 	}
 	snprintf(dev, sizeof dev, "hw:%s", card);
 

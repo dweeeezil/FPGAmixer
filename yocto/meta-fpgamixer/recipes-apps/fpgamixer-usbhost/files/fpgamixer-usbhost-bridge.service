@@ -2,10 +2,12 @@
 Description=FPGAmixer USB host bridge (a USB audio interface <-> PS/PL audio link, resampled)
 # Design: docs/phase11_status_2026-09-30.md in the FPGAmixer repo
 After=sound.target
-# Phase 11 H.2: the bridge runs on link #1 (FPGAmixerLink), which the USB
-# device bridge also uses, so starting this stops that one. Removed in H.4,
-# when the bridge moves to its own link #3.
-Conflicts=fpgamixer-usb-bridge.service
+# Since H.4 the bridge has its own link (#3, FPGAmixerLink3, core channels
+# 0-3), so it runs alongside the USB device bridge (link #1).
+# It exits while no interface is plugged in and is restarted every RestartSec
+# for as long as that lasts: never give up (the default start limit would stop
+# it after a few tries, and a later plug-in would then go unheard).
+StartLimitIntervalSec=0
 
 [Service]
 EnvironmentFile=/etc/fpgamixer/usbhost.conf
