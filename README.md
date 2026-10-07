@@ -31,8 +31,9 @@ allowed to connect.
   framing, UDP 8001; Bonjour `_studiorunner._tcp`) implementing
   `docs/FPGA Mixer OSC Standard.md`: zones `inputChannel`, `inputMatrix`,
   `busChannel`, `busMatrix`, `outputChannel`, a config reply the app builds its
-  UI from, error replies, ping. State is saved crash-safely and restored at
-  boot.
+  UI from, error replies, ping, and **live meters** on every input, bus and
+  output (peak meters in the PL, streamed over UDP; Phase 13). State is saved
+  crash-safely and restored at boot.
 
 Phase status, open items and what's next: the roadmap's table and §5. The
 newest status doc is `docs/phase12_status_2026-10-04.md`.

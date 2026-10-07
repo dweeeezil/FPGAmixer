@@ -124,6 +124,7 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 | 11 *decided 2026-09-30, nothing built* | USB host mode | A class-compliant interface (MOTU M2, 2 × 2) on the Type-A port as a third front door: link #3 → core channels 20–27, 28 × 28, a libsamplerate rate stage in the bridge (`phase11_status_2026-09-30.md`, H0–H6) | The interface reachable from the Mac/PC through the board. Next: bench H-1. *(The old Phase 11, USB device mode, was merged into Phase 8.)* |
 | — ✅ *done 2026-10-04* | Controller support (F1–F9) | The OSC server meets the StudioRunner app's contract: the merged standard, config reply, errors, ordering, ping, Bonjour, TCP framing (`controller_support_status_2026-10-04.md`) | **The app connects to the board.** Open: metering (F4 + gateware F4a), the F1–F9 checks on the board |
 | 12 ✅ *done 2026-10-06* | Channel levels and the bus layer | Levels on every input, bus and output (`pcm_gain`), and inputs → input matrix → 20 buses → bus matrix → outputs, inside one frame (D = 249, 11 DSPs); four new register windows; five OSC zones (`phase12_status_2026-10-04.md`) | **Met:** the app's Inputs, Buses and Outputs tabs and both matrix tabs work on the board; old state files keep their meaning. The first slice of Phase 7 |
+| 13 ✅ *done 2026-10-06* | Metering | Peak meters on the three level stages' outputs (`pcm_peak`, tap ports on `mixer_core`, windows 0x8000_9000–B000), the server's meter protocol (`mixer_meters`: subscribe, lease, UDP stream) (`phase13_status_2026-10-06.md`) | **Met:** the app's meters follow the audio on every channel tab. Controller F4 + F4a done |
 
 ---
 
@@ -153,7 +154,8 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 6. ~~Phases 5 and 6~~ Done 2026-09-25: live OSC control of the matrix, the D1–D4 modularity refactor (`architecture_modules.md`), and a persistent, boot-restored parameter store (`phase5_status_2026-09-25.md`, `phase6_status_2026-09-25.md`). **The first checkpoint is reached:** a 4-in/4-out analog matrix mixer with saved state, controllable over OSC.
 7. ~~When the first multichannel front door (USB or AVB) works: repeat the power-cycle restore test with real multichannel audio on every crosspoint~~ Done 2026-09-26 with the USB front door: all 144 crosspoints restored exactly after a power pull, audio verified (`phase8_status_2026-09-25.md` §19).
 8. ~~Phase 8 remainder, Phases 9, 10, controller support, 12~~ Done or mostly done, see the table. **Open as of 2026-10-06**, in no fixed order (the user picks):
-   - **Metering:** gateware peak detectors on the level stages' outputs (F4a) + the server's meter protocol (F4); Phase 12 decision L8 put it next.
+   - ~~Metering~~ Done 2026-10-06 (Phase 13).
+   - **Next (user, 2026-10-06): channel sources (I/O patching), virtual groups, snapshots**, in a new session: `docs/prompt_phase14_qol.md`.
    - **The F1–F9 checks on the board** (controller-support step 8: `osc_mixer_test.py` from the Mac).
    - **AVB loose ends:** a clean boot with no manual steps, two streams to one listener, P9.7 checks, P9.8 soak, a multi-hop soak through a switch.
    - **Phase 11, USB host mode** (MOTU M2): decided, bench H-1 next.
