@@ -4,12 +4,13 @@
 // Platform layer (docs/architecture_modules.md): wires the blocks together and
 // holds nothing else. Formerly phase3_top.
 //
-//   sysclk -> audio_clocking -> mclk, rst_n, sclk, lrck  (shared by everything)
+//   sysclk -> audio_clocking -> mclk, rst_n, frame  (shared by everything)
 //
-//   Pmod JB pins <-> i2s_port u_jb <-> PCM ch0 (L), ch1 (R) ----.
-//   Pmod JC pins <-> i2s_port u_jc <-> PCM ch2 (L), ch3 (R) -----+-> mixer_core
-//   PS (Audio Formatter #1) <-> pcm_link u_link  <-> ch4..11 ---+   u_core
-//   PS (Audio Formatter #2) <-> pcm_link u_link2 <-> ch12..19 --'
+//   PS (Audio Formatter #3) <-> pcm_link u_link3 <-> ch0..3 ----.  (Phase 11: the
+//                                     USB-host interface, e.g. the MOTU M2)
+//   PS (Audio Formatter #1) <-> pcm_link u_link  <-> ch4..11 ---+-> mixer_core
+//   PS (Audio Formatter #2) <-> pcm_link u_link2 <-> ch12..19 --'   u_core
+//   (ch0..3 were the Pmod I2S2 modules on JB/JC until Phase 11, decision P1)
 //                    (Phase 12: 20 in -> levels -> input matrix -> 20 buses
 //                     -> levels -> bus matrix -> levels -> 20 out)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
@@ -23,6 +24,7 @@
 //                  (without the PS: coef_flat_readers over the reset banks)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
+//                  (INCLUDE_LINK3): PS -> M_AXI_LINK3STAT -> pcm_link_stat_regs
 //   platform (INCLUDE_MCLK, phase9): PS tsu_timer_cnt[45] (1PPS) ->
 //                  media_clock_meter -> media_clock_stat_regs <- M_AXI_MCLKSTAT
 //
@@ -34,62 +36,44 @@
 //     reset banks tied on directly (non-PS projects and the Icarus/XSim
 //     integration TBs);
 //   - whether the PS<->PL links exist (INCLUDE_LINK, phase8 builds; link #2,
-//     INCLUDE_LINK2, phase9 builds: the AVB front door's PL half). Without a
-//     link its channels read as silence, so the core is 20 x 20 in every
-//     build and the non-PS TBs see the same Pmod routing as before.
+//     INCLUDE_LINK2, phase9 builds: the AVB front door's PL half; link #3,
+//     INCLUDE_LINK3, phase9 builds since Phase 11: the USB-host front door's).
+//     Without a link its channels read as silence, so the core is 20 x 20 in
+//     every build.
 //
-// NOTE (ZU-3EG): the JB/JC names match the board's silkscreen -- module #1 is on
-// Pmod JB, module #2 on Pmod JC. (The ZU-3EG's Pmod JA is the analog XADC Pmod,
-// LVCMOS18 + RC-filtered, so it can't carry the I2S2; JB/JC are the digital
-// Pmods.) See the constraints file headers for the pin map.
+// Phase 11 (decision P1): the Pmod I2S2 front doors are gone, with their pins,
+// their codec timing constraints and the frame strobe they provided (now
+// audio_clocking's). Their core channels 0..3 are link #3's first four
+// (the board's analog I/O is now a USB interface; user decision 2026-10-07).
 //
 // Constraint paths: the board XDC (constraints/fpgamixer_genesys_zu.xdc) names
-// u_clk/u_mmcm and u_jb|u_jc/u_fwd_*/u_oddr. Renaming these instances, or
-// adding hierarchy ABOVE this module, means updating that file in the same
-// change -- a missed path is only a critical warning at XDC parse time, and the
-// build then fails in IO clock placement (seen 2026-09-22).
+// u_clk/u_mmcm. Renaming it, or adding hierarchy ABOVE this module, means
+// updating that file in the same change -- a missed path is only a critical
+// warning at XDC parse time, and the build then fails in IO clock placement
+// (seen 2026-09-22).
 // -----------------------------------------------------------------------------
 module fpgamixer_top (
-    input  logic sysclk,       // 25 MHz PL ref, pin E12 (LVCMOS18)
-
-    // ----- Pmod JB : Pmod I2S2 #1 -----
-    output logic jb_da_mclk,   // JB1
-    output logic jb_da_lrck,   // JB2
-    output logic jb_da_sclk,   // JB3
-    output logic jb_da_sdin,   // JB4
-    output logic jb_ad_mclk,   // JB7
-    output logic jb_ad_lrck,   // JB8
-    output logic jb_ad_sclk,   // JB9
-    input  logic jb_ad_sdout,  // JB10
-
-    // ----- Pmod JC : Pmod I2S2 #2 -----
-    output logic jc_da_mclk,   // JC1
-    output logic jc_da_lrck,   // JC2
-    output logic jc_da_sclk,   // JC3
-    output logic jc_da_sdin,   // JC4
-    output logic jc_ad_mclk,   // JC7
-    output logic jc_ad_lrck,   // JC8
-    output logic jc_ad_sclk,   // JC9
-    input  logic jc_ad_sdout   // JC10
+    input  logic sysclk        // 25 MHz PL ref, pin E12 (LVCMOS18)
 );
 
-    localparam int N_PMOD = 4;              // 2 per Pmod
+    localparam int N_LINK3 = 8;             // PS<->PL link #3 (USB host), each way
+    localparam int N_HOST  = 4;             // ... of which core channels 0..3 (the Pmods' slots)
     localparam int N_LINK  = 8;             // PS<->PL link #1 (USB), each way
     localparam int N_LINK2 = 8;             // PS<->PL link #2 (AVB), each way
-    localparam int N  = N_PMOD + N_LINK + N_LINK2;  // core channels in = out
+    localparam int N  = N_HOST + N_LINK + N_LINK2;  // core channels in = out (20)
     localparam int SW = 24;
     localparam int GW = 18;    // gain width,  Q2.16
     localparam int GF = 16;    // gain fraction bits
 
     // ----- Clock domain -----
-    logic mclk, rst_n, sclk, lrck, mmcm_locked;
+    logic mclk, rst_n, frame, mmcm_locked;
     // MMCM fine phase shift: driven by media_clock_steer in INCLUDE_MCLK
     // builds (PSCLK = pl_clk0, decision S1), tied off otherwise.
     logic ps_clk, ps_en, ps_incdec, ps_done;
 
     audio_clocking u_clk (
         .sysclk (sysclk),
-        .mclk (mclk), .rst_n (rst_n), .sclk (sclk), .lrck (lrck),
+        .mclk (mclk), .rst_n (rst_n), .frame (frame),
         .mmcm_locked (mmcm_locked),
         .psclk (ps_clk), .psen (ps_en), .psincdec (ps_incdec), .psdone (ps_done)
     );
@@ -100,43 +84,27 @@ module fpgamixer_top (
     assign ps_incdec = 1'b0;
 `endif
 
-    // ----- Front doors -----
-    logic [2*SW-1:0] jb_rx, jb_tx, jc_rx, jc_tx;
-    logic            jb_rx_valid, jc_rx_valid;  // identical timing (shared LRCK)
-
-    i2s_port #(.SW (SW)) u_jb (
-        .mclk (mclk), .rst_n (rst_n), .sclk (sclk), .lrck (lrck),
-        .da_mclk (jb_da_mclk), .da_lrck (jb_da_lrck), .da_sclk (jb_da_sclk),
-        .da_sdin (jb_da_sdin),
-        .ad_mclk (jb_ad_mclk), .ad_lrck (jb_ad_lrck), .ad_sclk (jb_ad_sclk),
-        .ad_sdout (jb_ad_sdout),
-        .rx_flat (jb_rx), .rx_valid (jb_rx_valid), .tx_flat (jb_tx)
-    );
-
-    i2s_port #(.SW (SW)) u_jc (
-        .mclk (mclk), .rst_n (rst_n), .sclk (sclk), .lrck (lrck),
-        .da_mclk (jc_da_mclk), .da_lrck (jc_da_lrck), .da_sclk (jc_da_sclk),
-        .da_sdin (jc_da_sdin),
-        .ad_mclk (jc_ad_mclk), .ad_lrck (jc_ad_lrck), .ad_sclk (jc_ad_sclk),
-        .ad_sdout (jc_ad_sdout),
-        .rx_flat (jc_rx), .rx_valid (jc_rx_valid), .tx_flat (jc_tx)
-    );
-
     // ----- PS<->PL link front doors (PCM side) -----
     logic [N_LINK*SW-1:0]  link_rx,  link_tx;   // rx = into the core, from the PS
     logic [N_LINK2*SW-1:0] link2_rx, link2_tx;
+    logic [N_LINK3*SW-1:0] link3_rx, link3_tx;
 
     // ----- Channel map (core ch0 at the LSB) -----
-    //   ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R   (inputs and outputs)
-    //   ch4..ch11 = link #1 channels 0..7: inputs = what the PS plays (USB: the
-    //   Mac's outputs 1-8), outputs = what the PS records (the Mac's inputs 1-8)
+    //   ch0..ch3   = link #3 channels 0..3 (Phase 11: the USB-host front door,
+    //                card FPGAmixerLink3; the MOTU M2 uses 0..1). Link #3's
+    //                channels 4..7 are not in the core: dropped in, zero out.
+    //                (Until Phase 11: the Pmods, JB_L, JB_R, JC_L, JC_R.)
+    //   ch4..ch11  = link #1 channels 0..7: inputs = what the PS plays (USB: the
+    //                Mac's outputs 1-8), outputs = what the PS records
     //   ch12..ch19 = link #2 channels 0..7 (Phase 9, P9.5: the AVB front door's
-    //   ALSA card FPGAmixerLink2; inputs = what the PS plays into it)
+    //                ALSA card FPGAmixerLink2)
     // New channels are appended, never interleaved, so saved crosspoint
     // indices keep their meaning when the core grows.
     logic [N*SW-1:0] core_in, core_out;
-    assign core_in = { link2_rx, link_rx, jc_rx, jb_rx };
-    assign { link2_tx, link_tx, jc_tx, jb_tx } = core_out;
+    logic [N_HOST*SW-1:0] host_tx;
+    assign core_in = { link2_rx, link_rx, link3_rx[N_HOST*SW-1:0] };
+    assign { link2_tx, link_tx, host_tx } = core_out;
+    assign link3_tx = { {(N_LINK3 - N_HOST)*SW{1'b0}}, host_tx };
 
     // ----- Buses (Phase 12, decision L2): one per output -----
     // With the bus matrix at identity, bus k feeds output k, so input -> bus k
@@ -148,15 +116,16 @@ module fpgamixer_top (
     localparam logic signed [GW-1:0] G_UNITY = 18'sh10000;
 
     // IDENTITY: input k -> bus k -> output k at unity, every level at unity
-    // (L7). For the Pmods that is each ADC passed to its own DAC (the minimal
-    // datapath test: noise here points at clocking or the ports, not the
-    // routing); for each link it is the PS's playback returned to its capture.
+    // (L7): for each link, the PS's playback returned to its capture. EXCEPT
+    // the USB-host channels 0..N_HOST-1 (Phase 11, decision H5): their input
+    // matrix starts all off, because an interface's inputs are live mics and
+    // its outputs real headphones/speakers. (The bus matrix stays identity:
+    // bus k -> output k carries nothing until an input is routed to bus k.)
     // Runtime control (INCLUDE_PS) starts from these banks, and the OSC server
-    // seeds missing parameters with the same rule. Other routings for a non-PS
-    // build: git history before Phase 8 has a worked 4 x 4 DEMO bank.
+    // seeds missing parameters with the same rule (--identity-from).
     function automatic logic [N_BUS*N*GW-1:0] identity_in_mx();     // rows = buses
         logic [N_BUS*N*GW-1:0] g = '0;
-        for (int b = 0; b < N_BUS && b < N; b++) g[(b*N + b)*GW +: GW] = G_UNITY;
+        for (int b = N_HOST; b < N_BUS && b < N; b++) g[(b*N + b)*GW +: GW] = G_UNITY;
         return g;
     endfunction
     function automatic logic [N*N_BUS*GW-1:0] identity_bus_mx();    // rows = outputs
@@ -305,6 +274,21 @@ module fpgamixer_top (
     logic        stat2_rvalid, stat2_rready;
 `endif
 
+`ifdef INCLUDE_LINK3
+    // Link #3 (Phase 11): the same set of ports again
+    logic [31:0] mm2s3_tdata, s2mm3_tdata;
+    logic [7:0]  mm2s3_tid,   s2mm3_tid;
+    logic        mm2s3_tvalid, mm2s3_tready, s2mm3_tvalid, s2mm3_tready;
+
+    logic [31:0] stat3_awaddr, stat3_araddr, stat3_wdata, stat3_rdata;
+    logic [2:0]  stat3_awprot, stat3_arprot;
+    logic [3:0]  stat3_wstrb;
+    logic [1:0]  stat3_bresp, stat3_rresp;
+    logic        stat3_awvalid, stat3_awready, stat3_wvalid, stat3_wready;
+    logic        stat3_bvalid, stat3_bready, stat3_arvalid, stat3_arready;
+    logic        stat3_rvalid, stat3_rready;
+`endif
+
 `ifdef INCLUDE_MCLK
     // Media-clock meter (Phase 9, P9.3): the GEM TSU counter from the PS and
     // the meter's status window (0x8000_2000)
@@ -427,6 +411,35 @@ module fpgamixer_top (
         .M_AXI_LINK2STAT_rresp      (stat2_rresp),
         .M_AXI_LINK2STAT_rvalid     (stat2_rvalid),
         .M_AXI_LINK2STAT_rready     (stat2_rready),
+`endif
+`ifdef INCLUDE_LINK3
+        .M_AXIS_LINK3_MM2S_tdata    (mm2s3_tdata),
+        .M_AXIS_LINK3_MM2S_tid      (mm2s3_tid),
+        .M_AXIS_LINK3_MM2S_tvalid   (mm2s3_tvalid),
+        .M_AXIS_LINK3_MM2S_tready   (mm2s3_tready),
+        .S_AXIS_LINK3_S2MM_tdata    (s2mm3_tdata),
+        .S_AXIS_LINK3_S2MM_tid      (s2mm3_tid),
+        .S_AXIS_LINK3_S2MM_tvalid   (s2mm3_tvalid),
+        .S_AXIS_LINK3_S2MM_tready   (s2mm3_tready),
+        .M_AXI_LINK3STAT_awaddr     (stat3_awaddr),
+        .M_AXI_LINK3STAT_awprot     (stat3_awprot),
+        .M_AXI_LINK3STAT_awvalid    (stat3_awvalid),
+        .M_AXI_LINK3STAT_awready    (stat3_awready),
+        .M_AXI_LINK3STAT_wdata      (stat3_wdata),
+        .M_AXI_LINK3STAT_wstrb      (stat3_wstrb),
+        .M_AXI_LINK3STAT_wvalid     (stat3_wvalid),
+        .M_AXI_LINK3STAT_wready     (stat3_wready),
+        .M_AXI_LINK3STAT_bresp      (stat3_bresp),
+        .M_AXI_LINK3STAT_bvalid     (stat3_bvalid),
+        .M_AXI_LINK3STAT_bready     (stat3_bready),
+        .M_AXI_LINK3STAT_araddr     (stat3_araddr),
+        .M_AXI_LINK3STAT_arprot     (stat3_arprot),
+        .M_AXI_LINK3STAT_arvalid    (stat3_arvalid),
+        .M_AXI_LINK3STAT_arready    (stat3_arready),
+        .M_AXI_LINK3STAT_rdata      (stat3_rdata),
+        .M_AXI_LINK3STAT_rresp      (stat3_rresp),
+        .M_AXI_LINK3STAT_rvalid     (stat3_rvalid),
+        .M_AXI_LINK3STAT_rready     (stat3_rready),
 `endif
         .M_AXI_BUSMX_awaddr   (bmx_awaddr),
         .M_AXI_BUSMX_awprot   (bmx_awprot),
@@ -601,7 +614,7 @@ module fpgamixer_top (
         .s_axi_arready (ctrl_arready),
         .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .coef_addr (in_mx_addr), .coef_data (in_mx_data)
     );
 
@@ -621,7 +634,7 @@ module fpgamixer_top (
         .s_axi_arready (bmx_arready),
         .s_axi_rdata   (bmx_rdata),  .s_axi_rresp  (bmx_rresp),
         .s_axi_rvalid  (bmx_rvalid), .s_axi_rready (bmx_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .coef_addr (bus_mx_addr), .coef_data (bus_mx_data)
     );
 
@@ -642,7 +655,7 @@ module fpgamixer_top (
         .s_axi_arready (ilv_arready),
         .s_axi_rdata   (ilv_rdata),  .s_axi_rresp  (ilv_rresp),
         .s_axi_rvalid  (ilv_rvalid), .s_axi_rready (ilv_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .coef_addr (in_lvl_addr), .coef_data (in_lvl_data)
     );
 
@@ -661,7 +674,7 @@ module fpgamixer_top (
         .s_axi_arready (blv_arready),
         .s_axi_rdata   (blv_rdata),  .s_axi_rresp  (blv_rresp),
         .s_axi_rvalid  (blv_rvalid), .s_axi_rready (blv_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .coef_addr (bus_lvl_addr), .coef_data (bus_lvl_data)
     );
 
@@ -680,7 +693,7 @@ module fpgamixer_top (
         .s_axi_arready (olv_arready),
         .s_axi_rdata   (olv_rdata),  .s_axi_rresp  (olv_rresp),
         .s_axi_rvalid  (olv_rvalid), .s_axi_rready (olv_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .coef_addr (out_lvl_addr), .coef_data (out_lvl_data)
     );
 
@@ -698,7 +711,7 @@ module fpgamixer_top (
         .s_axi_arready (imt_arready),
         .s_axi_rdata   (imt_rdata),  .s_axi_rresp  (imt_rresp),
         .s_axi_rvalid  (imt_rvalid), .s_axi_rready (imt_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .s_valid (tap_in_valid), .s_ch (tap_in_ch), .s_data (tap_in_data)
     );
 
@@ -714,7 +727,7 @@ module fpgamixer_top (
         .s_axi_arready (bmt_arready),
         .s_axi_rdata   (bmt_rdata),  .s_axi_rresp  (bmt_rresp),
         .s_axi_rvalid  (bmt_rvalid), .s_axi_rready (bmt_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .s_valid (tap_bus_valid), .s_ch (tap_bus_ch), .s_data (tap_bus_data)
     );
 
@@ -730,7 +743,7 @@ module fpgamixer_top (
         .s_axi_arready (omt_arready),
         .s_axi_rdata   (omt_rdata),  .s_axi_rresp  (omt_rresp),
         .s_axi_rvalid  (omt_rvalid), .s_axi_rready (omt_rready),
-        .mclk (mclk), .frame_i (jb_rx_valid),
+        .mclk (mclk), .frame_i (frame),
         .s_valid (tap_out_valid), .s_ch (tap_out_ch), .s_data (tap_out_data)
     );
 
@@ -752,7 +765,7 @@ module fpgamixer_top (
         .s_axis_tvalid (mm2s_tvalid), .s_axis_tready (mm2s_tready),
         .m_axis_tdata (s2mm_tdata), .m_axis_tid (s2mm_tid),
         .m_axis_tvalid (s2mm_tvalid), .m_axis_tready (s2mm_tready),
-        .mclk (mclk), .rst_n (rst_n), .frame_i (jb_rx_valid),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
         .rx_flat (link_rx), .rx_valid (), .tx_flat (link_tx),
         .frames_rx (lk_frames_rx), .frames_tx (lk_frames_tx),
         .underruns (lk_underruns), .starved (lk_starved),
@@ -776,7 +789,7 @@ module fpgamixer_top (
         .s_axi_arready (stat_arready),
         .s_axi_rdata   (stat_rdata),  .s_axi_rresp  (stat_rresp),
         .s_axi_rvalid  (stat_rvalid), .s_axi_rready (stat_rready),
-        .mclk (mclk), .mrst_n (rst_n), .frame_i (jb_rx_valid),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (frame),
         .frames_rx (lk_frames_rx), .frames_tx (lk_frames_tx),
         .underruns (lk_underruns), .starved (lk_starved),
         .overruns (lk_overruns), .tid_errors (lk_tid_errors),
@@ -803,7 +816,7 @@ module fpgamixer_top (
         .s_axis_tvalid (mm2s2_tvalid), .s_axis_tready (mm2s2_tready),
         .m_axis_tdata (s2mm2_tdata), .m_axis_tid (s2mm2_tid),
         .m_axis_tvalid (s2mm2_tvalid), .m_axis_tready (s2mm2_tready),
-        .mclk (mclk), .rst_n (rst_n), .frame_i (jb_rx_valid),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
         .rx_flat (link2_rx), .rx_valid (), .tx_flat (link2_tx),
         .frames_rx (lk2_frames_rx), .frames_tx (lk2_frames_tx),
         .underruns (lk2_underruns), .starved (lk2_starved),
@@ -827,7 +840,7 @@ module fpgamixer_top (
         .s_axi_arready (stat2_arready),
         .s_axi_rdata   (stat2_rdata),  .s_axi_rresp  (stat2_rresp),
         .s_axi_rvalid  (stat2_rvalid), .s_axi_rready (stat2_rready),
-        .mclk (mclk), .mrst_n (rst_n), .frame_i (jb_rx_valid),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (frame),
         .frames_rx (lk2_frames_rx), .frames_tx (lk2_frames_tx),
         .underruns (lk2_underruns), .starved (lk2_starved),
         .overruns (lk2_overruns), .tid_errors (lk2_tid_errors),
@@ -835,6 +848,58 @@ module fpgamixer_top (
     );
 `else
     assign link2_rx = '0;
+`endif
+
+`ifdef INCLUDE_LINK3
+    // ----- Front door: PS<->PL link #3 (Phase 11) -----
+    // A third instance of link #1, nothing changed: its own formatter in the
+    // BD (0x8012_0000, driver-owned; ALSA card FPGAmixerLink3), the same frame
+    // strobe, its own status window at 0x8000_C000. Nothing in it is
+    // USB-specific: the USB-host half lives in Linux (fpgamixer-usbhost).
+    // Only its channels 0..N_HOST-1 are core channels (the channel map above).
+    logic [31:0] lk3_frames_rx, lk3_frames_tx, lk3_underruns, lk3_starved;
+    logic [31:0] lk3_overruns, lk3_tid_errors;
+    logic [15:0] lk3_rx_fill;
+    logic        lk3_rx_running;
+
+    pcm_link #(.N_CH (N_LINK3), .SW (SW), .FIFO_FRAMES (LINK_FIFO_FRAMES)) u_link3 (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axis_tdata (mm2s3_tdata), .s_axis_tid (mm2s3_tid),
+        .s_axis_tvalid (mm2s3_tvalid), .s_axis_tready (mm2s3_tready),
+        .m_axis_tdata (s2mm3_tdata), .m_axis_tid (s2mm3_tid),
+        .m_axis_tvalid (s2mm3_tvalid), .m_axis_tready (s2mm3_tready),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
+        .rx_flat (link3_rx), .rx_valid (), .tx_flat (link3_tx),
+        .frames_rx (lk3_frames_rx), .frames_tx (lk3_frames_tx),
+        .underruns (lk3_underruns), .starved (lk3_starved),
+        .overruns (lk3_overruns), .tid_errors (lk3_tid_errors),
+        .rx_fill (lk3_rx_fill), .rx_running (lk3_rx_running)
+    );
+
+    // ----- Control plane: link #3's status window (0x8000_C000) -----
+    pcm_link_stat_regs #(
+        .N_CH_RX (N_LINK3), .N_CH_TX (N_LINK3),
+        .FIFO_WORDS (LINK_FIFO_FRAMES * 8), .ADDR_WIDTH (12)
+    ) u_link3_stat (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (stat3_awaddr[11:0]), .s_axi_awvalid (stat3_awvalid),
+        .s_axi_awready (stat3_awready),
+        .s_axi_wdata   (stat3_wdata),  .s_axi_wstrb  (stat3_wstrb),
+        .s_axi_wvalid  (stat3_wvalid), .s_axi_wready (stat3_wready),
+        .s_axi_bresp   (stat3_bresp),  .s_axi_bvalid (stat3_bvalid),
+        .s_axi_bready  (stat3_bready),
+        .s_axi_araddr  (stat3_araddr[11:0]), .s_axi_arvalid (stat3_arvalid),
+        .s_axi_arready (stat3_arready),
+        .s_axi_rdata   (stat3_rdata),  .s_axi_rresp  (stat3_rresp),
+        .s_axi_rvalid  (stat3_rvalid), .s_axi_rready (stat3_rready),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (frame),
+        .frames_rx (lk3_frames_rx), .frames_tx (lk3_frames_tx),
+        .underruns (lk3_underruns), .starved (lk3_starved),
+        .overruns (lk3_overruns), .tid_errors (lk3_tid_errors),
+        .rx_fill (lk3_rx_fill), .rx_running (lk3_rx_running)
+    );
+`else
+    assign link3_rx = '0;
 `endif
 
 `ifdef INCLUDE_MCLK
@@ -849,7 +914,7 @@ module fpgamixer_top (
     media_clock_meter #(.NOMINAL (12_288_000)) u_mclk_meter (
         .mclk (mclk), .rst_n (rst_n),
         .pps_async (~tsu_timer_cnt[45]),
-        .frame_i (jb_rx_valid),
+        .frame_i (frame),
         .pps_count (mc_pps_count), .cyc_last (mc_cyc_last), .cyc_prev (mc_cyc_prev),
         .frames_last (mc_frames_last), .phase_last (mc_phase_last),
         .implausible (mc_implausible), .cyc_now (mc_cyc_now)
@@ -867,7 +932,7 @@ module fpgamixer_top (
         .s_axi_arready (mc_arready),
         .s_axi_rdata   (mc_rdata),  .s_axi_rresp  (mc_rresp),
         .s_axi_rvalid  (mc_rvalid), .s_axi_rready (mc_rready),
-        .mclk (mclk), .mrst_n (rst_n), .frame_i (jb_rx_valid),
+        .mclk (mclk), .mrst_n (rst_n), .frame_i (frame),
         .pps_count (mc_pps_count), .cyc_last (mc_cyc_last), .cyc_prev (mc_cyc_prev),
         .frames_last (mc_frames_last), .phase_last (mc_phase_last),
         .implausible (mc_implausible), .cyc_now (mc_cyc_now)
@@ -912,44 +977,46 @@ module fpgamixer_top (
 `endif
 `else
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N), .LANES (L1)) u_in_mx_gains (
-        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (IN_MX_GAINS),
+        .mclk (mclk), .frame_i (frame), .coefs_flat (IN_MX_GAINS),
         .rd_addr (in_mx_addr), .rd_data (in_mx_data)
     );
     // Without the PS the bus matrix and the three level stages also read
     // their reset banks (identity, unity).
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N_BUS), .LANES (L2)) u_bus_mx_gains (
-        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (BUS_MX_GAINS),
+        .mclk (mclk), .frame_i (frame), .coefs_flat (BUS_MX_GAINS),
         .rd_addr (bus_mx_addr), .rd_data (bus_mx_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_lvl_gains (
-        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
+        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
         .rd_addr (in_lvl_addr), .rd_data (in_lvl_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1), .LANES (1)) u_bus_lvl_gains (
-        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
+        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
         .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_lvl_gains (
-        .mclk (mclk), .frame_i (jb_rx_valid), .coefs_flat (LEVEL_GAINS),
+        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
         .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
     );
     assign link_rx  = '0;
     assign link2_rx = '0;
+    assign link3_rx = '0;
 `endif
 
     // ----- PCM core -----
     // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->
     // bus matrix -> output levels, between the stream converters. core_out
     // updates D cycles after the strobe (249 at 20 -> 20 -> 20 on 4 + 4 lanes;
-    // the single matrix was 227), before i2s_port samples its pair (edge 254)
-    // and the link its frame (the next strobe): the same latency in frames as
-    // the parallel matrix had.
+    // the single matrix was 227), before the links take their frame (the next
+    // strobe): the same latency in frames as the parallel matrix had. (D_MAX
+    // = 250 was set by the Pmods' i2s_port, gone since Phase 11; it could now
+    // loosen to just under a frame, not needed yet.)
     mixer_core #(
         .N_IN (N), .N_BUS (N_BUS), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF),
         .L1 (L1), .L2 (L2)
     ) u_core (
         .mclk (mclk), .rst_n (rst_n),
-        .frame_i (jb_rx_valid),
+        .frame_i (frame),
         .in_flat  (core_in),
         .out_flat (core_out),
         .valid_o  (),

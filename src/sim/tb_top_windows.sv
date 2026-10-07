@@ -10,17 +10,21 @@
 //   - each window answers on its own port with its own ID and CONFIG:
 //     input matrix and bus matrix (0x4D58_5001, 20 x 20), input / bus /
 //     output levels (0x474E_5001, N = 20, TAP 0 / 1 / 2);
+//   - the reset state: identity and unity, except the USB-host channels 0..3
+//     whose input matrix starts all off (Phase 11, H5);
 //   - each window drives ITS block: with the core's input forced to known
-//     samples, one change per window, chosen so that a swapped or misrouted
-//     window gives a different output:
-//       input level  ch0 = 0.5
-//       input matrix bus2 <- in2 at 0.25 (instead of 1.0)
-//       bus level    ch0 = 0.5
-//       bus matrix   out1 <- bus0 at 1.0, out0 <- bus0 off
-//       output level ch1 = 0.5
-//     expected: out0 = 0; out1 = (in0/4 + in1) / 2 (bus0 = in0/2/2 joins
-//     bus1 = in1, which still feeds out1 at 1.0, then the output level);
-//     out2 = in2 / 4; every other output = its input.
+//     samples, one change per window (on channels B = 4 .. 6, which start at
+//     identity), chosen so that a swapped or misrouted window gives a
+//     different output:
+//       input level  ch B = 0.5
+//       input matrix bus B+2 <- in B+2 at 0.25 (instead of 1.0)
+//       bus level    ch B = 0.5
+//       bus matrix   out B+1 <- bus B at 1.0, out B <- bus B off
+//       output level ch B+1 = 0.5
+//     expected: out B = 0; out B+1 = (in B/4 + in B+1) / 2; out B+2 =
+//     in B+2 / 4; outputs 0..3 silent; every other output = its input;
+//   - Phase 13: each meter reads its own zone.
+// Phase 11: fpgamixer_top has no Pmod pins any more (decision P1).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -28,27 +32,43 @@ module tb_top_windows;
 
     localparam int N  = 20;
     localparam int SW = 24;
+    localparam int NH = 4;     // the USB-host channels 0..3: input matrix off at reset (H5)
+    localparam int B  = 4;     // the first channel of the per-window test (an identity one)
 
     logic sysclk = 0;
     always #4 sysclk = ~sysclk;
 
-    logic jb_da_mclk, jb_da_lrck, jb_da_sclk, jb_da_sdin, jb_ad_mclk, jb_ad_lrck, jb_ad_sclk;
-    logic jc_da_mclk, jc_da_lrck, jc_da_sclk, jc_da_sdin, jc_ad_mclk, jc_ad_lrck, jc_ad_sclk;
-
-    fpgamixer_top u_dut (
-        .sysclk (sysclk),
-        .jb_da_mclk (jb_da_mclk), .jb_da_lrck (jb_da_lrck), .jb_da_sclk (jb_da_sclk), .jb_da_sdin (jb_da_sdin),
-        .jb_ad_mclk (jb_ad_mclk), .jb_ad_lrck (jb_ad_lrck), .jb_ad_sclk (jb_ad_sclk), .jb_ad_sdout (1'b0),
-        .jc_da_mclk (jc_da_mclk), .jc_da_lrck (jc_da_lrck), .jc_da_sclk (jc_da_sclk), .jc_da_sdin (jc_da_sdin),
-        .jc_ad_mclk (jc_ad_mclk), .jc_ad_lrck (jc_ad_lrck), .jc_ad_sclk (jc_ad_sclk), .jc_ad_sdout (1'b0)
-    );
+    fpgamixer_top u_dut (.sysclk (sysclk));     // Phase 11: no Pmod pins any more
 
     // ----- known core inputs: in[k] = (k + 1) * 0x010000 -----
+    // Driven at the LINKS' wires, per the channel map (Phase 11): core 0..3 =
+    // link #3 ch 0..3, 4..11 = link #1, 12..19 = link #2. Link #3's ch 4..7
+    // carry a marker that must never reach the core.
+    localparam logic [SW-1:0] MARK = 24'h5A5A5A;
     logic [N*SW-1:0] stim;
+    logic [8*SW-1:0] l1, l2, l3;
     initial begin
         for (int k = 0; k < N; k++) stim[k*SW +: SW] = SW'((k + 1) * 32'h010000);
-        stim[0 +: SW] = 24'h400000;          // in0: big enough that /8 is exact
-        force u_dut.core_in = stim;
+        stim[B*SW +: SW] = 24'h400000;       // in B: big enough that /8 is exact
+        for (int c = 0; c < 8; c++) begin
+            l3[c*SW +: SW] = c < NH ? stim[c*SW +: SW] : MARK;
+            l1[c*SW +: SW] = stim[(4 + c)*SW +: SW];
+            l2[c*SW +: SW] = stim[(12 + c)*SW +: SW];
+        end
+        force u_dut.link3_rx = l3;
+        force u_dut.link_rx  = l1;
+        force u_dut.link2_rx = l2;
+    end
+
+    // ----- the frame strobe: exactly one per 256 mclk cycles (2.1) -----
+    int since = -1, frame_errors = 0, strobes = 0;
+    always @(posedge u_dut.mclk) begin
+        if (u_dut.frame) begin
+            if (since >= 0 && since != 256) frame_errors++;
+            since = 1;
+            strobes++;
+        end else if (since >= 0)
+            since++;
     end
 
     int errors = 0;
@@ -128,25 +148,37 @@ module tb_top_windows;
         rd(OUTMTR, 32'h000, r); check("output meter ID",      r, 32'h504B_5001);
         rd(OUTMTR, 32'h004, r); check("output meter CONFIG",  r, 32'h1402_1800);
 
-        $display("-- reset state: identity and unity, output = input");
+        $display("-- reset state: identity and unity, output = input; channels 0..3 off (H5)");
         repeat (3) @(posedge u_dut.u_core.valid_o);
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
-            check($sformatf("reset out%0d", k), 32'(u_dut.core_out[k*SW +: SW]), 32'(stim[k*SW +: SW]));
+            check($sformatf("reset out%0d", k), 32'(u_dut.core_out[k*SW +: SW]),
+                  k < NH ? 32'h0 : 32'(stim[k*SW +: SW]));
 
-        $display("-- one change per window");
-        wr(INLVL,  lv(0), 32'h0000_8000);           // in0 x 0.5
-        wr(CTRL,   mx(2, 2), 32'h0000_4000);        // bus2 <- in2 x 0.25
-        wr(BUSLVL, lv(0), 32'h0000_8000);           // bus0 x 0.5
-        wr(BUSMX,  mx(0, 0), 32'h0);                // out0 <- bus0 off
-        wr(BUSMX,  mx(1, 0), 32'h0001_0000);        // out1 <- bus0 x 1.0
-        wr(OUTLVL, lv(1), 32'h0000_8000);           // out1 x 0.5
+        $display("-- the channel map (Phase 11): links in -> core in, core out -> links out");
+        check("core_in = the links in map order", 32'(u_dut.core_in == stim), 1);
+        for (int c = 0; c < 8; c++) begin
+            check($sformatf("link #1 out ch%0d", c), 32'(u_dut.link_tx[c*SW +: SW]),
+                  32'(u_dut.core_out[(4 + c)*SW +: SW]));
+            check($sformatf("link #2 out ch%0d", c), 32'(u_dut.link2_tx[c*SW +: SW]),
+                  32'(u_dut.core_out[(12 + c)*SW +: SW]));
+            check($sformatf("link #3 out ch%0d", c), 32'(u_dut.link3_tx[c*SW +: SW]),
+                  c < NH ? 32'(u_dut.core_out[c*SW +: SW]) : 32'h0);
+        end
+
+        $display("-- one change per window (channels B = 4 .. 6)");
+        wr(INLVL,  lv(B), 32'h0000_8000);               // in B x 0.5
+        wr(CTRL,   mx(B+2, B+2), 32'h0000_4000);        // bus B+2 <- in B+2 x 0.25
+        wr(BUSLVL, lv(B), 32'h0000_8000);               // bus B x 0.5
+        wr(BUSMX,  mx(B, B), 32'h0);                    // out B <- bus B off
+        wr(BUSMX,  mx(B+1, B), 32'h0001_0000);          // out B+1 <- bus B x 1.0
+        wr(OUTLVL, lv(B+1), 32'h0000_8000);             // out B+1 x 0.5
         commit(INLVL); commit(CTRL); commit(BUSLVL); commit(BUSMX); commit(OUTLVL);
 
-        for (int k = 0; k < N; k++) exp_out[k] = stim[k*SW +: SW];
-        exp_out[0] = 0;
-        exp_out[1] = SW'((32'h400000 / 4 + 32'h020000) / 2);   // (in0/2/2 + in1) / 2
-        exp_out[2] = SW'(32'h030000 / 4);
+        for (int k = 0; k < N; k++) exp_out[k] = k < NH ? '0 : stim[k*SW +: SW];
+        exp_out[B]   = 0;
+        exp_out[B+1] = SW'((32'h400000 / 4 + 32'h060000) / 2);  // (in B/2/2 + in B+1) / 2
+        exp_out[B+2] = SW'(32'h070000 / 4);                     // in B+2 / 4
 
         repeat (3) @(posedge u_dut.u_core.valid_o);
         @(negedge u_dut.mclk);
@@ -157,12 +189,12 @@ module tb_top_windows;
         begin
             logic [SW-1:0] want_in [N], want_bus [N];
             for (int k = 0; k < N; k++) begin
-                want_in[k]  = stim[k*SW +: SW];
-                want_bus[k] = stim[k*SW +: SW];
+                want_in[k]  = stim[k*SW +: SW];             // input levels: before the matrix
+                want_bus[k] = k < NH ? '0 : stim[k*SW +: SW];
             end
-            want_in[0]  = 24'h200000;                   // in0 x 0.5
-            want_bus[0] = 24'h100000;                   // in0 x 0.5, bus0 x 0.5
-            want_bus[2] = 24'h00C000;                   // in2 x 0.25
+            want_in[B]    = 24'h200000;                 // in B x 0.5
+            want_bus[B]   = 24'h100000;                 // in B x 0.5, bus B x 0.5
+            want_bus[B+2] = 24'h01C000;                 // in B+2 x 0.25
             commit(INMTR); commit(BUSMTR); commit(OUTMTR);   // close the windows from before the changes
             repeat (2) @(posedge u_dut.u_core.valid_o);
             check_meter(INMTR,  want_in,  "post-level");
@@ -171,10 +203,13 @@ module tb_top_windows;
         end
 
         $display("-- the GAIN registers read back");
-        rd(INLVL,  lv(0), r);     check("input level 0",  r, 32'h0000_8000);
-        rd(BUSMX,  mx(1, 0), r);  check("bus matrix 1<-0", r, 32'h0001_0000);
-        rd(OUTLVL, lv(1), r);     check("output level 1", r, 32'h0000_8000);
+        rd(INLVL,  lv(B), r);       check("input level B",    r, 32'h0000_8000);
+        rd(BUSMX,  mx(B+1, B), r);  check("bus matrix B+1<-B", r, 32'h0001_0000);
+        rd(OUTLVL, lv(B+1), r);     check("output level B+1", r, 32'h0000_8000);
+        rd(CTRL,   mx(0, 0), r);    check("input matrix 0<-0 off at reset (H5)", r, 32'h0);
 
+        check("frame strobes at 256-cycle spacing", 32'(frame_errors), 0);
+        if (strobes < 10) begin $display("  FAIL only %0d frame strobes", strobes); errors++; end
         if (u_dut.u_ps.bus_errors != 0) begin
             $display("  FAIL %0d non-OKAY AXI responses", u_dut.u_ps.bus_errors);
             errors++;
