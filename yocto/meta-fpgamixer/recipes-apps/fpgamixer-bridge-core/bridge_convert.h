@@ -17,10 +17,10 @@
 
 /*
  * S24_LE as read from a link card: 24 bits in the low three bytes of a
- * 32-bit word. The top byte is NOT trusted to be the sign extension (never
- * measured for the formatter's capture side; Phase 11 H.2: the first user
- * that reads the whole int32, the resampler, heard noise): sign-extend from
- * bit 23 here, whatever the top byte holds.
+ * 32-bit word. The formatter's capture side writes the top byte as 0x00, NOT
+ * the sign (measured 2026-10-07: a negative sample read 0x00fb3894; Phase 11
+ * H.2, where the resampler, the first user of the whole int32, turned it into
+ * noise): sign-extend from bit 23 here, whatever the top byte holds.
  */
 static inline void s24le_to_s32(const int32_t *in, int32_t *out, size_t n)
 {
