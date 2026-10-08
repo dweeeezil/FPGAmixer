@@ -162,4 +162,4 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
    - **Phase 7, the rest of the DSP:** mute, EQ, dynamics, delay, gain smoothing.
    - **Phase 8 remainder:** one 8 × 8 device on the Mac (`f_uac2` single clock source, a carried kernel patch).
    - Recorded, not scheduled: OSC aliases (`proposal_osc_aliases.md`); reading the MAC from QSPI instead of hard-coding it.
-   - Housekeeping: `main` is at the Phase 8 merge; `phase9/time-shared-core`, `controller-support`, `phase12-levels-buses`, `phase13-metering` and `phase11-usb-host` are stacked on each other and unmerged (`phase11-usb-host` is the tip and holds all of them).
+   - Housekeeping: `main` has everything through Phase 13 (PR #8); `phase11-usb-host` (Phase 11) is the one branch on top of it.
