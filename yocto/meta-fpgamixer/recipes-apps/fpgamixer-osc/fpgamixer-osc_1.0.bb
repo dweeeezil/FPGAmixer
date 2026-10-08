@@ -18,6 +18,7 @@ SRC_URI = " \
     file://mixer_state.py \
     file://mixer_hw.py \
     file://mixer_meters.py \
+    file://mixer_snapshots.py \
     file://fpgamixer-osc.service \
     file://fpgamixer-mdns.conf \
 "
@@ -33,7 +34,8 @@ SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 # signal, struct, threading, time, dataclasses -> core; socket -> io; json;
 # mmap; re, subprocess -> core (checked in poky's python3-manifest.json,
 # 2026-10-04). osc_codec, mixer_params and osc_discovery add nothing beyond these;
-# nor does mixer_meters (Phase 13: math, struct, threading, time -> core).
+# nor does mixer_meters (Phase 13: math, struct, threading, time -> core);
+# nor does mixer_snapshots (Phase 14: json, os, threading, time).
 RDEPENDS:${PN} = "python3-core python3-io python3-json python3-mmap"
 
 APPDIR = "${libdir}/fpgamixer"
@@ -46,7 +48,7 @@ do_install() {
     install -d ${D}${APPDIR}
     install -m 0644 ${S}/osc_mixer_server.py ${S}/osc_codec.py ${S}/osc_discovery.py \
         ${S}/mixer_params.py ${S}/mixer_state.py ${S}/mixer_hw.py ${S}/mixer_meters.py \
-        ${D}${APPDIR}/
+        ${S}/mixer_snapshots.py ${D}${APPDIR}/
 
     # Discovery: resolved's mDNS on (drop-in); the server writes its
     # _studiorunner._tcp service into /etc/systemd/dnssd/ at runtime.

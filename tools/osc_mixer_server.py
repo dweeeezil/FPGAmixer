@@ -110,6 +110,17 @@ made here so you can compare against the real firmware once it exists):
     simulated one that follows each channel's level (never with --hw). No
     source: a subscribe is answered with an error reply. Meter sends never
     take the control lock.
+  - Snapshots (standard "Snapshots", Phase 14): '/<root>/snapshot/<request>'
+    over TCP (handle_snapshot): list, save, load, delete, fetch, apply,
+    store. The store and the format are mixer_snapshots.py (files in
+    --snapshot-dir, default 'snapshots' next to the state file). A recall
+    checks every entry first (fit_snapshot: a refused value refuses the
+    whole recall; entries the mixer lacks are skipped), saves the live state
+    as 'Before load', pushes each changed zone with one COMMIT
+    (Backend.apply_many), stores, broadcasts a set per changed value, then
+    snapshot/loaded; all under the ordering lock. save/store/delete are
+    confirmed by a broadcast snapshot/list. The config lists
+    "capabilities": ["snapshots"].
   - Ordering (F3): ClientRegistry.lock is held while a change is applied,
     stored and echoed, while any packet is sent, and while the config
     snapshot is read and sent. Echoes therefore follow the store order, two
@@ -159,9 +170,10 @@ from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
 # ---------------------------------------------------------------------------
 
 from mixer_state import MixerState, split_path, is_device_name  # noqa: E402
-from mixer_params import Model, ModuleSpec, Refused, ZoneSpec, float32  # noqa: E402
+from mixer_params import SYSTEM_ZONE, Model, ModuleSpec, Refused, ZoneSpec, float32  # noqa: E402
 from osc_discovery import DNSSD_FILE, DNSSD_RELOAD, NoAdvertiser, make_advertiser  # noqa: E402
 import mixer_meters  # noqa: E402
+import mixer_snapshots  # noqa: E402
 
 DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
@@ -332,6 +344,14 @@ class Backend:
     def apply(self, index, module, value):
         return value
 
+    def apply_many(self, changes):
+        """Many values at once (a snapshot recall): changes is {(index,
+        module): value}, each already through its module's rules. Returns
+        {(index, module): applied}. A backend with a window overrides this to
+        push the lot with one COMMIT."""
+        return {(index, module): self.apply(index, module, value)
+                for (index, module), value in changes.items()}
+
     def seed_and_push(self, state):
         pass
 
@@ -370,6 +390,17 @@ class MatrixBackend(Backend):
         if self.hw is not None:
             return float32(self.hw.set_db(out, inp, value))
         return value
+
+    def apply_many(self, changes):
+        """One bank write and one COMMIT for all of them."""
+        if self.hw is None:
+            return dict(changes)
+        where = {}
+        for (index, module) in changes:
+            inp, out = (int(x) for x in index.split("_"))
+            where[(index, module)] = (out, inp)
+        applied = self.hw.set_bank_db({where[k]: v for k, v in changes.items()})
+        return {k: float32(applied[where[k]]) for k in changes}
 
     def seed_and_push(self, state):
         """Fill in missing crosspoints with the reset routing, bring stored
@@ -427,6 +458,13 @@ class GainBackend(Backend):
         if self.hw is not None:
             return float32(self.hw.set_db(int(index), value))
         return value
+
+    def apply_many(self, changes):
+        """One bank write and one COMMIT for all of them."""
+        if self.hw is None:
+            return dict(changes)
+        applied = self.hw.set_bank_db({int(index): v for (index, _m), v in changes.items()})
+        return {(index, m): float32(applied[int(index)]) for (index, m) in changes}
 
     def seed_and_push(self, state):
         """Fill in missing levels with 0 dB, bring stored ones inside the
@@ -568,6 +606,8 @@ def reply_config(state, registry, reply_sock, via):
     with registry.lock:
         body = MODEL.config(state.mixer_name, FIRMWARE, SAMPLE_RATE,
                             lambda p: current_value(p, state))
+        if SNAPSHOTS is not None:
+            body["capabilities"] = ["snapshots"]
         text = json.dumps(body, separators=(",", ":"), allow_nan=False)
         registry.send(reply_sock, encode_message(f"/{state.mixer_name}/set/{CONFIG_PATH}", [text]))
     log(f"    [{via}] config sent ({len(text)} bytes, {len(body['values'])} value(s))")
@@ -689,6 +729,8 @@ def handle_tcp_message(msg, state, registry, reply_sock, via):
         handle_ping(msg.args, state, reply, via)
     elif kind == "meter" and "/".join(split_path(tail) or ()) == "subscribe":
         handle_meter_subscribe(msg.args, state, reply, reply_sock, via)
+    elif kind == "snapshot":
+        handle_snapshot(tail, msg.args, state, registry, reply, via)
     else:
         log(f"    [{via}] ignoring unknown command kind {kind!r} in {msg.address!r}")
 
@@ -738,6 +780,208 @@ def handle_meter_subscribe(args, state, reply, conn, via):
     except OSError:
         return
     METER_HUB.subscribe(conn, ip, port, rate, mixer_meters.zones_from_mask(mask, METER_HUB.available))
+
+
+SNAPSHOTS = None   # mixer_snapshots.SnapshotStore (main)
+
+
+def live_values(state):
+    """Every parameter but system/*, at its current value: what a snapshot holds."""
+    return {p.path: current_value(p, state) for p in MODEL.params() if p.zone != SYSTEM_ZONE}
+
+
+def snapshot_of(state, name, auto=False):
+    zones = {zone: spec.describe() for zone, spec in MODEL.zones.items()}
+    return mixer_snapshots.make_snapshot(name, live_values(state), zones, state.mixer_name,
+                                         FIRMWARE, auto=auto)
+
+
+def snapshot_list_message(state):
+    return encode_message(f"/{state.mixer_name}/snapshot/list",
+                          [json.dumps(SNAPSHOTS.list(), separators=(",", ":"))])
+
+
+def fit_snapshot(doc):
+    """A snapshot's entries against this mixer: ({path: (Param, applied)},
+    skipped, None), or (None, None, reason) if any entry the mixer has holds a
+    value its module refuses (a wrong kind, an enum outside its options): then
+    nothing may be applied. Entries the mixer doesn't have are skipped and
+    counted; system/* entries are ignored (the name stays with the device)."""
+    fitted, skipped = {}, 0
+    for path, value in doc["values"].items():
+        if path.split("/", 1)[0] == SYSTEM_ZONE:
+            continue
+        try:
+            param = MODEL.resolve(path)
+        except Refused:
+            skipped += 1
+            continue
+        applied, why = param.spec.apply(value)
+        if why is not None:
+            return None, None, f"{param.path}: {why}"
+        fitted[param.path] = (param, applied)
+    return fitted, skipped, None
+
+
+def recall_snapshot(fitted, skipped, label, state, registry, via):
+    """Standard "Snapshots", recall steps 3-6, under the ordering lock: save
+    the live state as AUTO_NAME (the undo point), push every changed value
+    with one COMMIT per window, store, broadcast a set per changed value, then
+    snapshot/loaded. Parameters the snapshot doesn't mention are untouched."""
+    with registry.lock:
+        try:
+            SNAPSHOTS.write(snapshot_of(state, mixer_snapshots.AUTO_NAME, auto=True))
+        except (mixer_snapshots.SnapshotRefused, OSError) as e:
+            log(f"    [{via}] could not save '{mixer_snapshots.AUTO_NAME}' ({e}); recalling anyway")
+        by_zone = {}
+        for param, value in fitted.values():
+            if value != current_value(param, state):
+                by_zone.setdefault(param.zone, {})[(param.index, param.module)] = value
+        stored = {}
+        for zone, changes in by_zone.items():
+            backend = BACKENDS.get(zone)
+            applied = backend.apply_many(changes) if backend is not None else dict(changes)
+            for (index, module), value in applied.items():
+                stored[f"{zone}/{index}/{module}"] = value
+        rejected = state.set_many(stored) if stored else {}
+        for path, why in rejected.items():
+            log(f"    [{via}] could not store {path}: {why}")
+        for path, value in stored.items():
+            if path not in rejected:
+                registry.broadcast(encode_message(f"/{state.mixer_name}/set/{path}", [value]))
+        registry.broadcast(encode_message(f"/{state.mixer_name}/snapshot/loaded",
+                                          [label, len(fitted), skipped]))
+    log(f"    [{via}] snapshot {label!r} recalled: {len(fitted)} applied, "
+        f"{len(stored)} changed, {skipped} skipped")
+
+
+def handle_snapshot(tail, args, state, registry, reply, via):
+    """Standard "Snapshots" (TCP only): list, save, load, delete, fetch,
+    apply, store. Every refusal is an error reply on snapshot/<request> and
+    changes nothing."""
+    request = "/".join(split_path(tail) or ())
+    path = f"snapshot/{request}"
+
+    def refuse(reason):
+        send_error(reply, state, path, reason, via)
+
+    def text_arg(v):   # a string, or a blob of UTF-8 (as the config may travel)
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (bytes, bytearray)):
+            try:
+                return bytes(v).decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        return None
+
+    texts = [text_arg(a) for a in args]
+    if SNAPSHOTS is None:
+        return refuse("this mixer has no snapshots")
+
+    if request == "list":
+        if args:
+            return refuse("list takes no arguments")
+        return reply(snapshot_list_message(state))
+
+    if request == "fetch":
+        if not args:
+            with registry.lock:      # ordered with the broadcasts, like the config reply
+                text = mixer_snapshots.encode(snapshot_of(state, ""))
+                reply(encode_message(f"/{state.mixer_name}/snapshot/data", ["", text]))
+            return
+        if len(args) != 1 or texts[0] is None:
+            return refuse("fetch takes nothing (the live state) or a snapshot name")
+        try:
+            text = SNAPSHOTS.read(texts[0])
+        except KeyError:
+            return refuse(f"no snapshot named {texts[0]!r}")
+        return reply(encode_message(f"/{state.mixer_name}/snapshot/data", [texts[0], text]))
+
+    if request in ("save", "load", "delete"):
+        if len(args) != 1 or texts[0] is None:
+            return refuse(f"{request} needs a snapshot name")
+        name = texts[0]
+        if request == "save":
+            why = mixer_snapshots.name_problem(name)
+            if why is not None:
+                return refuse(why)
+            with registry.lock:      # the values read, the file written and the list broadcast as one step
+                try:
+                    SNAPSHOTS.write(snapshot_of(state, name))
+                except mixer_snapshots.SnapshotRefused as e:
+                    return refuse(str(e))
+                except OSError as e:
+                    return refuse(f"could not write the snapshot ({e})")
+                registry.broadcast(snapshot_list_message(state))
+            log(f"    [{via}] snapshot {name!r} saved")
+            return
+        if request == "delete":
+            with registry.lock:
+                try:
+                    SNAPSHOTS.delete(name)
+                except KeyError:
+                    return refuse(f"no snapshot named {name!r}")
+                except OSError as e:
+                    return refuse(f"could not delete the snapshot ({e})")
+                registry.broadcast(snapshot_list_message(state))
+            log(f"    [{via}] snapshot {name!r} deleted")
+            return
+        try:                         # load
+            text = SNAPSHOTS.read(name)
+        except KeyError:
+            return refuse(f"no snapshot named {name!r}")
+        except OSError as e:
+            return refuse(f"could not read the snapshot ({e})")
+        doc, why = mixer_snapshots.parse(text)
+        if doc is None:
+            return refuse(f"the stored snapshot is not valid: {why}")
+        fitted, skipped, why = fit_snapshot(doc)
+        if why is not None:
+            return refuse(why)
+        return recall_snapshot(fitted, skipped, name, state, registry, via)
+
+    if request == "apply":
+        if len(args) != 1 or texts[0] is None:
+            return refuse("apply needs the snapshot JSON as a string")
+        doc, why = mixer_snapshots.parse(texts[0])
+        if doc is None:
+            return refuse(why)
+        fitted, skipped, why = fit_snapshot(doc)
+        if why is not None:
+            return refuse(why)
+        label = doc.get("name") if isinstance(doc.get("name"), str) else ""
+        return recall_snapshot(fitted, skipped, label, state, registry, via)
+
+    if request == "store":
+        if len(args) != 2 or None in texts:
+            return refuse("store needs a snapshot name and the snapshot JSON as strings")
+        name, text = texts
+        why = mixer_snapshots.name_problem(name)
+        if why is not None:
+            return refuse(why)
+        doc, why = mixer_snapshots.parse(text)
+        if doc is None:
+            return refuse(why)
+        _fitted, _skipped, why = fit_snapshot(doc)    # the same checks a recall makes
+        if why is not None:
+            return refuse(why)
+        doc = dict(doc, name=name)
+        doc.pop("auto", None)
+        if not isinstance(doc.get("savedAt"), str):
+            doc["savedAt"] = mixer_snapshots.utc_now()
+        with registry.lock:
+            try:
+                SNAPSHOTS.write(doc)
+            except mixer_snapshots.SnapshotRefused as e:
+                return refuse(str(e))
+            except OSError as e:
+                return refuse(f"could not write the snapshot ({e})")
+            registry.broadcast(snapshot_list_message(state))
+        log(f"    [{via}] snapshot {name!r} stored (uploaded)")
+        return
+
+    refuse(f"unknown snapshot request {request!r}")
 
 
 def handle_packet(packet, state, registry, reply_sock, via):
@@ -886,7 +1130,7 @@ def build_meter_source(use_hw, kind, backends, state):
 
 
 def main():
-    global VERBOSE, MODEL, FIRMWARE, ADVERTISER, METER_HUB
+    global VERBOSE, MODEL, FIRMWARE, ADVERTISER, METER_HUB, SNAPSHOTS
     p = argparse.ArgumentParser(description="Reference/simulator server for the FPGA mixer OSC protocol.")
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
@@ -921,6 +1165,10 @@ def main():
     p.add_argument("--dnssd-file", default=DNSSD_FILE, help=f"(dnssd) the file to write (default {DNSSD_FILE})")
     p.add_argument("--dnssd-reload", default=DNSSD_RELOAD,
                    help=f"(dnssd) command run after the file changes (default '{DNSSD_RELOAD}'; '' = none)")
+    p.add_argument("--snapshot-dir", default=None,
+                   help="where named snapshots are kept (default: 'snapshots' next to the "
+                        "state file; in memory only when persistence is off). On the board: "
+                        "/var/lib/fpgamixer/snapshots")
     p.add_argument("--meter-source", choices=("none", "synthetic"), default="none",
                    help="without --hw: synthetic = meters that follow each channel's level "
                         "(tests, the simulator); none = no meters (default). With --hw the "
@@ -931,6 +1179,11 @@ def main():
         p.error("--meter-source is for the simulator; with --hw the meters are the PL's (decision M8)")
 
     state = MixerState(args.mixer_name, args.state_file or None, log=log)
+    snapshot_dir = args.snapshot_dir
+    if snapshot_dir is None and args.state_file:
+        snapshot_dir = os.path.join(os.path.dirname(os.path.abspath(args.state_file)), "snapshots")
+    SNAPSHOTS = mixer_snapshots.SnapshotStore(snapshot_dir, log=log)
+    log(f"Snapshots: {snapshot_dir or 'in memory'} ({len(SNAPSHOTS.list())} stored)")
     BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer,
                                    identity_from=args.identity_from))
     MODEL = build_model(BACKENDS, SYSTEM_SETTINGS)

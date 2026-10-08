@@ -2,7 +2,7 @@
 
 **Branch:** `phase14-snapshots` (from `main` at `68b541b`, the Phase 11 merge, PR #9).
 **Plans:** `docs/plans/plan_snapshots_2026-10-06.md` (this phase), then `plan_virtual_groups_…`, `plan_channel_sources_…`; bundled in `docs/prompt_phase14_qol.md`.
-**Status: snapshot API decided 2026-10-08 (S1–S8 all as recommended, §3); building.** The user updates the controller (StudioRunner) side from the agreed API; the standard (`docs/FPGA Mixer OSC Standard.md`) is amended once it's agreed.
+**Status: snapshot API decided 2026-10-08 (S1–S8 as recommended, §3); standard, store and server built and tested (§4.1); image and bench next; the app side is the user's (§4.2).** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
 
 ---
 
@@ -118,7 +118,29 @@ Integers (`applied`, `skipped`) travel as OSC `i`, like `pong`'s token; a contro
 4. Image, bench by ear with the app (save, change, load, power cycle, download, upload).
 5. The app (user): list / save / load / delete UI, export / import a file, the `loaded` notice.
 
+### 4.1 Steps 1–3 done (2026-10-08)
+
+- **Standard** amended: *Snapshots* section, the `snapshot` row in *Command kinds*, "TCP only" in *Transports*, `capabilities` in *Config*, the error list, the change log (8 Oct 2026; additive, `schemaVersion` stays 1).
+- **`tools/mixer_snapshots.py`**: `name_problem`, `parse` (envelope: JSON object, `snapshotVersion` 1, `values` an object of numbers/strings, ≤ 1 MiB), `make_snapshot`, `SnapshotStore` (one file per snapshot, the name percent-encoded into the file name with a local encoder because `urllib.parse` isn't in the board's `python3-core`; temp + fsync + rename + directory fsync; a leftover `.tmp` removed on open; an unparsable or misnamed file skipped and logged, never deleted; 128 snapshots, replacing at the limit allowed; in memory when there's no state file).
+- **Server**: `handle_snapshot` (all seven requests), `fit_snapshot`, `recall_snapshot`, `live_values`/`snapshot_of`; `Backend.apply_many` (default per value; `MatrixBackend`/`GainBackend`: one `set_bank_db`, one COMMIT, returning the applied values, so `mixer_hw.MatrixHW/GainHW.set_bank_db` now return `{key: applied dB}`); `capabilities: ["snapshots"]` in the config; `--snapshot-dir` (default `snapshots/` next to the state file, so `/var/lib/fpgamixer/snapshots` on the board with no service change). UDP ignores `snapshot` (it already ignored every non-`set`).
+- **Recipe**: `mixer_snapshots.py` added to `fpgamixer-osc_1.0.bb`'s `SRC_URI` and `do_install` (no new Python packages: json, os, threading, time).
+- **Tests**: `test_mixer_snapshots.py` (13: names, the envelope, the store, limits, a failed write leaves the old file, bad files skipped, reopen) and `test_osc_mixer_server.py` `Snapshots` (9, over TCP: save + list broadcast to two controllers + complete fetch; load round trip broadcasting only the changes then `loaded`; "Before load" as undo; a bigger snapshot fitted with skips, clamping, unmentioned values kept, `system/*` ignored; a refused entry / bad JSON / newer version refuse the whole recall with nothing changed and nobody told; store without recall, name and `auto` replaced; refusals; delete broadcast; UDP ignored) plus `InProcess` (one bank per window, applied values echoed) and the config test (`capabilities`). Windows: 142 OK (server, snapshots, state, params). **Mutants 23/23 killed** (baseline clean first): changes-only broadcast, the undo point, whole-recall refusal, `system/*` ignored, `applied` count, the three list broadcasts, store's name/`auto`/no-recall, the bank mapping and single COMMIT, applied values echoed, `capabilities`, no `system/*` in snapshots; names, version, the limit, the temp write, `.tmp` cleanup, sorting, misnamed files.
+
+### 4.2 For the app (controller repo)
+
+The standard's *Snapshots* section is the spec. What the app needs:
+
+- Offer snapshots only when the config's `capabilities` contains `"snapshots"`.
+- **List**: send `snapshot/list` after sync; keep the list from any `snapshot/list` message (they also arrive unasked after any controller's save/store/delete). Entries with `"auto": true` ("Before load") can be shown as an undo.
+- **Save to board**: `snapshot/save <name>`; confirm overwrite in the UI when the name is listed. **Load**: `snapshot/load <name>`. **Delete**: `snapshot/delete <name>`.
+- **Save to computer**: `snapshot/fetch` (no argument) → `snapshot/data "" <json>` → write the JSON to a file (`.json`; the app chooses the file name). **Download a board snapshot**: `snapshot/fetch <name>`.
+- **Load from computer**: `snapshot/apply <json>`. **Upload to board**: `snapshot/store <name> <json>`.
+- **After a recall** the values arrive as ordinary `set`s (D44's device-originated path), then `snapshot/loaded <name> <applied> <skipped>`: show it (e.g. "Loaded 'Song A' (3 skipped)"). Up to ~860 sets arrive in a burst today.
+- Refusals arrive as `/<name>/error snapshot/<request> <reason>`: show the reason.
+- Name rules for the UI's validation: 1–63 UTF-8 bytes, spaces OK, no `/` `\` or control characters, no leading `.`, no leading/trailing space.
+
 ## 5. Log
 
 - **2026-10-08:** Phase 11 merged (PR #9); branch `phase14-snapshots`. Snapshot API proposed (§2), decisions S1–S8 to the user.
 - **2026-10-08:** decisions S1–S8 as recommended. Next: the standard, then the store and the server.
+- **2026-10-08:** steps 1–3 done (§4.1): standard amended; store + server + recipe; 142 tests OK on Windows, mutants 23/23. Next: Linux test run, image, bench once the app speaks it.

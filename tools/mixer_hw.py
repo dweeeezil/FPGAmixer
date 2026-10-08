@@ -218,9 +218,11 @@ class MatrixHW(RegWindow):
         return applied
 
     def set_bank_db(self, levels):
-        """levels: {(out, in): dB}; one COMMIT for the lot."""
-        self.write_coefs({self._k(o, i): db_to_code(db, self.gain_frac, self.gain_width)[0]
-                          for (o, i), db in levels.items()})
+        """levels: {(out, in): dB}; one COMMIT for the lot. Returns
+        {(out, in): dB actually applied}."""
+        codes = {k: db_to_code(db, self.gain_frac, self.gain_width) for k, db in levels.items()}
+        self.write_coefs({self._k(o, i): code for (o, i), (code, _a) in codes.items()})
+        return {k: applied for k, (_c, applied) in codes.items()}
 
 
 class GainHW(RegWindow):
@@ -264,9 +266,11 @@ class GainHW(RegWindow):
         return applied
 
     def set_bank_db(self, levels):
-        """levels: {channel: dB}; one COMMIT for the lot."""
-        self.write_coefs({self._c(c): db_to_code(db, self.gain_frac, self.gain_width)[0]
-                          for c, db in levels.items()})
+        """levels: {channel: dB}; one COMMIT for the lot. Returns
+        {channel: dB actually applied}."""
+        codes = {c: db_to_code(db, self.gain_frac, self.gain_width) for c, db in levels.items()}
+        self.write_coefs({self._c(c): code for c, (code, _a) in codes.items()})
+        return {c: applied for c, (_c, applied) in codes.items()}
 
 
 class InputLevelHW(GainHW):
