@@ -1451,42 +1451,21 @@ class VGroups(ServerCase):
         self.assertEqual(self.echoes(a, "/mixer/set/outputChannel/3/level", -1.0),
                          [("outputChannel/3/level", -1.0), ("outputChannel/2/level", -1.0)])
 
-    def test_matrix_row_group_fans_out_to_one_column(self):
+    def test_crosspoints_never_link(self):
+        """User, 2026-10-08: grouped channels stay independently routable, so
+        a stereo pair can go to different buses (not be summed). Every
+        grouping of rows and columns: only the crosspoint itself changes."""
         a = self.tcp()
         self.group(a, "inputChannel", (0, 1), 1)
-        self.assertEqual(self.echoes(a, XP.format(1, 2), -6.0),
-                         [("inputMatrix/1_2/level", -6.0), ("inputMatrix/0_2/level", -6.0)])
-
-    def test_matrix_column_group_fans_out_from_one_row(self):
-        a = self.tcp()
-        self.group(a, "busChannel", (2, 3), 1)
-        self.assertEqual(self.echoes(a, XP.format(0, 3), -6.0),
-                         [("inputMatrix/0_3/level", -6.0), ("inputMatrix/0_2/level", -6.0)])
-
-    def test_matrix_equal_groups_pair_by_position_keeping_the_offset(self):
-        a = self.tcp()
-        self.group(a, "inputChannel", (0, 1), 1)
-        self.group(a, "busChannel", (2, 3), 1)
-        self.assertEqual(self.echoes(a, XP.format(0, 2), -6.0),             # L -> L
-                         [("inputMatrix/0_2/level", -6.0), ("inputMatrix/1_3/level", -6.0)])
-        self.assertEqual(self.echoes(a, XP.format(0, 3), -12.0),            # L -> R
-                         [("inputMatrix/0_3/level", -12.0), ("inputMatrix/1_2/level", -12.0)])
-        self.assertEqual(self.echoes(a, XP.format(1, 2), -18.0),            # R -> L (offset -1)
-                         [("inputMatrix/1_2/level", -18.0), ("inputMatrix/0_3/level", -18.0)])
-
-    def test_matrix_three_way_groups_rotate(self):
-        a = self.tcp()
-        self.group(a, "busChannel", (0, 1, 3), 1)
-        self.group(a, "outputChannel", (1, 2, 3), 7)
-        self.assertEqual(self.echoes(a, "/mixer/set/busMatrix/1_3/level", -6.0),   # positions 1 -> 2
-                         [("busMatrix/1_3/level", -6.0), ("busMatrix/0_2/level", -6.0),
-                          ("busMatrix/3_1/level", -6.0)])
-
-    def test_matrix_unequal_groups_dont_link(self):
-        a = self.tcp()
-        self.group(a, "inputChannel", (0, 1, 2), 1)
-        self.group(a, "busChannel", (2, 3), 1)
         self.assertEqual(self.echoes(a, XP.format(0, 2), -6.0), [("inputMatrix/0_2/level", -6.0)])
+        self.group(a, "busChannel", (2, 3), 1)
+        self.assertEqual(self.echoes(a, XP.format(0, 2), -12.0), [("inputMatrix/0_2/level", -12.0)])
+        self.assertEqual(self.echoes(a, XP.format(3, 3), -3.0), [("inputMatrix/3_3/level", -3.0)])
+        self.group(a, "outputChannel", (0, 1), 2)
+        self.assertEqual(self.echoes(a, "/mixer/set/busMatrix/2_0/level", -6.0),
+                         [("busMatrix/2_0/level", -6.0)])
+        self.assertEqual((self.get(a, "inputMatrix/1_2/level"), self.get(a, "inputMatrix/1_3/level"),
+                          self.get(a, "busMatrix/3_1/level")), (-90.0, -90.0, -90.0))
 
     def test_udp_sets_link_too(self):
         a, u = self.tcp(), self.udp()

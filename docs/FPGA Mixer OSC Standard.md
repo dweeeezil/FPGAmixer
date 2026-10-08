@@ -238,15 +238,10 @@ Meters stream over UDP, mixer → controller, separate from TCP control. The con
 Optional (the channel zones list the module `vgroup`). Channels of one zone can be grouped, so that a change to one member applies to all of them (stereo and surround from mono channels).
 
 - **`vgroup`** (`int`): 0 = not grouped, 1 … `max` = the group number (`max` from the config; the reference server: 64). Groups are per zone: input group 1 and bus group 1 are unrelated. It's an ordinary parameter (set, get, echo, kept across a power cycle, carried by snapshots). It is never linked itself.
-- **Linked modules** carry `linked: true` in their config metadata (today `level`). A `set` of a linked module, over TCP or UDP, applies **the same value to every linked parameter** (below), with the usual value rules (all members end up with the same applied value). A refused `set` changes nothing.
+- **Linked modules** carry `linked: true` in their config metadata (today `level`). A `set` of a linked module, over TCP or UDP, on a grouped channel applies **the same value to that module on every member** (below), with the usual value rules (all members end up with the same applied value). A refused `set` changes nothing.
 - **Echo:** every changed parameter is broadcast as a `set`, **the requested one first**, then the others in index order. A controller treats the others as device-originated sets.
 - **Channels:** a set on a channel with `vgroup` g ≠ 0 applies to every channel of the zone whose `vgroup` is g.
-- **Matrix crosspoints** link through the groups of their row and column channels (`inputMatrix`: rows `inputChannel`, columns `busChannel`; `busMatrix`: rows `busChannel`, columns `outputChannel`). With R the row channel's group members and C the column channel's (each just the channel itself when it isn't grouped), both in index order:
-  - neither grouped: only the crosspoint itself;
-  - only the row grouped: every R member → the same column;
-  - only the column grouped: the same row → every C member;
-  - both grouped, same size n: pairs by position, keeping the offset: setting (R[a], C[b]) sets (R[i], C[(i + b − a) mod n]) for every i (stereo 1, 2 → stereo bus 3, 4: 1→3 also sets 2→4; 1→4 also sets 2→3);
-  - both grouped, different sizes: only the crosspoint itself.
+- **Matrix crosspoints never link**, whatever the groups of their row and column channels: grouped channels stay independently routable (a stereo pair can go to different buses and outputs instead of being summed). Linking applies to channel zones only, even for a module like `level` that matrices share.
 - **Joining or leaving a group changes no other value**; the next set of a linked module brings the members together.
 - **A snapshot recall** sets each parameter to its stored value; linking doesn't apply to it.
 
@@ -333,4 +328,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 - **18 Aug 2026:** first version (set/get, zones, matrix and channel examples, `deviceName`).
 - **4 Oct 2026:** amendments A–H folded in (from the StudioRunner controller's `OSC_Amendments_Proposed.md`, agreed 4 Oct 2026), with the device rules decided alongside them (controller `DECISIONS.md` D33, D37, D38, D39, D50) and in the firmware session: `mixer` is the factory name; the error `path` has no trailing slash; UDP never replies; a malformed `meter/subscribe` gets an error. The `deviceName` example lost its trailing slash (both forms are accepted). Wording fix: a rename is confirmed under the old *name*, also when the request came through `/mixer/`.
 - **8 Oct 2026:** *Snapshots* (the `snapshot` command kind, the snapshot JSON, recall rules) and the config's optional `capabilities`; additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase14_status_2026-10-08.md` (S1–S8).
-- **8 Oct 2026 (later):** *Virtual groups* (the `vgroup` module, linking rules for channels and matrix crosspoints, the echo order) and the module metadata key `linked`; additive, `schemaVersion` stays 1. Decided in the same doc (V1–V8).
+- **8 Oct 2026 (later):** *Virtual groups* (the `vgroup` module, linking rules, the echo order) and the module metadata key `linked`; additive, `schemaVersion` stays 1. Decided in the same doc (V1–V8). Revised the same day before any controller shipped it: matrix crosspoints never link (V5 changed by the user).

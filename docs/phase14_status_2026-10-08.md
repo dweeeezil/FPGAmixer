@@ -165,6 +165,8 @@ Plan: `docs/plans/plan_virtual_groups_2026-10-06.md`. Control plane only: no gat
 
 ### 6.2 Matrix crosspoints
 
+> **Superseded 2026-10-08 (user, after the first build): matrix crosspoints never link** (§6.6). *"Crosspoints should stay independent so grouped channels can be routed independently. If I have ins 1-2 in a group, I still want to be able to route them to different buses and outputs, otherwise stereo channels are just summed."* The table below is the original proposal, kept for the record.
+
 The rows of `inputMatrix` are input channels and its columns buses; `busMatrix` rows are buses and its columns outputs. A crosspoint set links through the groups of its row and its column:
 
 | Row's channel | Column's channel | Linked crosspoints | Example |
@@ -183,7 +185,7 @@ The rows of `inputMatrix` are input channels and its columns buses; `busMatrix` 
 | V2 | Module name and type | `vgroup`, int 0..N, per channel zone | `group` (collides with the metadata key); an enum |
 | V3 | Absolute or relative level linking | **absolute**: every member gets the same value (a console stereo link; lossless, no edge cases at −90 / +6.02) | relative (DAW fader groups: offsets kept; lossy at the ends); a per-group mode later if wanted |
 | V4 | Joining a group | **the channel keeps its own values**; joining never changes the audio, and the next edit of a linked parameter aligns all members | the new member copies the group's values at once (channel levels and its matrix sends) |
-| V5 | Matrix rule | as §6.2 (pair by position with the offset for equal sizes; fan out across one grouped side; no link for unequal sizes) | unequal sizes: pair the first min(R, C) by position |
+| V5 | Matrix rule | as §6.2 (pair by position with the offset for equal sizes; fan out across one grouped side; no link for unequal sizes) — **changed by the user 2026-10-08: crosspoints never link** (§6.6) | unequal sizes: pair the first min(R, C) by position |
 | V6 | Which modules link | opt-in by `"linked": true` metadata; today `level` (channels and matrices) | a fixed list in the server |
 | V7 | Echo order | the edited parameter first, then the other members in index order | index order only |
 | V8 | Group names / colours | later (the app can colour by number); they'd be `system`-level metadata, not per channel | now |
@@ -203,3 +205,11 @@ The rows of `inputMatrix` are input channels and its columns buses; `busMatrix` 
 - **Server**: `level_module` is linked; `VGROUP_MODULE` (int 0..64, default 0, metadata group `link`) on the three channel backends (`GainBackend.describe`); `GainBackend.apply`/`apply_many` keep `vgroup` away from the window (a recall now carries `vgroup` values too); `group_members`, `link_targets` (channels; crosspoints through `MATRIX_SIDES` with the §6.2 table) and `apply_set` (several targets: one `apply_many`, `set_many`, echoes in target order). A snapshot of the board now holds 920 values (860 + 60 `vgroup`s).
 - **Tests**: `VGroups` (11, over TCP: absolute linking and echo order with two controllers, clamping, joining and leaving change nothing else, per zone, row fan-out, column fan-out, equal groups with the offset, a three-way rotation on `busMatrix`, unequal groups unlinked, UDP, a refused set changes no member, snapshots carry `vgroup` and recall doesn't link); `InProcess` (a linked set = one bank, no per-channel commits; `vgroup` never reaches the hardware); `Config` (`vgroup` metadata, `level` linked); `test_mixer_params` (`linked` only when true). Snapshot tests: N = 56 now; their two-controller tests now register both links first (a `get` each): one run had lost a broadcast to a not-yet-registered connection. Windows: 155 OK. **Mutants 16/16 killed** (baseline clean first).
 - **Linux**: 210 tests OK. **Image `p14g-vgroups-20261008`** (layer `bbe652d`, bitstream `p11h3` unchanged, no `gen-machine-conf`): all tasks succeeded, 3 min 44 s, the same 22 warnings; checked: bitstream MD5 `58d7e3f6…`, `VERSION` `bbe652d`, the server has `link_targets`. **`build/sd/p14g-vgroups-20261008.wic.xz`** (MD5 `a6091613…`, same on both ends). Next: the app side (user), then the bench (§6.4 step 3).
+
+### 6.6 V5 changed: crosspoints never link (2026-10-08)
+
+The user, after the `p14g` build and before the app shipped linking: *"Channels in the same group shouldn't be auto-assigned to the same matrix crosspoints. Crosspoints should stay independent so grouped channels can be routed independently. If I have ins 1-2 in a group, I still want to be able to route them to different buses and outputs, otherwise stereo channels are just summed."* Agreed: the row fan-out made a stereo pair into a mono send, and the pairing rule guessed at routing intent.
+
+- **Server**: `link_targets` links only the same module on the members of the channel's own group; the matrix branch and `MATRIX_SIDES` are gone (matrix zones have no `vgroup`, so `group_members` gives a crosspoint itself). `level` stays `linked` (it's one module across channels and matrices, D77); the standard says linking applies on channel zones only.
+- **Standard**: the matrix rules replaced by "matrix crosspoints never link"; the change log notes the same-day revision.
+- **Tests**: the five matrix-linking tests replaced by `test_crosspoints_never_link` (a grouped row; grouped row and column; a grouped column; `busMatrix` with grouped outputs; the would-be partners stay off). **Mutants 14/14 killed** (baseline clean first), including three that make crosspoints link again (through the input group, the bus group, the output group).

@@ -649,15 +649,10 @@ def current_value(param, state):
     return param.spec.default_value() if value is None else value
 
 
-# Virtual groups: which channel zones a matrix's rows and columns are.
-MATRIX_SIDES = {MATRIX_ZONE: ("inputChannel", "busChannel"),
-                BUS_MATRIX_ZONE: ("busChannel", "outputChannel")}
-
-
 def group_members(zone, index, state):
     """The channels of `zone` in the same virtual group as channel `index`
     (str), in index order, itself included; [index] when it isn't grouped
-    or the zone has no vgroup."""
+    or the zone has no vgroup (the matrices: crosspoints never link)."""
     spec = MODEL.zones.get(zone)
     if spec is None or "vgroup" not in spec.modules:
         return [index]
@@ -669,29 +664,13 @@ def group_members(zone, index, state):
 
 def link_targets(param, state):
     """Every parameter a set of `param` applies to (standard "Virtual
-    groups"): `param` first, then the linked ones in index order. Only for
-    modules marked linked; [param] when nothing links."""
+    groups"): `param` first, then the same module on the other members of
+    its channel's group, in index order. Only modules marked linked, only on
+    channels: matrix crosspoints never link, so grouped channels can still
+    be routed independently (user, 2026-10-08)."""
     if not param.spec.linked:
         return [param]
-    if param.zone in MATRIX_SIDES:
-        row_zone, col_zone = MATRIX_SIDES[param.zone]
-        r, c = param.index.split("_")
-        rows, cols = group_members(row_zone, r, state), group_members(col_zone, c, state)
-        if len(cols) == 1:
-            pairs = [(ri, c) for ri in rows]
-        elif len(rows) == 1:
-            pairs = [(r, ci) for ci in cols]
-        elif len(rows) == len(cols):
-            k = cols.index(c) - rows.index(r)
-            pairs = [(ri, cols[(i + k) % len(cols)]) for i, ri in enumerate(rows)]
-        else:
-            pairs = [(r, c)]     # both grouped, different sizes: no link
-        indices = [f"{ri}_{ci}" for ri, ci in pairs]
-        order = lambda ix: tuple(int(x) for x in ix.split("_"))   # noqa: E731
-    else:
-        indices = group_members(param.zone, param.index, state)
-        order = int
-    others = sorted((ix for ix in indices if ix != param.index), key=order)
+    others = [ix for ix in group_members(param.zone, param.index, state) if ix != param.index]
     return [param] + [Param(param.zone, ix, param.module, param.spec) for ix in others]
 
 
