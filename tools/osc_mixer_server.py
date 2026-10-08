@@ -170,7 +170,7 @@ from osc_codec import (FRAMINGS, DEFAULT_FRAMING, OSCMalformed, FramingLost,
 # ---------------------------------------------------------------------------
 
 from mixer_state import MixerState, split_path, is_device_name  # noqa: E402
-from mixer_params import SYSTEM_ZONE, Model, ModuleSpec, Refused, ZoneSpec, float32  # noqa: E402
+from mixer_params import SYSTEM_ZONE, Model, ModuleSpec, Param, Refused, ZoneSpec, float32  # noqa: E402
 from osc_discovery import DNSSD_FILE, DNSSD_RELOAD, NoAdvertiser, make_advertiser  # noqa: E402
 import mixer_meters  # noqa: E402
 import mixer_snapshots  # noqa: E402
@@ -317,7 +317,14 @@ def level_module(max_db):
     matrices and channels can't drift apart (the model refuses a module two
     zones describe differently)."""
     return ModuleSpec("float", unit="dB", min=OFF_DB, max=float32(max_db),
-                      default=OFF_DB, group="level")
+                      default=OFF_DB, group="level", linked=True)
+
+
+# Virtual groups (standard "Virtual groups", Phase 14): a channel's group
+# number, 0 = none. Fixed range rather than the zone's count: module
+# metadata is one description for every zone, and a number is only a label.
+VGROUP_MAX = 64
+VGROUP_MODULE = ModuleSpec("int", min=0, max=VGROUP_MAX, default=0, group="link")
 
 
 class Backend:
@@ -440,7 +447,9 @@ class GainBackend(Backend):
     module is the shared 'level' (default off, D77), so at startup every
     channel without a stored level is seeded at 0 dB (unity, decision L7: the
     gain stage's reset), the way the matrix seeds its diagonal; the config
-    then lists those levels explicitly."""
+    then lists those levels explicitly. Phase 14: each channel also has a
+    'vgroup' (VGROUP_MODULE), a plain stored parameter that never reaches
+    the hardware; the server's linking uses it (link_targets)."""
 
     def __init__(self, zone, hw, n, max_db=SIM_MAX_DB):
         super().__init__(zone)
@@ -449,22 +458,28 @@ class GainBackend(Backend):
         self.level = level_module(max_db)
 
     def describe(self):
-        return ZoneSpec("channels", ("level",), count=self.n), {"level": self.level}
+        return (ZoneSpec("channels", ("level", "vgroup"), count=self.n),
+                {"level": self.level, "vgroup": VGROUP_MODULE})
 
     def level_key(self, ch):
         return f"{self.zone}/{ch}/level"
 
     def apply(self, index, module, value):
-        if self.hw is not None:
+        if self.hw is not None and module == "level":
             return float32(self.hw.set_db(int(index), value))
         return value
 
     def apply_many(self, changes):
-        """One bank write and one COMMIT for all of them."""
-        if self.hw is None:
-            return dict(changes)
-        applied = self.hw.set_bank_db({int(index): v for (index, _m), v in changes.items()})
-        return {(index, m): float32(applied[int(index)]) for (index, m) in changes}
+        """The levels in one bank write and one COMMIT; other modules
+        (vgroup) as given."""
+        got = dict(changes)
+        levels = {int(index): v for (index, m), v in changes.items() if m == "level"}
+        if self.hw is not None and levels:
+            applied = self.hw.set_bank_db(levels)
+            for (index, m) in changes:
+                if m == "level":
+                    got[(index, m)] = float32(applied[int(index)])
+        return got
 
     def seed_and_push(self, state):
         """Fill in missing levels with 0 dB, bring stored ones inside the
@@ -634,6 +649,52 @@ def current_value(param, state):
     return param.spec.default_value() if value is None else value
 
 
+# Virtual groups: which channel zones a matrix's rows and columns are.
+MATRIX_SIDES = {MATRIX_ZONE: ("inputChannel", "busChannel"),
+                BUS_MATRIX_ZONE: ("busChannel", "outputChannel")}
+
+
+def group_members(zone, index, state):
+    """The channels of `zone` in the same virtual group as channel `index`
+    (str), in index order, itself included; [index] when it isn't grouped
+    or the zone has no vgroup."""
+    spec = MODEL.zones.get(zone)
+    if spec is None or "vgroup" not in spec.modules:
+        return [index]
+    group = state.get(f"{zone}/{index}/vgroup", default=0)
+    if not group:
+        return [index]
+    return [i for i in spec.indices() if state.get(f"{zone}/{i}/vgroup", default=0) == group]
+
+
+def link_targets(param, state):
+    """Every parameter a set of `param` applies to (standard "Virtual
+    groups"): `param` first, then the linked ones in index order. Only for
+    modules marked linked; [param] when nothing links."""
+    if not param.spec.linked:
+        return [param]
+    if param.zone in MATRIX_SIDES:
+        row_zone, col_zone = MATRIX_SIDES[param.zone]
+        r, c = param.index.split("_")
+        rows, cols = group_members(row_zone, r, state), group_members(col_zone, c, state)
+        if len(cols) == 1:
+            pairs = [(ri, c) for ri in rows]
+        elif len(rows) == 1:
+            pairs = [(r, ci) for ci in cols]
+        elif len(rows) == len(cols):
+            k = cols.index(c) - rows.index(r)
+            pairs = [(ri, cols[(i + k) % len(cols)]) for i, ri in enumerate(rows)]
+        else:
+            pairs = [(r, c)]     # both grouped, different sizes: no link
+        indices = [f"{ri}_{ci}" for ri, ci in pairs]
+        order = lambda ix: tuple(int(x) for x in ix.split("_"))   # noqa: E731
+    else:
+        indices = group_members(param.zone, param.index, state)
+        order = int
+    others = sorted((ix for ix in indices if ix != param.index), key=order)
+    return [param] + [Param(param.zone, ix, param.module, param.spec) for ix in others]
+
+
 def apply_set(tail, value, state, registry, reply, via):
     """The one path every set takes (TCP and UDP): resolve the path against
     the model, apply the module's value rules, hand the value to its zone's
@@ -654,12 +715,27 @@ def apply_set(tail, value, state, registry, reply, via):
         return send_error(reply, state, param.path, f"can't store: {conflict}", via)
     backend = BACKENDS.get(param.zone)
     with registry.lock:          # apply, store and echo as one step (ClientRegistry)
-        if backend is not None:
-            applied = backend.apply(param.index, param.module, applied)
-        state.set(param.path, applied)
-        registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
+        targets = link_targets(param, state)   # read under the lock: groups can't change midway
+        if len(targets) == 1:
+            if backend is not None:
+                applied = backend.apply(param.index, param.module, applied)
+            state.set(param.path, applied)
+            registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
+        else:                    # a virtual group: one push (one COMMIT) for every member
+            changes = {(t.index, t.module): applied for t in targets}
+            got = backend.apply_many(changes) if backend is not None else changes
+            stored = {t.path: got[(t.index, t.module)] for t in targets}
+            rejected = state.set_many(stored)
+            for t in targets:    # the requested parameter first (app D44), then the members
+                if t.path in rejected:
+                    log(f"    [{via}] could not store linked {t.path}: {rejected[t.path]}")
+                    continue
+                registry.broadcast(encode_message(f"/{state.mixer_name}/set/{t.path}",
+                                                  [stored[t.path]]))
+            applied = stored[param.path]
     if VERBOSE:
-        log(f"    [{via}] SET {param.path} = {applied!r}")
+        log(f"    [{via}] SET {param.path} = {applied!r}"
+            + (f" (+{len(targets) - 1} linked)" if len(targets) > 1 else ""))
 
 
 def handle_devicename_change(new_name, state, registry, reply, via):

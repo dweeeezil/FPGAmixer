@@ -179,6 +179,12 @@ class Config(unittest.TestCase):
                                                      "options": [48000], "readOnly": True})
         self.assertEqual(c["system"]["deviceName"], {"type": "string", "default": "mixer"})
 
+    def test_linked_is_listed_only_when_true(self):
+        """Phase 14 (standard "Virtual groups"): `linked` is optional metadata."""
+        self.assertEqual(ModuleSpec("float", linked=True).describe(),
+                         {"type": "float", "default": 0.0, "linked": True})
+        self.assertNotIn("linked", ModuleSpec("float").describe())
+
     def test_values_are_sparse_plus_device_name(self):
         current = {"inputMatrix/1_2/level": 0.0, "inputChannel/1/mute": 1.0,
                    "system/deviceName": "mixer", "system/location": "FOH riser"}

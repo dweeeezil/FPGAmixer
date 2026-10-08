@@ -546,6 +546,41 @@ class InProcess(unittest.TestCase):
         self.assertEqual(self.srv.MatrixBackend("inputMatrix", None, 2, 2).apply_many(
             {("0_1", "level"): -3.0}), {("0_1", "level"): -3.0})        # simulator: as given
 
+    def test_linked_set_is_one_bank_and_vgroup_never_reaches_the_hardware(self):
+        """Phase 14: a set on a grouped channel writes every member in one
+        bank (one COMMIT), and the stored/echoed values are the hardware's."""
+        srv, hw = self.srv, FakeGainHW()
+        sent = []
+
+        class Registry:
+            lock = threading.RLock()
+
+            def broadcast(self, packet):
+                sent.append(packet)
+
+        b = srv.GainBackend("outputChannel", hw, 4, max_db=6.0)
+        old = srv.BACKENDS.copy(), srv.MODEL
+        srv.BACKENDS.clear()
+        srv.BACKENDS["outputChannel"] = b
+        srv.MODEL = srv.build_model(srv.BACKENDS, srv.SYSTEM_SETTINGS)
+        try:
+            for ch in (0, 2):
+                srv.apply_set(f"outputChannel/{ch}/vgroup", 4, self.state, Registry(), None, "test")
+            self.assertEqual((hw.writes, hw.banks), ([], []))            # vgroup: no hardware
+            srv.apply_set("outputChannel/2/level", -120.0, self.state, Registry(), None, "test")
+        finally:
+            srv.BACKENDS.clear()
+            srv.BACKENDS.update(old[0])
+            srv.MODEL = old[1]
+        self.assertEqual(hw.writes, [])                                   # no per-channel commits
+        self.assertEqual(hw.banks, [{2: -90.0, 0: -90.0}])               # one bank, both members
+        self.assertEqual((self.state.get("outputChannel/0/level"),
+                          self.state.get("outputChannel/2/level")), (-90.0, -90.0))
+        self.assertEqual(len(sent), 4)                                    # 2 vgroup echoes + 2 levels
+        self.assertEqual(b.apply_many({("1", "level"): -1.0, ("1", "vgroup"): 3.0}),
+                         {("1", "level"): -1.0, ("1", "vgroup"): 3.0})
+        self.assertEqual(hw.banks[-1], {1: -1.0})                         # the level only
+
     def test_identity_from_reaches_the_input_matrix_only(self):
         backends = self.srv.build_backends(False, 6, identity_from=4)
         self.assertEqual(backends["inputMatrix"].identity_from, 4)
@@ -576,7 +611,7 @@ class InProcess(unittest.TestCase):
 
     def test_gain_describe_shares_the_level_module(self):
         spec, modules = self.srv.GainBackend("inputChannel", None, 5, max_db=6.0).describe()
-        self.assertEqual((spec.kind, spec.count, spec.modules), ("channels", 5, ("level",)))
+        self.assertEqual((spec.kind, spec.count, spec.modules), ("channels", 5, ("level", "vgroup")))
         _mspec, mmodules = self.srv.MatrixBackend("inputMatrix", None, 5, 5, max_db=6.0).describe()
         self.assertEqual(modules["level"], mmodules["level"])     # one module (D77)
 
@@ -905,7 +940,8 @@ def app_config_problems(d):
 # MockProfile.hardwareToday (MockDevice/MockProfile.swift, controller repo),
 # as its configJSON writes it: the shape the app was built against.
 HARDWARE_TODAY_LEVEL = {"type": "float", "unit": "dB", "min": -90, "max": 6.02, "default": -90,
-                        "group": "level"}
+                        "group": "level", "linked": True}
+VGROUP = {"type": "int", "min": 0, "max": 64, "default": 0, "group": "link"}   # Phase 14
 
 
 class Config(ServerCase):
@@ -933,16 +969,17 @@ class Config(ServerCase):
         self.assertEqual(set(d), {"schemaVersion", "deviceName", "firmware", "sampleRate", "zones",
                                   "modules", "system", "values", "capabilities"})
         self.assertEqual(d["capabilities"], ["snapshots"])                 # Phase 14
-        ch = {"count": 4, "modules": ["level"]}
+        ch = {"count": 4, "modules": ["level", "vgroup"]}                  # vgroup: Phase 14
         mx = {"rows": 4, "cols": 4, "modules": ["level"]}
         self.assertEqual(d["zones"], {"inputChannel": ch, "inputMatrix": mx, "busChannel": ch,
                                       "busMatrix": mx, "outputChannel": ch})
         self.assertEqual(list(d["zones"]), ["inputChannel", "inputMatrix", "busChannel",
                                             "busMatrix", "outputChannel"])   # signal-flow order
-        self.assertEqual(set(d["modules"]), {"level"})
+        self.assertEqual(set(d["modules"]), {"level", "vgroup"})
+        self.assertEqual(d["modules"]["vgroup"], VGROUP)                   # not linked itself
         level = d["modules"]["level"]
         self.assertEqual(set(level), set(HARDWARE_TODAY_LEVEL))
-        for key in ("type", "unit", "min", "default", "group"):
+        for key in ("type", "unit", "min", "default", "group", "linked"):
             self.assertEqual(level[key], HARDWARE_TODAY_LEVEL[key], key)
         self.assertAlmostEqual(level["max"], 6.02, places=2)     # the real ceiling, 6.0205
         self.assertEqual(d["values"], {**{f"inputMatrix/{i}_{i}/level": 0.0 for i in range(4)},
@@ -1349,12 +1386,151 @@ class StoredInvalidName(ServerCase):
         self.assertEqual((m.address, m.args), ("/FOH mixer/set/system/deviceName", ["FOH mixer"]))
 
 
+class VGroups(ServerCase):
+    """Phase 14 (standard "Virtual groups"), over TCP on the simulated 4 x 4 x 4
+    mixer (reset: identity matrices, 0 dB levels, no groups)."""
+
+    def pair(self):
+        a, b = self.tcp(), self.tcp()
+        for link in (a, b):
+            self.get(link, "inputChannel/0/level")
+        return a, b
+
+    def group(self, link, zone, channels, g):
+        for ch in channels:
+            self.roundtrip(link, f"/mixer/set/{zone}/{ch}/vgroup", g)
+
+    def echoes(self, link, address, value):
+        """Set, then every echo up to a get's answer: [(tail, value), ...] in order."""
+        link.send_message(address, [value])
+        link.send_message("/mixer/get/system/deviceName")
+        out = []
+        while True:
+            m = link.read_message()
+            if m.address == "/mixer/set/system/deviceName":
+                return out
+            out.append((m.address[len("/mixer/set/"):], m.args[0]))
+
+    def test_channels_link_absolutely_and_the_requested_one_is_echoed_first(self):
+        a, b = self.pair()
+        self.group(a, "inputChannel", (1, 3), 2)
+        for _ in range(2):
+            b.read_message()
+        got = self.echoes(a, "/mixer/set/inputChannel/3/level", -6.0)
+        self.assertEqual(got, [("inputChannel/3/level", -6.0), ("inputChannel/1/level", -6.0)])
+        self.assertEqual([b.read_message().address for _ in range(2)],
+                         ["/mixer/set/inputChannel/3/level", "/mixer/set/inputChannel/1/level"])
+        self.assertEqual(self.get(a, "inputChannel/0/level"), 0.0)        # not in the group
+        self.assertEqual(self.get(a, "inputChannel/2/level"), 0.0)
+        got = self.echoes(a, "/mixer/set/inputChannel/1/level", 50.0)     # clamped, all the same
+        self.assertEqual(got, [("inputChannel/1/level", float32(SIM_MAX_DB)),
+                               ("inputChannel/3/level", float32(SIM_MAX_DB))])
+
+    def test_joining_and_vgroup_itself_change_nothing_else(self):
+        a = self.tcp()
+        self.roundtrip(a, "/mixer/set/busChannel/0/level", -10.0)
+        self.roundtrip(a, "/mixer/set/busChannel/2/level", -3.0)
+        self.assertEqual(self.echoes(a, "/mixer/set/busChannel/0/vgroup", 5),
+                         [("busChannel/0/vgroup", 5.0)])
+        self.assertEqual(self.echoes(a, "/mixer/set/busChannel/2/vgroup", 5),
+                         [("busChannel/2/vgroup", 5.0)])                  # joining: no other change
+        self.assertEqual((self.get(a, "busChannel/0/level"), self.get(a, "busChannel/2/level")),
+                         (-10.0, -3.0))
+        self.assertEqual(self.echoes(a, "/mixer/set/busChannel/2/level", -4.0),
+                         [("busChannel/2/level", -4.0), ("busChannel/0/level", -4.0)])
+        self.assertEqual(self.echoes(a, "/mixer/set/busChannel/0/vgroup", 0),   # leaving: itself only
+                         [("busChannel/0/vgroup", 0.0)])
+        self.assertEqual(self.get(a, "busChannel/2/vgroup"), 5.0)
+
+    def test_groups_are_per_zone(self):
+        a = self.tcp()
+        self.group(a, "inputChannel", (0, 1), 1)
+        self.group(a, "outputChannel", (2, 3), 1)                         # the same number
+        self.assertEqual(self.echoes(a, "/mixer/set/inputChannel/0/level", -2.0),
+                         [("inputChannel/0/level", -2.0), ("inputChannel/1/level", -2.0)])
+        self.assertEqual(self.echoes(a, "/mixer/set/outputChannel/3/level", -1.0),
+                         [("outputChannel/3/level", -1.0), ("outputChannel/2/level", -1.0)])
+
+    def test_matrix_row_group_fans_out_to_one_column(self):
+        a = self.tcp()
+        self.group(a, "inputChannel", (0, 1), 1)
+        self.assertEqual(self.echoes(a, XP.format(1, 2), -6.0),
+                         [("inputMatrix/1_2/level", -6.0), ("inputMatrix/0_2/level", -6.0)])
+
+    def test_matrix_column_group_fans_out_from_one_row(self):
+        a = self.tcp()
+        self.group(a, "busChannel", (2, 3), 1)
+        self.assertEqual(self.echoes(a, XP.format(0, 3), -6.0),
+                         [("inputMatrix/0_3/level", -6.0), ("inputMatrix/0_2/level", -6.0)])
+
+    def test_matrix_equal_groups_pair_by_position_keeping_the_offset(self):
+        a = self.tcp()
+        self.group(a, "inputChannel", (0, 1), 1)
+        self.group(a, "busChannel", (2, 3), 1)
+        self.assertEqual(self.echoes(a, XP.format(0, 2), -6.0),             # L -> L
+                         [("inputMatrix/0_2/level", -6.0), ("inputMatrix/1_3/level", -6.0)])
+        self.assertEqual(self.echoes(a, XP.format(0, 3), -12.0),            # L -> R
+                         [("inputMatrix/0_3/level", -12.0), ("inputMatrix/1_2/level", -12.0)])
+        self.assertEqual(self.echoes(a, XP.format(1, 2), -18.0),            # R -> L (offset -1)
+                         [("inputMatrix/1_2/level", -18.0), ("inputMatrix/0_3/level", -18.0)])
+
+    def test_matrix_three_way_groups_rotate(self):
+        a = self.tcp()
+        self.group(a, "busChannel", (0, 1, 3), 1)
+        self.group(a, "outputChannel", (1, 2, 3), 7)
+        self.assertEqual(self.echoes(a, "/mixer/set/busMatrix/1_3/level", -6.0),   # positions 1 -> 2
+                         [("busMatrix/1_3/level", -6.0), ("busMatrix/0_2/level", -6.0),
+                          ("busMatrix/3_1/level", -6.0)])
+
+    def test_matrix_unequal_groups_dont_link(self):
+        a = self.tcp()
+        self.group(a, "inputChannel", (0, 1, 2), 1)
+        self.group(a, "busChannel", (2, 3), 1)
+        self.assertEqual(self.echoes(a, XP.format(0, 2), -6.0), [("inputMatrix/0_2/level", -6.0)])
+
+    def test_udp_sets_link_too(self):
+        a, u = self.tcp(), self.udp()
+        self.group(a, "outputChannel", (0, 1), 3)
+        u.send_message("/mixer/set/outputChannel/0/level", [-7.0])
+        self.assertEqual([a.read_message().address for _ in range(2)],
+                         ["/mixer/set/outputChannel/0/level", "/mixer/set/outputChannel/1/level"])
+
+    def test_refused_set_changes_no_member(self):
+        a = self.tcp()
+        self.group(a, "inputChannel", (0, 1), 1)
+        a.send_message("/mixer/set/inputChannel/0/level", ["loud"])
+        self.assertEqual(a.read_message().address, "/mixer/error")
+        self.assertEqual(self.get(a, "inputChannel/1/level"), 0.0)
+
+    def test_snapshots_carry_groups_and_recall_doesnt_link(self):
+        a = self.tcp()
+        self.group(a, "inputChannel", (0, 1), 1)
+        snap = {"snapshotVersion": 1, "values": {"inputChannel/0/level": -5.0,
+                                                 "inputChannel/1/level": -20.0}}
+        a.send_message("/mixer/snapshot/apply", [json.dumps(snap)])
+        while a.read_message().address != "/mixer/snapshot/loaded":
+            pass
+        self.assertEqual((self.get(a, "inputChannel/0/level"), self.get(a, "inputChannel/1/level")),
+                         (-5.0, -20.0))
+        a.send_message("/mixer/snapshot/fetch")
+        values = json.loads(a.read_message().args[1])["values"]
+        self.assertEqual((values["inputChannel/0/vgroup"], values["inputChannel/2/vgroup"]), (1.0, 0.0))
+
+
 class Snapshots(ServerCase):
     """Phase 14 (standard "Snapshots"), end to end over TCP. The simulated
-    mixer is 4 x 4 x 4: 44 parameters (3 x 4 channel levels, 2 x 16
-    crosspoints), reset state = identity matrices and 0 dB levels."""
+    mixer is 4 x 4 x 4: 56 parameters (3 x 4 channel levels and vgroups, 2 x 16
+    crosspoints), reset state = identity matrices, 0 dB levels, no groups."""
 
-    N_PARAMS = 44
+    N_PARAMS = 56
+
+    def pair(self):
+        """Two controllers, both registered: a get is answered only once the
+        server has the connection, so neither can miss a broadcast."""
+        a, b = self.tcp(), self.tcp()
+        for link in (a, b):
+            self.get(link, "inputChannel/0/level")
+        return a, b
 
     def snap(self, link, request, *args):
         link.send_message(f"/mixer/snapshot/{request}", list(args))
@@ -1391,7 +1567,7 @@ class Snapshots(ServerCase):
         self.assertEqual(link.read_message().address, "/mixer/set/inputChannel/0/level")
 
     def test_save_broadcasts_the_list_and_fetch_returns_the_complete_live_state(self):
-        a, b = self.tcp(), self.tcp()
+        a, b = self.pair()
         self.snap(a, "list")
         self.assertEqual(self.listed(a), [])
         self.roundtrip(a, XP.format(1, 2), -12.0)
@@ -1414,7 +1590,7 @@ class Snapshots(ServerCase):
         self.assertTrue(os.path.exists(os.path.join(self.dir, "snapshots", "Song A.json")))
 
     def test_load_round_trip_broadcasts_only_the_changes_then_loaded(self):
-        a, b = self.tcp(), self.tcp()
+        a, b = self.pair()
         self.roundtrip(a, XP.format(0, 1), -6.0)
         b.read_message()
         self.snap(a, "save", "A")
@@ -1467,7 +1643,7 @@ class Snapshots(ServerCase):
         self.assertEqual(self.get(a, "system/deviceName"), "mixer")
 
     def test_a_refused_entry_refuses_the_whole_recall(self):
-        a, b = self.tcp(), self.tcp()
+        a, b = self.pair()
         bad = {"snapshotVersion": 1, "values": {"inputChannel/0/level": -5.0,
                                                 "inputChannel/1/level": "loud"}}
         for text, reason in ((json.dumps(bad), "inputChannel/1/level"), ("{oops", "JSON"),
@@ -1480,7 +1656,7 @@ class Snapshots(ServerCase):
         self.quiet(b)                                                # and nobody else heard anything
 
     def test_store_uploads_without_recalling(self):
-        a, b = self.tcp(), self.tcp()
+        a, b = self.pair()
         upload = {"snapshotVersion": 1, "name": "laptop name", "savedAt": "2026-01-02T03:04:05Z",
                   "auto": True, "values": {"inputChannel/2/level": -30.0}}
         self.snap(a, "store", "Uploaded", json.dumps(upload))
@@ -1508,7 +1684,7 @@ class Snapshots(ServerCase):
         self.assertIn("no snapshot named", self.error(a, "snapshot/delete"))
 
     def test_delete_broadcasts_the_list(self):
-        a, b = self.tcp(), self.tcp()
+        a, b = self.pair()
         self.snap(a, "save", "A")
         self.listed(a), self.listed(b)
         self.snap(b, "delete", "A")

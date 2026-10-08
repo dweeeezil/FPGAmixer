@@ -75,6 +75,7 @@ class ModuleSpec:
     options: tuple = ()
     group: str = None
     read_only: bool = False
+    linked: bool = False      # follows virtual groups (standard "Virtual groups")
 
     def __post_init__(self):
         if self.type not in TYPES:
@@ -142,6 +143,8 @@ class ModuleSpec:
             d["options"] = list(self.options)
         if self.read_only:
             d["readOnly"] = True
+        if self.linked:
+            d["linked"] = True
         return d
 
 
