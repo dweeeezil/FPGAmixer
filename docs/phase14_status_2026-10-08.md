@@ -2,7 +2,7 @@
 
 **Branch:** `phase14-snapshots` (from `main` at `68b541b`, the Phase 11 merge, PR #9).
 **Plans:** `docs/plans/plan_snapshots_2026-10-06.md` (this phase), then `plan_virtual_groups_…`, `plan_channel_sources_…`; bundled in `docs/prompt_phase14_qol.md`.
-**Status: snapshots DONE 2026-10-08 (S1–S8, §2–§4; bench PASS with the app). Virtual groups: proposed (§6), decisions V1–V8 open.** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
+**Status: snapshots DONE 2026-10-08 (S1–S8, §2–§4; bench PASS with the app). Virtual groups: decided 2026-10-08 (V1–V8 as recommended, §6.3); building.** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
 
 ---
 
@@ -188,7 +188,9 @@ The rows of `inputMatrix` are input channels and its columns buses; `busMatrix` 
 | V7 | Echo order | the edited parameter first, then the other members in index order | index order only |
 | V8 | Group names / colours | later (the app can colour by number); they'd be `system`-level metadata, not per channel | now |
 
-### 6.4 Steps (after the decisions)
+**Decided by the user 2026-10-08: "as recommended"** (V1–V8, the left column). One refinement while building: `vgroup`'s range is a fixed 0..64, not 0..N, because module metadata is global per module name in the config (one description for all zones) and the channel zones' counts may differ once channel sources exist; a group number is only a label.
+
+### 6.4 Steps
 
 1. The standard: `vgroup` and the linking rules (a *Virtual groups* section), `linked` in the module metadata, the change log. User review; the user updates the app from it.
 2. The server: `vgroup` on the three channel backends; `ModuleSpec.linked`; the linking step in `apply_set` (channels and matrices, §6.2) through `apply_many`; tests (each table row, absolute values at the clamps, the echo order, two controllers, UDP, snapshots carry `vgroup` and don't link on recall, `vgroup` itself never links). Mutation-tested.

@@ -1,5 +1,5 @@
 Alexander Kelly
-18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots)
+18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups)
 
 This is the one source of truth for the mixer's OSC protocol. The 4 Oct 2026 revision merges the amendments agreed for the StudioRunner controller (A: name and alias, B: config, C: metering, D: TCP framing, E: discovery, F: value encoding, G: error reply, H: ping) and the device rules decided with them. The change log is at the end.
 
@@ -162,7 +162,7 @@ Rules:
 
 - **`schemaVersion`** (required) is a breaking-change number. A controller refuses a newer version than it supports. Additive changes (new optional keys, new module types) don't bump it.
 - **`zones`** (required): channel zones have `count`, matrix zones `rows` and `cols`, and every zone lists its `modules`. For a matrix, row = source, column = destination. A zone absent from `zones` does not exist on the mixer; a module absent from a zone's list is not implemented there. `system` is never listed here.
-- **`modules`** (required) is metadata, keyed by module name: `type` (`float`, `int`, `bool`, `enum`, `string`), and optionally `unit`, `min`, `max`, `default`, `options` (for `enum`) and `group`. `group` is for UI clustering (`level`, `eq`, `dynamics`, `delay`, ...); grouping is never inferred from underscores in module names.
+- **`modules`** (required) is metadata, keyed by module name: `type` (`float`, `int`, `bool`, `enum`, `string`), and optionally `unit`, `min`, `max`, `default`, `options` (for `enum`), `group` and `linked`. `group` is for UI clustering (`level`, `eq`, `dynamics`, `delay`, ...); grouping is never inferred from underscores in module names. `linked: true` means the module follows virtual groups (*Virtual groups*); absent means it doesn't.
 - **`system`**: the mixer's settings, keyed by setting name, with the same metadata fields as `modules` plus optional `readOnly`. Absent: the mixer has only `deviceName`.
 - **`level`** has the mixer's real range: `min` −90 (off) and `max` the hardware ceiling.
 - **`values`** keys are `<zone>/<index>/<module>`, the same as the address tail of a `set`, so applying the snapshot reuses the path for incoming sets. For `system` the key is `system/<setting>`. Values are **sparse**: an absent entry is its module's `default`. `system/deviceName` is always present.
@@ -232,6 +232,23 @@ Meters stream over UDP, mixer → controller, separate from TCP control. The con
 - `sequence` is per zone per subscriber: it starts at 0 when the subscription starts, increments by 1 per message and wraps at 2³². A message that is dropped still uses its number, so gaps are visible.
 - The peak is the highest since the previous message for that zone (nothing between two ticks is lost).
 - Tap point: post-DSP of that zone. Reserved for later: `meter/<zone>_pre`.
+
+## Virtual groups
+
+Optional (the channel zones list the module `vgroup`). Channels of one zone can be grouped, so that a change to one member applies to all of them (stereo and surround from mono channels).
+
+- **`vgroup`** (`int`): 0 = not grouped, 1 … `max` = the group number (`max` from the config; the reference server: 64). Groups are per zone: input group 1 and bus group 1 are unrelated. It's an ordinary parameter (set, get, echo, kept across a power cycle, carried by snapshots). It is never linked itself.
+- **Linked modules** carry `linked: true` in their config metadata (today `level`). A `set` of a linked module, over TCP or UDP, applies **the same value to every linked parameter** (below), with the usual value rules (all members end up with the same applied value). A refused `set` changes nothing.
+- **Echo:** every changed parameter is broadcast as a `set`, **the requested one first**, then the others in index order. A controller treats the others as device-originated sets.
+- **Channels:** a set on a channel with `vgroup` g ≠ 0 applies to every channel of the zone whose `vgroup` is g.
+- **Matrix crosspoints** link through the groups of their row and column channels (`inputMatrix`: rows `inputChannel`, columns `busChannel`; `busMatrix`: rows `busChannel`, columns `outputChannel`). With R the row channel's group members and C the column channel's (each just the channel itself when it isn't grouped), both in index order:
+  - neither grouped: only the crosspoint itself;
+  - only the row grouped: every R member → the same column;
+  - only the column grouped: the same row → every C member;
+  - both grouped, same size n: pairs by position, keeping the offset: setting (R[a], C[b]) sets (R[i], C[(i + b − a) mod n]) for every i (stereo 1, 2 → stereo bus 3, 4: 1→3 also sets 2→4; 1→4 also sets 2→3);
+  - both grouped, different sizes: only the crosspoint itself.
+- **Joining or leaving a group changes no other value**; the next set of a linked module brings the members together.
+- **A snapshot recall** sets each parameter to its stored value; linking doesn't apply to it.
 
 ## Snapshots
 
@@ -316,3 +333,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 - **18 Aug 2026:** first version (set/get, zones, matrix and channel examples, `deviceName`).
 - **4 Oct 2026:** amendments A–H folded in (from the StudioRunner controller's `OSC_Amendments_Proposed.md`, agreed 4 Oct 2026), with the device rules decided alongside them (controller `DECISIONS.md` D33, D37, D38, D39, D50) and in the firmware session: `mixer` is the factory name; the error `path` has no trailing slash; UDP never replies; a malformed `meter/subscribe` gets an error. The `deviceName` example lost its trailing slash (both forms are accepted). Wording fix: a rename is confirmed under the old *name*, also when the request came through `/mixer/`.
 - **8 Oct 2026:** *Snapshots* (the `snapshot` command kind, the snapshot JSON, recall rules) and the config's optional `capabilities`; additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase14_status_2026-10-08.md` (S1–S8).
+- **8 Oct 2026 (later):** *Virtual groups* (the `vgroup` module, linking rules for channels and matrix crosspoints, the echo order) and the module metadata key `linked`; additive, `schemaVersion` stays 1. Decided in the same doc (V1–V8).
