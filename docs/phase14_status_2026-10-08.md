@@ -2,7 +2,7 @@
 
 **Branch:** `phase14-snapshots` (from `main` at `68b541b`, the Phase 11 merge, PR #9).
 **Plans:** `docs/plans/plan_snapshots_2026-10-06.md` (this phase), then `plan_virtual_groups_…`, `plan_channel_sources_…`; bundled in `docs/prompt_phase14_qol.md`.
-**Status: snapshot API decided 2026-10-08 (S1–S8 as recommended, §3); standard, store and server built and tested (§4.1); image and bench next; the app side is the user's (§4.2).** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
+**Status: snapshots DONE 2026-10-08 (S1–S8, §2–§4; bench PASS with the app). Virtual groups: proposed (§6), decisions V1–V8 open.** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
 
 ---
 
@@ -147,3 +147,49 @@ The standard's *Snapshots* section is the spec. What the app needs:
 - **2026-10-08:** Phase 11 merged (PR #9); branch `phase14-snapshots`. Snapshot API proposed (§2), decisions S1–S8 to the user.
 - **2026-10-08:** decisions S1–S8 as recommended. Next: the standard, then the store and the server.
 - **2026-10-08:** steps 1–3 done (§4.1): standard amended; store + server + recipe; 142 tests OK on Windows, mutants 23/23. Next: Linux test run, image, bench once the app speaks it.
+- **2026-10-08:** **snapshots bench PASS** with the app: the user built snapshots into StudioRunner; *"everything works great."* Snapshots done.
+- **2026-10-08:** virtual groups started (§6), branch `phase14-vgroups` (from `phase14-snapshots`). Proposal V1–V8 to the user.
+
+## 6. Virtual groups (vGroups): proposal (2026-10-08)
+
+> "I like having mono channels because it makes it very clear where everything is going, but I don't want to have to individually change every parameter when working in stereo or surround. In the UI, a user should be able to assign any channel to a group, and then when any parameter is changed on any channel in a given group, that change is reflected across all channels in that group. This could technically be done only in the UI, but then changes wouldn't persist across sessions." (user, 2026-10-06)
+
+Plan: `docs/plans/plan_virtual_groups_2026-10-06.md`. Control plane only: no gateware, no image change beyond the server.
+
+### 6.1 Proposed shape
+
+- **A module `vgroup`** on each channel zone (`inputChannel`, `busChannel`, `outputChannel`): `int`, 0 = not grouped, 1..N = group number (N = the zone's channel count), default 0. **Not `group`**: `group` is already a metadata key in the standard (UI clustering, `"group": "level"`), so a module of that name would be ambiguous in the config. Groups are **per zone**: input group 1 and bus group 1 are unrelated.
+- **An ordinary parameter**: set/get/echo like any other, stored in the state file, carried by snapshots (a recall sets every member's values as stored; it doesn't apply linking).
+- **Which modules link**: a module opts in by metadata, a new optional `"linked": true` in its config description (additive, no `schemaVersion` bump), so future modules (mute, EQ, dynamics) link by declaring it. Today: `level`. Never linked: `vgroup` itself, and later `name`, `source`/`destination`.
+- **A set on a grouped channel** (TCP or UDP) applies the same value to every member, with one bank write / one COMMIT per window (`Backend.apply_many`, from snapshots), under the ordering lock; then every member's applied value is broadcast as a `set`, **the edited parameter first** (so the sender's pending edit, app D44, resolves at once) and the other members after it, in index order.
+
+### 6.2 Matrix crosspoints
+
+The rows of `inputMatrix` are input channels and its columns buses; `busMatrix` rows are buses and its columns outputs. A crosspoint set links through the groups of its row and its column:
+
+| Row's channel | Column's channel | Linked crosspoints | Example |
+|---|---|---|---|
+| ungrouped | ungrouped | just this one | — |
+| in a group R | ungrouped | every member of R → the same column | stereo input → a mono bus: L and R both at −6 |
+| ungrouped | in a group C | the same row → every member of C | a mono mic → a stereo bus: both sides at −6 |
+| group R | group C, **same size** | pairs by position, keeping the offset: setting (R[a], C[b]) sets (R[i], C[(i + b − a) mod n]) for every i | stereo (1, 2) → stereo bus (3, 4): 1→3 sets 2→4; 1→4 sets 2→3 |
+| group R | group C, different sizes | just this one (no linking) | stereo → a 5.1 bus group: set each send yourself |
+
+### 6.3 Decisions (recommended first)
+
+| # | Question | Recommended | Alternative |
+|---|---|---|---|
+| V1 | Where linking lives | in the server (persistent, the same for every controller, in snapshots) | in the app only |
+| V2 | Module name and type | `vgroup`, int 0..N, per channel zone | `group` (collides with the metadata key); an enum |
+| V3 | Absolute or relative level linking | **absolute**: every member gets the same value (a console stereo link; lossless, no edge cases at −90 / +6.02) | relative (DAW fader groups: offsets kept; lossy at the ends); a per-group mode later if wanted |
+| V4 | Joining a group | **the channel keeps its own values**; joining never changes the audio, and the next edit of a linked parameter aligns all members | the new member copies the group's values at once (channel levels and its matrix sends) |
+| V5 | Matrix rule | as §6.2 (pair by position with the offset for equal sizes; fan out across one grouped side; no link for unequal sizes) | unequal sizes: pair the first min(R, C) by position |
+| V6 | Which modules link | opt-in by `"linked": true` metadata; today `level` (channels and matrices) | a fixed list in the server |
+| V7 | Echo order | the edited parameter first, then the other members in index order | index order only |
+| V8 | Group names / colours | later (the app can colour by number); they'd be `system`-level metadata, not per channel | now |
+
+### 6.4 Steps (after the decisions)
+
+1. The standard: `vgroup` and the linking rules (a *Virtual groups* section), `linked` in the module metadata, the change log. User review; the user updates the app from it.
+2. The server: `vgroup` on the three channel backends; `ModuleSpec.linked`; the linking step in `apply_set` (channels and matrices, §6.2) through `apply_many`; tests (each table row, absolute values at the clamps, the echo order, two controllers, UDP, snapshots carry `vgroup` and don't link on recall, `vgroup` itself never links). Mutation-tested.
+3. Image; bench with the app (stereo pairs by ear: a stereo input to a stereo bus).
