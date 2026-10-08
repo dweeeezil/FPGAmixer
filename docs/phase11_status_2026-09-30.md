@@ -2,7 +2,7 @@
 
 **Branch:** `phase9/time-shared-core` (continued). **Starting image:** `p10e-names-20260930`.
 
-**Status: decided (§6.1), nothing built yet. Resumed 2026-10-06 (§8: re-check against Phases 12–13, the Pmods, decision P1).** Next: bench step H-1 (what the MOTU M2 reports to Linux).
+**Status: DONE 2026-10-07.** The MOTU M2 is the board's analog I/O on link #3 (core channels 0–3); the Pmods are removed (decision P1). H.4 bench and the H.5 soak PASS (§8.9). Image `p11h3-usbhost-20261007`; branch `phase11-usb-host`. *(History: decided 2026-09-30, §6.1; resumed 2026-10-06, §8.)*
 
 ---
 
@@ -222,6 +222,15 @@ Plugged into a Type-A port with the board running; the user's terminal output:
 
 **Image `p11h2-usbhost-20261006`** (2026-10-07 03:06 UTC; layer at the clean commit `19d1fe6`; bitstream unchanged, `p13`, MD5 `d1531052…`; no `gen-machine-conf`): 15,088 tasks, all succeeded, 4 min 21 s. Checked in the rootfs: `VERSION` `19d1fe6`; `/usr/bin/fpgamixer-usbhost-bridge`, `/usr/bin/fpgamixer-rate-test`, `/etc/fpgamixer/usbhost.conf`, `libsamplerate.so.0.2.2`, the unit **not enabled** (no `multi-user.target.wants` link), the USB device bridge still enabled. **`build/sd/p11h2-usbhost-20261006.wic.xz`** (109 MB, MD5 `47c9fbe7…`, same on both ends).
 
+### 8.9 H.5: the soak (2026-10-07): PASS
+
+Image `p11h3`, Mac → buses 1–2 → the M2's headphones, **several hours**, the M2 plugged in throughout. User: *"multiple hours with no clicks or pops."* The bridge log, one line per direction every 5 min (the full log is a line per direction every 10 s; the extraction one-liner is in the chat of that day, `journalctl -u fpgamixer-usbhost-bridge -b -o cat | grep frames/s | sed … | awk …`):
+
+- **Start-up only:** the first lines show the transient (queues +99 / +160 frames, ratios −106 / −147 ppm) and, cumulative from start, **1 playback xrun in each direction and 2 coarse fixes on A**. **None after that for the whole soak** (the counters never move).
+- **B (pl→usb, playback to the M2):** settled at **−38 ppm**, queue 0 ± 1 frame; rare excursions (−19, −22, −48 ppm with the queue at +5/+8) that recover by the next line.
+- **A (usb→pl, capture from the M2):** mean **≈ +37 ppm**, equal and opposite to B as it should be (the same two clocks: the M2's crystal is ~38 ppm from `mclk`). It swings **±10 ppm** around that, with the queue between −23 and +20 frames and the rate reading alternating 47,997 / 48,002 per 10 s window. That swing is KP (0.5 ppm/frame) times the queue reading's ±20-frame granularity (the M2's capture arrives in bursts), i.e. the proportional term following measurement noise, not instability: the integral holds the mean.
+- **Not retuned (decision, 2026-10-07):** ±10 ppm is ±0.017 cent of pitch modulation, orders of magnitude below audibility, and the queue (±25 frames, ½ ms) is far from both xrun edges. A smoother A (a lower KP or a longer error average for that direction) is possible but would cost an image for no audible change; recorded here as an option if a measurement ever needs it.
+
 ## 7. Log
 
 - **2026-09-30:** proposal written from the Phase 8 §9.2 scope, the P9.5 link template and `bridge_core`. Build VM unreachable at the first try (8 s connect timeout).
@@ -229,3 +238,4 @@ Plugged into a Type-A port with the board running; the user's terminal output:
 - **2026-10-06 17:40 PDT:** resumed after Phases 12–13; user: retire the Pmods, the MOTU becomes the board's headphone/mic I/O. §8: addresses moved (link #3 status 0x8000_C000), SmartConnect at its 16-master limit, core 28/28/28 = 23 DSPs, D 233, H5 narrowed to the input matrix, floating ADC pins found; decision P1 asked.
 - **2026-10-07:** H.2 PASS by ear (after the S24_LE sign fix). P1 = (b); the M2 on core 0–3, core stays 20/20/20. H.3 RTL + BD written (§8.7), XSim 15/15, mutants 3/3; Vivado build `p11h3` next.
 - **2026-10-07:** `p11h3` built (timing met, DSPs unchanged), SDT, image `p11h3-usbhost-20261007`. **H.4 bench PASS** by ear, restore across power pulls. Next: H.5, the 60-min soak (servo settling).
+- **2026-10-07:** **H.5 soak PASS** (hours, no clicks; no xruns or coarse fixes after start-up; ratios ≈ +37 / −38 ppm, equal and opposite; A's ±10 ppm proportional jitter left as is, §8.9). **Phase 11 done.**
