@@ -1,0 +1,121 @@
+# Phase 14 status: 2026-10-08 — quality of life: snapshots first
+
+**Branch:** `phase14-snapshots` (from `main` at `68b541b`, the Phase 11 merge, PR #9).
+**Plans:** `docs/plans/plan_snapshots_2026-10-06.md` (this phase), then `plan_virtual_groups_…`, `plan_channel_sources_…`; bundled in `docs/prompt_phase14_qol.md`.
+**Status: snapshot API proposed (§2), awaiting the user's decisions (§3).** Nothing built. The user updates the controller (StudioRunner) side from the agreed API; the standard (`docs/FPGA Mixer OSC Standard.md`) is amended once it's agreed.
+
+---
+
+## 1. The request
+
+> "This is intended to be a studio tool, and I might begin work on one track before finishing another. I'd like to have a system to save a system snapshot to the board (or to my computer) that I can then load again later." (user, 2026-10-06)
+
+> "Let me know what API conventions you're thinking for the snapshots and I'll update the controller side of things too." (user, 2026-10-08)
+
+## 2. Proposed API
+
+### 2.1 A new command kind, `snapshot` (TCP only)
+
+The same pattern as `meter`: the segment after the mixer name is the kind (standard, *Command kinds*). Snapshot requests aren't parameter sets: they don't echo themselves, and they change many parameters at once, so they don't fit `set`/`get` on the `system` zone. UDP stays `set`-only; a `snapshot` message over UDP is ignored, like any other non-`set`.
+
+**Controller → mixer**
+
+| Request | Does |
+|---|---|
+| `/<name>/snapshot/list` | asks for the list of snapshots stored on the board |
+| `/<name>/snapshot/save <name:s>` | stores the **live state** on the board under that name (replaces one of the same name) |
+| `/<name>/snapshot/load <name:s>` | recalls a snapshot stored on the board |
+| `/<name>/snapshot/delete <name:s>` | deletes a stored snapshot |
+| `/<name>/snapshot/fetch` | asks for the **live state** as snapshot JSON ("save to my computer") |
+| `/<name>/snapshot/fetch <name:s>` | asks for a stored snapshot's JSON ("download") |
+| `/<name>/snapshot/apply <json:s>` | recalls a snapshot the controller sends ("load from my computer") |
+| `/<name>/snapshot/store <name:s> <json:s>` | stores a snapshot the controller sends, **without** recalling it ("upload") |
+
+**Mixer → controller**
+
+| Message | When, to whom |
+|---|---|
+| `/<name>/snapshot/list <json:s>` | the reply to `list` (requester only); **and broadcast to every TCP controller after a `save`, `store` or `delete`**: that broadcast is the confirmation, as a `set`'s echo is |
+| `/<name>/snapshot/data <name:s> <json:s>` | the reply to `fetch` (requester only); `name` is `""` for the live state |
+| `/<name>/snapshot/loaded <name:s> <applied:i> <skipped:i>` | broadcast to every TCP controller after a `load` or `apply`, **after** the `set`s it caused (§2.3) |
+| `/<name>/error snapshot/<request> <reason:s>` | a refused request (standard, *Error reply*), requester only, e.g. `snapshot/load` "no snapshot named 'Song B'" |
+
+`list` JSON: an array, sorted by name:
+
+```json
+[
+  {"name": "Song A rough", "savedAt": "2026-10-08T17:02:11Z"},
+  {"name": "Before load",  "savedAt": "2026-10-08T17:05:40Z", "auto": true}
+]
+```
+
+Integers (`applied`, `skipped`) travel as OSC `i`, like `pong`'s token; a controller should also accept `f`.
+
+**Config:** an optional top-level `"capabilities": ["snapshots"]` (additive; no `schemaVersion` bump). An older mixer ignores an unknown command kind without a reply, so the app shows snapshot UI only when the mixer advertises it.
+
+### 2.2 The snapshot JSON (one format on the board and on the computer)
+
+```json
+{
+  "snapshotVersion": 1,
+  "name": "Song A rough",
+  "savedAt": "2026-10-08T17:02:11Z",
+  "source": {"deviceName": "FOHmixer", "firmware": "4f5b29b"},
+  "zones": {
+    "inputChannel": {"count": 20, "modules": ["level"]},
+    "inputMatrix":  {"rows": 20, "cols": 20, "modules": ["level"]}
+  },
+  "values": {
+    "inputChannel/0/level": 0.0,
+    "inputMatrix/4_0/level": -6.0
+  }
+}
+```
+
+- **`values`**: the same keys as the config's `values` (the address tail of a `set`), so the app reuses the parser it has. **Complete**, not sparse: every parameter of every zone (today 860: 60 channel levels + 2 × 400 crosspoints), because the reset state isn't the modules' defaults. **No `system/*`**: the name and settings stay with the device.
+- **`zones`**: the topology it was saved from, informational (the app can say "saved on a 20 × 20 mixer"; recall doesn't need it).
+- **`snapshotVersion`**: a breaking-change number like `schemaVersion`; a mixer refuses a newer one. Unknown keys are ignored.
+- On the board: `/var/lib/fpgamixer/snapshots/`, one file per snapshot, written crash-safely like the state file (temp + fsync + rename). The name inside the file is the truth; the file name is a safe encoding of it.
+- This differs from the plan, which proposed the state file's nested tree: the flat `values` map is what the app already parses from the config, and the envelope carries the metadata. The state file itself is unchanged.
+
+### 2.3 Recall (`load` and `apply`)
+
+1. **Validate first, apply nothing on failure:** not JSON, no or a newer `snapshotVersion`, `values` missing or not an object, a value of the wrong kind (a string for a number) → the whole request is refused with an error reply.
+2. **Fit it to this mixer:** a path the mixer doesn't have (a zone, index or module it lacks, e.g. a snapshot from a bigger configuration) is **skipped and counted**; numbers are clamped and snapped by the module's rules (not errors, as for any `set`). `system/*` entries are ignored.
+3. **Parameters the snapshot doesn't mention keep their current value.**
+4. **Push:** every window that changed gets one bank push and **one COMMIT**. The windows commit independently and there's no gain smoothing yet, so a recall can click. Acceptable for a studio; stated in the standard.
+5. **Tell controllers:** under the ordering lock, one broadcast `set` for **every value that changed** (only those), then `snapshot/loaded <name> <applied> <skipped>`. A controller that knows nothing about snapshots still ends up in sync, through the same path as any other device-originated set (app D44). A full recall of today's mixer is at most ~860 sets over TCP.
+6. The live state is saved (the state file) like any other change, so a recall survives a power cycle.
+
+`applied` = values in the snapshot that this mixer has (whether or not they changed); `skipped` = values it doesn't have.
+
+### 2.4 Names and limits
+
+- **Snapshot names:** 1–63 bytes of UTF-8; spaces allowed; no `/`, `\` or control characters; no leading `.` and no leading or trailing spaces; case-sensitive. (These are labels, not addresses, so the device-name rules don't need to apply.)
+- At most **128** stored snapshots; a snapshot JSON at most **1 MiB** (today's is ~30 KB). Past either limit, `save`/`store` is refused with a reason.
+- `save` and `store` over an existing name replace it; the app asks the user before overwriting (it has the list).
+
+## 3. Decisions (recommended first)
+
+| # | Question | Recommended | Alternative |
+|---|---|---|---|
+| S1 | Where the requests live | a new command kind `snapshot` (§2.1) | requests under `system/snapshot/...` with `set`/`get` (awkward: no echo semantics fit) |
+| S2 | How controllers learn about a recall | broadcast `set`s for every changed value, then `snapshot/loaded` (§2.3) | a single "config changed, fetch it again" message (needs app work to stay in sync; deferred to channel sources, where topology changes need it) |
+| S3 | Format of `values` | flat keys, as in the config (§2.2) | the state file's nested tree (the plan's first idea) |
+| S4 | Parameters a snapshot doesn't mention | keep their current value | reset to the reset state |
+| S5 | Snapshot names | labels with spaces (§2.4) | the device-name rules (no spaces) |
+| S6 | Undo for a recall | the mixer saves the live state as **"Before load"** (`"auto": true` in the list) just before every `load`/`apply`, replacing the previous one, so a mis-click can be undone by loading it | none |
+| S7 | `store` (upload a computer file to the board without recalling it) | include | leave out (the app can `apply` then `save`, at the cost of recalling it) |
+| S8 | Recall scope | everything (there's only one kind of parameter until channel sources add the I/O patch; "recall safe" for the patch is decided then) | — |
+
+## 4. Steps (after the decisions)
+
+1. Amend the standard (*Snapshots* section, *Command kinds* row, `capabilities` in *Config*, change log); user review.
+2. `tools/mixer_snapshots.py` (the store: list, read, write crash-safely, delete, name rules, limits; the format's validation) + `test_mixer_snapshots.py`.
+3. The server: the `snapshot` kind, recall through the model and the backends (one push per window), the broadcasts, `capabilities` in the config; tests (round trip, a bigger and a smaller snapshot, corrupt files refused, names, two controllers both told, crash safety). Mutation-tested. **Add `mixer_snapshots.py` to the `fpgamixer-osc` recipe's file list.**
+4. Image, bench by ear with the app (save, change, load, power cycle, download, upload).
+5. The app (user): list / save / load / delete UI, export / import a file, the `loaded` notice.
+
+## 5. Log
+
+- **2026-10-08:** Phase 11 merged (PR #9); branch `phase14-snapshots`. Snapshot API proposed (§2), decisions S1–S8 to the user.
