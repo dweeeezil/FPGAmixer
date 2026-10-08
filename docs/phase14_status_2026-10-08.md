@@ -2,7 +2,7 @@
 
 **Branch:** `phase14-snapshots` (from `main` at `68b541b`, the Phase 11 merge, PR #9).
 **Plans:** `docs/plans/plan_snapshots_2026-10-06.md` (this phase), then `plan_virtual_groups_…`, `plan_channel_sources_…`; bundled in `docs/prompt_phase14_qol.md`.
-**Status: snapshots DONE 2026-10-08 (S1–S8, §2–§4; bench PASS with the app). Virtual groups: decided 2026-10-08 (V1–V8 as recommended, §6.3); building.** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
+**Status: snapshots DONE (§2–§4) and virtual groups DONE (§6; crosspoints never link) 2026-10-08, both benched with the app; channel names built (§7), shipping with the next image. Next: channel sources (new session).** The user updates the controller (StudioRunner) side from the standard (`docs/FPGA Mixer OSC Standard.md`, *Snapshots*, amended 2026-10-08).
 
 ---
 
@@ -214,3 +214,16 @@ The user, after the `p14g` build and before the app shipped linking: *"Channels 
 - **Standard**: the matrix rules replaced by "matrix crosspoints never link"; the change log notes the same-day revision.
 - **Tests**: the five matrix-linking tests replaced by `test_crosspoints_never_link` (a grouped row; grouped row and column; a grouped column; `busMatrix` with grouped outputs; the would-be partners stay off). **Mutants 14/14 killed** (baseline clean first), including three that make crosspoints link again (through the input group, the bus group, the output group).
 - **Linux**: OK. **Image `p14g2-vgroups-20261008`** (layer `6dd3ecf`, bitstream `p11h3` unchanged): all tasks succeeded, the same 22 warnings; checked: bitstream MD5 `58d7e3f6…`, `VERSION` `6dd3ecf`, no matrix linking left in the server. **`build/sd/p14g2-vgroups-20261008.wic.xz`** (MD5 `01dbbd7a…`, same on both ends). **It replaces `p14g`** (which still links crosspoints; don't flash it). Next: the app side (user), then the bench.
+- **2026-10-08:** **vGroups bench PASS** with the app: *"grouping works properly and has been tested."* vGroups done.
+
+## 7. Channel names (2026-10-08)
+
+> "One more related thing I'd like to add is channel naming. I'd like each channel to have an assignable nickname, this is mostly a UI thing, but it should still sync, so let's add it to the firmware. This should be small, so bundle it into the next big build." (user, 2026-10-08)
+
+The app already proposed it (controller D64 `name`, D71 the text field). Built in the server, **no image of its own**: it ships with the next one (channel sources).
+
+- **Module `name`** on the three channel zones: `string`, default `""` (none: the app shows "Input 1"), at most **32 UTF-8 bytes** (new string metadata `maxLength`), no control characters (now a rule for every string module; `deviceName` has its own stricter rules). Never linked; stored, echoed and carried by snapshots like any parameter (a board snapshot: 980 values).
+- **`mixer_params`**: `ModuleSpec.max_length` (described as `maxLength`), the control-character and length checks in `apply`.
+- **Standard**: *Channel names* section, `maxLength` in *Config*, the error list, the change log.
+- **Tests**: `ChannelNames` (3: set/echo/get with UTF-8 and clearing; too long in bytes, control characters, a number refused with nothing changed, exactly 32 accepted; not linked, carried by snapshots); `test_mixer_params` (the string rules, `maxLength` described only when set); the shape tests (68 parameters on the 4 × 4 × 4 simulator). Windows: 155 OK (server, params, snapshots, state). **Mutants 9/9 killed** (baseline clean first).
+- **For the app**: the config lists `name` on channel zones with `maxLength` 32; D71's text field can validate against it; refusals come back as error replies on `<zone>/<n>/name`.

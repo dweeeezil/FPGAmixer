@@ -185,6 +185,18 @@ class Config(unittest.TestCase):
                          {"type": "float", "default": 0.0, "linked": True})
         self.assertNotIn("linked", ModuleSpec("float").describe())
 
+    def test_string_rules_and_max_length(self):
+        """Phase 14 (channel names): no control characters in any string;
+        max_length counts UTF-8 bytes and is described as maxLength."""
+        name = ModuleSpec("string", default="", max_length=4)
+        self.assertEqual(name.describe(), {"type": "string", "default": "", "maxLength": 4})
+        self.assertNotIn("maxLength", ModuleSpec("string").describe())
+        self.assertEqual(name.apply("abcd"), ("abcd", None))
+        self.assertEqual(name.apply("éé"), ("éé", None))               # 4 bytes
+        for bad in ("abcde", "ééé", "a\tb", "\x7f", 1.0):
+            self.assertIsNone(name.apply(bad)[0], repr(bad))
+        self.assertEqual(ModuleSpec("string").apply("x" * 500)[1], None)   # no limit by default
+
     def test_values_are_sparse_plus_device_name(self):
         current = {"inputMatrix/1_2/level": 0.0, "inputChannel/1/mute": 1.0,
                    "system/deviceName": "mixer", "system/location": "FOH riser"}

@@ -76,6 +76,7 @@ class ModuleSpec:
     group: str = None
     read_only: bool = False
     linked: bool = False      # follows virtual groups (standard "Virtual groups")
+    max_length: int = None    # strings: at most this many UTF-8 bytes (config "maxLength")
 
     def __post_init__(self):
         if self.type not in TYPES:
@@ -104,9 +105,13 @@ class ModuleSpec:
     def apply(self, value):
         """(applied_value, None), or (None, reason) if the value is refused."""
         if self.type == "string":
-            if isinstance(value, str):
-                return value, None
-            return None, "expected a string"
+            if not isinstance(value, str):
+                return None, "expected a string"
+            if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+                return None, "control characters aren't allowed"
+            if self.max_length is not None and len(value.encode("utf-8")) > self.max_length:
+                return None, f"at most {self.max_length} bytes"
+            return value, None
         if isinstance(value, str):
             return None, "expected a number, got a string"
         if not _is_number(value):
@@ -145,6 +150,8 @@ class ModuleSpec:
             d["readOnly"] = True
         if self.linked:
             d["linked"] = True
+        if self.max_length is not None:
+            d["maxLength"] = self.max_length
         return d
 
 

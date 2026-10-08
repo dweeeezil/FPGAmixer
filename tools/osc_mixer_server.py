@@ -326,6 +326,11 @@ def level_module(max_db):
 VGROUP_MAX = 64
 VGROUP_MODULE = ModuleSpec("int", min=0, max=VGROUP_MAX, default=0, group="link")
 
+# Channel names (Phase 14): a nickname per channel, stored and synced like
+# any parameter; "" = none (the app shows "Input 1" etc.). Never linked.
+CHANNEL_NAME_MAX_BYTES = 32
+NAME_MODULE = ModuleSpec("string", default="", max_length=CHANNEL_NAME_MAX_BYTES)
+
 
 class Backend:
     """Serves one OSC zone.
@@ -448,8 +453,9 @@ class GainBackend(Backend):
     channel without a stored level is seeded at 0 dB (unity, decision L7: the
     gain stage's reset), the way the matrix seeds its diagonal; the config
     then lists those levels explicitly. Phase 14: each channel also has a
-    'vgroup' (VGROUP_MODULE), a plain stored parameter that never reaches
-    the hardware; the server's linking uses it (link_targets)."""
+    'vgroup' (VGROUP_MODULE) and a 'name' (NAME_MODULE), plain stored
+    parameters that never reach the hardware; linking uses vgroup
+    (link_targets)."""
 
     def __init__(self, zone, hw, n, max_db=SIM_MAX_DB):
         super().__init__(zone)
@@ -458,8 +464,8 @@ class GainBackend(Backend):
         self.level = level_module(max_db)
 
     def describe(self):
-        return (ZoneSpec("channels", ("level", "vgroup"), count=self.n),
-                {"level": self.level, "vgroup": VGROUP_MODULE})
+        return (ZoneSpec("channels", ("level", "vgroup", "name"), count=self.n),
+                {"level": self.level, "vgroup": VGROUP_MODULE, "name": NAME_MODULE})
 
     def level_key(self, ch):
         return f"{self.zone}/{ch}/level"

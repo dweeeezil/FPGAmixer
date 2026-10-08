@@ -1,5 +1,5 @@
 Alexander Kelly
-18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups)
+18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups, channel names)
 
 This is the one source of truth for the mixer's OSC protocol. The 4 Oct 2026 revision merges the amendments agreed for the StudioRunner controller (A: name and alias, B: config, C: metering, D: TCP framing, E: discovery, F: value encoding, G: error reply, H: ping) and the device rules decided with them. The change log is at the end.
 
@@ -162,7 +162,7 @@ Rules:
 
 - **`schemaVersion`** (required) is a breaking-change number. A controller refuses a newer version than it supports. Additive changes (new optional keys, new module types) don't bump it.
 - **`zones`** (required): channel zones have `count`, matrix zones `rows` and `cols`, and every zone lists its `modules`. For a matrix, row = source, column = destination. A zone absent from `zones` does not exist on the mixer; a module absent from a zone's list is not implemented there. `system` is never listed here.
-- **`modules`** (required) is metadata, keyed by module name: `type` (`float`, `int`, `bool`, `enum`, `string`), and optionally `unit`, `min`, `max`, `default`, `options` (for `enum`), `group` and `linked`. `group` is for UI clustering (`level`, `eq`, `dynamics`, `delay`, ...); grouping is never inferred from underscores in module names. `linked: true` means the module follows virtual groups (*Virtual groups*); absent means it doesn't.
+- **`modules`** (required) is metadata, keyed by module name: `type` (`float`, `int`, `bool`, `enum`, `string`), and optionally `unit`, `min`, `max`, `default`, `options` (for `enum`), `group` and `linked`. `group` is for UI clustering (`level`, `eq`, `dynamics`, `delay`, ...); grouping is never inferred from underscores in module names. `linked: true` means the module follows virtual groups (*Virtual groups*); absent means it doesn't. `maxLength` (strings) is the longest value the mixer accepts, in UTF-8 bytes; longer is refused.
 - **`system`**: the mixer's settings, keyed by setting name, with the same metadata fields as `modules` plus optional `readOnly`. Absent: the mixer has only `deviceName`.
 - **`level`** has the mixer's real range: `min` −90 (off) and `max` the hardware ceiling.
 - **`values`** keys are `<zone>/<index>/<module>`, the same as the address tail of a `set`, so applying the snapshot reuses the path for incoming sets. For `system` the key is `system/<setting>`. Values are **sparse**: an absent entry is its module's `default`. `system/deviceName` is always present.
@@ -197,6 +197,7 @@ Refused requests:
 
 - a `get` or `set` of a path the mixer doesn't have (unknown zone, index out of range, module not implemented there, unknown setting);
 - a `set` without a value, or with a value of the wrong kind;
+- a string longer than its module's `maxLength`, or containing a control character;
 - a `set` of a `readOnly` setting;
 - an `enum` value outside its `options`;
 - an invalid `deviceName` (after the current-name reply, see *The `system` zone*);
@@ -232,6 +233,10 @@ Meters stream over UDP, mixer → controller, separate from TCP control. The con
 - `sequence` is per zone per subscriber: it starts at 0 when the subscription starts, increments by 1 per message and wraps at 2³². A message that is dropped still uses its number, so gaps are visible.
 - The peak is the highest since the previous message for that zone (nothing between two ticks is lost).
 - Tap point: post-DSP of that zone. Reserved for later: `meter/<zone>_pre`.
+
+## Channel names
+
+Optional (the channel zones list the module `name`). Each channel has a nickname, a `string` module: `""` (the default) means none, and a controller then shows its own label ("Input 1"). It's an ordinary parameter (set, get, echo to every controller, kept across a power cycle, carried by snapshots); it never links. Longer than the module's `maxLength` (the reference server: 32 bytes) or containing a control character is refused with an *Error reply* (no string module accepts control characters).
 
 ## Virtual groups
 
@@ -329,3 +334,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 - **4 Oct 2026:** amendments A–H folded in (from the StudioRunner controller's `OSC_Amendments_Proposed.md`, agreed 4 Oct 2026), with the device rules decided alongside them (controller `DECISIONS.md` D33, D37, D38, D39, D50) and in the firmware session: `mixer` is the factory name; the error `path` has no trailing slash; UDP never replies; a malformed `meter/subscribe` gets an error. The `deviceName` example lost its trailing slash (both forms are accepted). Wording fix: a rename is confirmed under the old *name*, also when the request came through `/mixer/`.
 - **8 Oct 2026:** *Snapshots* (the `snapshot` command kind, the snapshot JSON, recall rules) and the config's optional `capabilities`; additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase14_status_2026-10-08.md` (S1–S8).
 - **8 Oct 2026 (later):** *Virtual groups* (the `vgroup` module, linking rules, the echo order) and the module metadata key `linked`; additive, `schemaVersion` stays 1. Decided in the same doc (V1–V8). Revised the same day before any controller shipped it: matrix crosspoints never link (V5 changed by the user).
+- **8 Oct 2026 (later still):** *Channel names* (the `name` module on channel zones) and the string metadata key `maxLength`; strings with control characters are refused. Additive, `schemaVersion` stays 1.
