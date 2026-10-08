@@ -6,18 +6,25 @@
 // Inside, blocks are chained by the PCM stream contract (2.1). Since Phase 12
 // the core is the console's signal flow (decisions L1-L5):
 //
-//   in_flat -pack2stream-> pcm_gain -> pcm_matrix -> pcm_gain -> pcm_matrix -> pcm_gain -stream2pack-> out_flat
-//                          input      input matrix   bus        bus matrix     output
-//                          levels     N_IN -> N_BUS  levels     N_BUS -> N_OUT levels
-//                            ^             ^            ^            ^            ^
-//                          in_lvl_*     in_mx_*      bus_lvl_*    bus_mx_*     out_lvl_*
+//   in_flat -patch2stream-> pcm_gain -> pcm_matrix -> pcm_gain -> pcm_matrix -> pcm_gain -stream2patch-> out_flat
+//   P_IN     input patch    input      input matrix   bus        bus matrix     output    output patch   P_OUT
+//   I/O ports               levels     N_IN -> N_BUS  levels     N_BUS -> N_OUT levels                 I/O ports
+//              ^              ^             ^            ^            ^            ^           ^
+//          in_patch_*      in_lvl_*     in_mx_*      bus_lvl_*    bus_mx_*     out_lvl_*   out_patch_*
 //
-// Five coefficient read ports, one per block, each served by the control
+// Phase 15 (decision CS1): the packed sides are the I/O PORTS (P_IN in,
+// P_OUT out), and the converters at the ends are the patch: input channel k
+// takes the port its source entry names, output channel c feeds the port its
+// destination entry names (0 = None; pcm_patch2stream.sv, pcm_stream2patch.sv).
+// The core still doesn't know what the ports are (the platform's map).
+//
+// Seven coefficient read ports, one per block, each served by the control
 // plane's coef_bank_ram (one register window per block) or by a
 // coef_flat_reader (non-PS builds, TBs); the core can't tell which:
 //   *_lvl_* : ROW_LEN 1, N_ROWS = the stage's channels, LANES 1 (pcm_gain.sv)
 //   in_mx_* : ROW_LEN N_IN,  N_ROWS N_BUS, LANES L1  (row = bus,    pcm_matrix.sv)
 //   bus_mx_*: ROW_LEN N_BUS, N_ROWS N_OUT, LANES L2  (row = output)
+//   *_patch_*: ROW_LEN 1, N_ROWS = the channels, LANES 1, W = $clog2(P+1)
 // so a matrix's register index is k = destination*N_source + source, as
 // before. Every block saturates its output to SW bits (L5): a bus sum clips at
 // the bus, as on a console.
@@ -25,8 +32,8 @@
 // Tap ports (Phase 13, decision M1): the three level stages' output streams
 // leave the core as copies (stream contract), the zones' post-DSP points the
 // OSC standard meters; the peak meters (pcm_peak) attach there, outside the
-// chain. Last beats (cycles after the strobe): tap_in = N_IN + GAIN_LAT,
-// tap_bus = chain_bus_last + GAIN_LAT, tap_out = D - 1.
+// chain. Last beats (cycles after the strobe): tap_in = chain_in_last +
+// GAIN_LAT, tap_bus = chain_bus_last + GAIN_LAT, tap_out = D - OUT_PATCH_LAT.
 //
 // Phase 7 DSP blocks go into this chain the same way, between the converters,
 // so the platform layer and the front doors never change when the core grows.
@@ -34,7 +41,7 @@
 //
 // Timing: in_flat is captured on the strobe (frame_i). out_flat changes on one
 // edge, D = mixer_core_pkg::chain_latency(N_IN, N_BUS, N_OUT, L1, L2) cycles
-// after the strobe (20/20/20 on 4 + 4 lanes: 249), valid_o pulsing on that
+// after the strobe (20/20/20 on 4 + 4 lanes: 251), valid_o pulsing on that
 // edge's cycle. L1/L2 default to the package's chooser (the fewest lanes with
 // D <= D_MAX); the core refuses to elaborate past D_MAX. err_o pulses on a
 // malformed internal stream (never expected; for a status counter).
@@ -46,6 +53,8 @@ module mixer_core
     parameter int N_IN  = 12,
     parameter int N_BUS = 12,
     parameter int N_OUT = 12,
+    parameter int P_IN  = N_IN,     // I/O ports in (Phase 15)
+    parameter int P_OUT = N_OUT,    // I/O ports out
     parameter int SW    = 24,
     parameter int GW    = 18,
     parameter int GF    = 16,
@@ -54,6 +63,8 @@ module mixer_core
     localparam int CWI  = (N_IN  > 1) ? $clog2(N_IN)  : 1,
     localparam int CWB  = (N_BUS > 1) ? $clog2(N_BUS) : 1,
     localparam int CWO  = (N_OUT > 1) ? $clog2(N_OUT) : 1,
+    localparam int PWI  = $clog2(P_IN + 1),     // a patch entry: 0 = None, 1 .. P
+    localparam int PWO  = $clog2(P_OUT + 1),
     localparam int DEPTH1 = matrix_passes(N_BUS, (L1 > 0) ? L1 : 1) * N_IN,
     localparam int DEPTH2 = matrix_passes(N_OUT, (L2 > 0) ? L2 : 1) * N_BUS,
     localparam int AW1  = (DEPTH1 > 1) ? $clog2(DEPTH1) : 1,
@@ -63,12 +74,14 @@ module mixer_core
     input  logic                 rst_n,
     input  logic                 frame_i,
 
-    input  logic [N_IN*SW-1:0]   in_flat,
-    output logic [N_OUT*SW-1:0]  out_flat,
+    input  logic [P_IN*SW-1:0]   in_flat,       // the I/O ports
+    output logic [P_OUT*SW-1:0]  out_flat,
     output logic                 valid_o,
     output logic                 err_o,
 
     // coefficient read ports (address -> data one cycle later)
+    output logic [CWI-1:0]       in_patch_addr,
+    input  logic [PWI-1:0]       in_patch_data,
     output logic [CWI-1:0]       in_lvl_addr,
     input  logic [GW-1:0]        in_lvl_data,
     output logic [AW1-1:0]       in_mx_addr,
@@ -79,6 +92,8 @@ module mixer_core
     input  logic [L2*GW-1:0]     bus_mx_data,
     output logic [CWO-1:0]       out_lvl_addr,
     input  logic [GW-1:0]        out_lvl_data,
+    output logic [CWO-1:0]       out_patch_addr,
+    input  logic [PWO-1:0]       out_patch_data,
 
     // tap ports (Phase 13): copies of the three level stages' output streams
     // (the zones' post-DSP points), for listeners such as the peak meters
@@ -111,8 +126,9 @@ module mixer_core
     logic [CWO-1:0] e_ch, f_ch;
     logic [SW-1:0]  a_data, b_data, c_data, d_data, e_data, f_data;
 
-    pcm_pack2stream #(.N (N_IN), .SW (SW)) u_in (
+    pcm_patch2stream #(.P (P_IN), .N (N_IN), .SW (SW)) u_in (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame_i), .in_flat (in_flat),
+        .coef_addr (in_patch_addr), .coef_data (in_patch_data),
         .s_valid (a_valid), .s_ch (a_ch), .s_data (a_data));
 
     pcm_gain #(.N (N_IN), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_in_lvl (
@@ -162,9 +178,10 @@ module mixer_core
     assign tap_out_ch    = f_ch;
     assign tap_out_data  = f_data;
 
-    pcm_stream2pack #(.N (N_OUT), .SW (SW)) u_out (
+    pcm_stream2patch #(.N (N_OUT), .P (P_OUT), .SW (SW)) u_out (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame_i),
         .s_valid (f_valid), .s_ch (f_ch), .s_data (f_data),
+        .coef_addr (out_patch_addr), .coef_data (out_patch_data),
         .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o));
 
 endmodule

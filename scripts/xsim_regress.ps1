@@ -21,7 +21,8 @@ $root = (Resolve-Path "$PSScriptRoot\..").Path
 $rtl  = "$root\src\rtl"
 $sim  = "$root\src\sim"
 
-$mixcore = @("pcm_matrix_pkg","mixer_core_pkg","pcm_pack2stream","pcm_stream2pack","pcm_matrix",
+$mixcore = @("pcm_matrix_pkg","mixer_core_pkg","pcm_pack2stream","pcm_stream2pack",
+             "pcm_patch2stream","pcm_stream2patch","pcm_matrix",
              "pcm_gain","mixer_core") |
            ForEach-Object { "$rtl\$_.sv" }
 $mxsim   = "$sim\matrix_packed_sim.sv"   # the single matrix between the converters (matrix TBs)
@@ -37,15 +38,17 @@ $targets = [ordered]@{
   core        = @("tb_mixer_core",       "", ($mixcore + @("$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_mixer_core.sv")))
   gain        = @("tb_pcm_gain",         "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$rtl\pcm_gain.sv","$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_gain.sv"))
   stream      = @("tb_pcm_stream",      "", @("$rtl\pcm_pack2stream.sv","$rtl\pcm_stream2pack.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_stream.sv"))
+  patch       = @("tb_pcm_patch",        "", @("$rtl\pcm_patch2stream.sv","$rtl\pcm_stream2patch.sv","$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_patch.sv"))
   coefram     = @("tb_coef_bank_ram",    "", @("$rtl\coef_bank_ram.sv","$rtl\coef_flat_reader.sv","$sim\tb_coef_bank_ram.sv"))
   regs        = @("tb_matrix_regs",      "", ($mixcore + @($mxsim,"$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$sim\tb_matrix_regs.sv")))
   gainregs    = @("tb_gain_regs",        "", ($mixcore + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\gain_regs_axil.sv","$sim\tb_gain_regs.sv")))
+  patchregs   = @("tb_patch_regs",       "", @("$rtl\pcm_patch2stream.sv","$rtl\pcm_stream2patch.sv","$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\patch_regs_axil.sv","$sim\tb_patch_regs.sv"))
   peak        = @("tb_pcm_peak",         "", @("$rtl\axil_coef_window.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$sim\tb_pcm_peak.sv"))
   link        = @("tb_pcm_link",       "", @("$rtl\async_fifo.sv","$rtl\pcm_link.sv","$sim\tb_pcm_link.sv"))
   mclk        = @("tb_media_clock_meter", "", @("$rtl\media_clock_meter.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\media_clock_stat_regs.sv","$sim\tb_media_clock_meter.sv"))
   steer       = @("tb_media_clock_steer", "", @("$rtl\axil_reg_window.sv","$rtl\media_clock_ctrl_regs.sv","$rtl\media_clock_steer.sv","$rtl\media_clock_meter.sv","$sim\tb_media_clock_steer.sv"))
   linkstat    = @("tb_link_stat_regs",   "", @("$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\pcm_link_stat_regs.sv","$sim\tb_link_stat_regs.sv"))
-  topwin      = @("tb_top_windows",      "INCLUDE_PS", ($coreRtl + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
+  topwin      = @("tb_top_windows",      "INCLUDE_PS", ($coreRtl + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$rtl\patch_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
 }
 
 function Invoke-Limited([string]$dir, [scriptblock]$block, [object[]]$argsList, [int]$seconds) {

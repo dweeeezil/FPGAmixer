@@ -3,23 +3,28 @@
 //
 // The whole PCM core since Phase 12 (mixer_core: input levels -> input matrix
 // -> bus levels -> bus matrix -> output levels, between the converters), its
-// five coefficient ports served by coef_flat_readers, across sizes:
+// seven coefficient ports served by coef_flat_readers, across sizes
+// (I/O ports in, channels in -> buses -> channels out, I/O ports out):
 //
-//   20 -> 20 -> 20   today's core (4 + 4 lanes, D = 249)
-//   12 -> 12 -> 12   2 + 2
-//   28 -> 28 -> 28   the Phase 11 growth (10 + 10)
-//   20 ->  8 -> 20   fewer buses than channels
-//    3 ->  5 ->  2   expand, then reduce
-//    7 ->  5 ->  3   lanes forced to 3 + 2: idle lanes in both matrices' last pass
-//    1 ->  1 ->  1   degenerate
+//   20 | 20 -> 20 -> 20 | 20   today's core (4 + 4 lanes, D = 251)
+//   20 | 12 -> 12 -> 12 | 20   fewer channels than ports (1 + 2)
+//   20 | 28 -> 28 -> 28 | 20   more channels than ports (10 + 10)
+//   20 | 20 ->  8 -> 20 | 20   fewer buses than channels
+//    5 |  3 ->  5 ->  2 |  4   expand, then reduce
+//    7 |  7 ->  5 ->  3 |  3   lanes forced to 3 + 2: idle lanes in both matrices' last pass
+//    1 |  1 ->  1 ->  1 |  1   degenerate
 //
-// Every frame gets new random samples and all five gain banks, in one of
-// three modes: "extreme" (full-range gains with the extremes over-represented:
-// every saturation point is hit), "console" (levels and sparse crosspoints in
-// -1.0 .. +1.0: signals pass mostly unclipped, so the arithmetic is visible),
-// and "reset" (unity levels, identity matrices: output = input). The packed
-// output is compared bit-exact with a 64-bit model of the chain that
-// saturates to 24 bits after every block (decision L5); it must update
+// Every frame gets new random samples and all seven banks, in one of three
+// modes: "extreme" (full-range gains with the extremes over-represented:
+// every saturation point is hit; patch entries random over their whole
+// field: None, ports, values past P, duplicates), "console" (levels and
+// sparse crosspoints in -1.0 .. +1.0: signals pass mostly unclipped, so the
+// arithmetic is visible; sources random, destinations one-to-one with some
+// None), and "reset" (identity patch, unity levels, identity matrices:
+// output port = input port). The packed output is compared bit-exact with a
+// 64-bit model of the chain (Phase 15: through the input patch, then onto
+// the ports by the destinations, the later channel winning a shared port)
+// that saturates to 24 bits after every block (decision L5); it must update
 // exactly at D = chain_latency and nowhere else; err_o must stay low; the
 // bus stream and the output-level stream obey the stream contract at their
 // stated first/last-beat cycles (pcm_stream_monitor).
@@ -41,6 +46,8 @@ module core_harness
     parameter int N_IN   = 3,
     parameter int N_BUS  = 5,
     parameter int N_OUT  = 2,
+    parameter int P_IN   = N_IN,
+    parameter int P_OUT  = N_OUT,
     parameter int L1     = chain_l1(N_IN, N_BUS, N_OUT),
     parameter int L2     = chain_l2(N_IN, N_BUS, N_OUT),
     parameter int FRAMES = 60
@@ -63,18 +70,28 @@ module core_harness
     localparam int DEPTH2 = matrix_passes(N_OUT, L2) * N_BUS;
     localparam int AW1    = (DEPTH1 > 1) ? $clog2(DEPTH1) : 1;
     localparam int AW2    = (DEPTH2 > 1) ? $clog2(DEPTH2) : 1;
+    localparam int PWI    = $clog2(P_IN + 1);
+    localparam int PWO    = $clog2(P_OUT + 1);
 
+    typedef logic [P_IN*SW-1:0]       pin_t;
+    typedef logic [P_OUT*SW-1:0]      pout_t;
+    typedef logic [N_IN*SW-1:0]       chin_t;
+    typedef logic [N_IN*PWI-1:0]      src_t;
+    typedef logic [N_OUT*PWO-1:0]     dst_t;
     typedef logic [N_IN*GW-1:0]       gin_t;
     typedef logic [N_BUS*N_IN*GW-1:0] gim_t;
     typedef logic [N_BUS*GW-1:0]      gbl_t;
     typedef logic [N_OUT*N_BUS*GW-1:0] gbm_t;
     typedef logic [N_OUT*GW-1:0]      gol_t;
 
-    logic [N_IN*SW-1:0]  in_flat;
-    logic [N_OUT*SW-1:0] out_flat, out_prev;
+    pin_t                in_flat;
+    pout_t               out_flat, out_prev;
     logic                valid_o, err_o;
     gin_t g_in;  gim_t g_im;  gbl_t g_bl;  gbm_t g_bm;  gol_t g_ol;
+    src_t t_src;  dst_t t_dst;
 
+    logic [CWI-1:0] in_patch_addr;  logic [PWI-1:0] in_patch_data;
+    logic [CWO-1:0] out_patch_addr; logic [PWO-1:0] out_patch_data;
     logic [CWI-1:0] in_lvl_addr;  logic [GW-1:0] in_lvl_data;
     logic [AW1-1:0] in_mx_addr;   logic [L1*GW-1:0] in_mx_data;
     logic [CWB-1:0] bus_lvl_addr; logic [GW-1:0] bus_lvl_data;
@@ -86,10 +103,12 @@ module core_harness
     logic [CWI-1:0] ti_c;  logic [CWB-1:0] tb_c;  logic [CWO-1:0] to_c;
     logic [SW-1:0]  ti_d, tb_d, to_d;
 
-    mixer_core #(.N_IN (N_IN), .N_BUS (N_BUS), .N_OUT (N_OUT), .SW (SW), .GW (GW), .GF (GF),
-                 .L1 (L1), .L2 (L2)) dut (
+    mixer_core #(.N_IN (N_IN), .N_BUS (N_BUS), .N_OUT (N_OUT), .P_IN (P_IN), .P_OUT (P_OUT),
+                 .SW (SW), .GW (GW), .GF (GF), .L1 (L1), .L2 (L2)) dut (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
         .in_flat (in_flat), .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o),
+        .in_patch_addr (in_patch_addr),   .in_patch_data (in_patch_data),
+        .out_patch_addr (out_patch_addr), .out_patch_data (out_patch_data),
         .in_lvl_addr (in_lvl_addr),   .in_lvl_data (in_lvl_data),
         .in_mx_addr (in_mx_addr),     .in_mx_data (in_mx_data),
         .bus_lvl_addr (bus_lvl_addr), .bus_lvl_data (bus_lvl_data),
@@ -109,12 +128,16 @@ module core_harness
         .mclk, .frame_i (frame), .coefs_flat (g_bm), .rd_addr (bus_mx_addr),  .rd_data (bus_mx_data));
     coef_flat_reader #(.W (GW), .N_ROWS (N_OUT), .ROW_LEN (1),     .LANES (1))  u_c4 (
         .mclk, .frame_i (frame), .coefs_flat (g_ol), .rd_addr (out_lvl_addr), .rd_data (out_lvl_data));
+    coef_flat_reader #(.W (PWI), .N_ROWS (N_IN),  .ROW_LEN (1),    .LANES (1))  u_c5 (
+        .mclk, .frame_i (frame), .coefs_flat (t_src), .rd_addr (in_patch_addr),  .rd_data (in_patch_data));
+    coef_flat_reader #(.W (PWO), .N_ROWS (N_OUT), .ROW_LEN (1),    .LANES (1))  u_c6 (
+        .mclk, .frame_i (frame), .coefs_flat (t_dst), .rd_addr (out_patch_addr), .rd_data (out_patch_data));
 
     // ----- stream checks: the buses (input matrix out) and the output levels -----
     int mon_err_b, mon_frames_b, mon_err_o, mon_frames_o;
     localparam int BUS_LAST = chain_bus_last(N_IN, N_BUS, L1);
     pcm_stream_monitor #(.N (N_BUS),
-                         .FIRST_BEAT (N_IN + GAIN_LAT + matrix_lat_first(N_IN)),
+                         .FIRST_BEAT (chain_in_last(N_IN) + GAIN_LAT + matrix_lat_first(N_IN)),
                          .LAST_BEAT  (BUS_LAST),
                          .NAME ("buses")) u_mon_b (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame),
@@ -130,7 +153,8 @@ module core_harness
 
     // the other two taps: the stream contract at their stated last beats
     int mon_err_ti, mon_frames_ti, mon_err_tb, mon_frames_tb;
-    pcm_stream_monitor #(.N (N_IN), .FIRST_BEAT (1 + GAIN_LAT), .LAST_BEAT (N_IN + GAIN_LAT),
+    pcm_stream_monitor #(.N (N_IN), .FIRST_BEAT (1 + IN_PATCH_LAT + GAIN_LAT),
+                         .LAST_BEAT (chain_in_last(N_IN) + GAIN_LAT),
                          .CONTIGUOUS (1'b1), .NAME ("tap in")) u_mon_ti (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (ti_v), .s_ch (ti_c),
         .errors (mon_err_ti), .frames (mon_frames_ti));
@@ -189,6 +213,26 @@ module core_harness
         return acc[SW-1:0];
     endfunction
 
+    // Phase 15, the patch: the input channels from the ports (0 = None, past
+    // P = silence), and which output channel each port carries (-1 = none;
+    // in ascending order, so the later channel wins a shared port).
+    function automatic chin_t chans(input pin_t xp, input src_t s);
+        chin_t x;
+        int v;
+        for (int k = 0; k < N_IN; k++) begin
+            v = int'(s[k*PWI +: PWI]);
+            x[k*SW +: SW] = (v >= 1 && v <= P_IN) ? xp[(v-1)*SW +: SW] : '0;
+        end
+        return x;
+    endfunction
+    function automatic int port_owner(input dst_t d, input int p);
+        int owner;
+        owner = -1;
+        for (int c = 0; c < N_OUT; c++)
+            if (int'(d[c*PWO +: PWO]) == p + 1) owner = c;
+        return owner;
+    endfunction
+
     // ----- stimulus -----
     function automatic logic [SW-1:0] rsamp(input int mode);
         if (mode == 1) return SW'($urandom % 24'h400000) - 24'h200000;   // +-2^21: headroom
@@ -214,11 +258,27 @@ module core_harness
     function automatic logic [GW-1:0] rgain_sparse();     // a console's crosspoints
         return ($urandom % 4 == 0) ? rgain_c() : '0;
     endfunction
+    task automatic make_patch(input int mode, output src_t s, output dst_t d);
+        int perm [P_OUT];
+        int j, t;
+        for (int p = 0; p < P_OUT; p++) perm[p] = p;
+        for (int p = P_OUT - 1; p > 0; p--) begin
+            j = $urandom % (p + 1); t = perm[p]; perm[p] = perm[j]; perm[j] = t;
+        end
+        for (int k = 0; k < N_IN; k++)
+            s[k*PWI +: PWI] = (mode == 0) ? PWI'($urandom) : (mode == 1) ? PWI'($urandom % (P_IN + 1))
+                            : ((k < P_IN) ? PWI'(k + 1) : '0);
+        for (int c = 0; c < N_OUT; c++)
+            d[c*PWO +: PWO] = (mode == 0) ? PWO'($urandom)
+                            : (mode == 1) ? ((c < P_OUT && $urandom % 4 != 0) ? PWO'(perm[c] + 1) : '0)
+                            : ((c < P_OUT) ? PWO'(c + 1) : '0);
+    endtask
 
-    // What each frame used, in frame order: samples recorded at the strobe
-    // that captures them, gains (and the mode) when they are set, in cycle 0.
-    logic [N_IN*SW-1:0] x_q [$];
+    // What each frame used, in frame order: the ports recorded at the strobe
+    // that captures them, gains, patch (and the mode) when they are set, in cycle 0.
+    pin_t x_q [$];
     gin_t gi_q [$];  gim_t gm_q [$];  gbl_t gb_q [$];  gbm_t gbm_q [$];  gol_t go_q [$];
+    src_t s_q [$];   dst_t d_q [$];
     int   mode_q [$];
 
     // mode picks the gains of the frame whose cycle 0 this is; samples are set
@@ -227,8 +287,10 @@ module core_harness
     int mode = 0;
     always @(negedge mclk) begin
         if (cyc < 0 || cyc == 0)
-            for (int i = 0; i < N_IN; i++) in_flat[i*SW +: SW] = rsamp(mode);
+            for (int i = 0; i < P_IN; i++) in_flat[i*SW +: SW] = rsamp(mode);
         if (cyc == 0) begin
+            make_patch(mode, t_src, t_dst);
+            s_q.push_back(t_src); d_q.push_back(t_dst);
             for (int k = 0; k < N_IN; k++)        g_in[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
             for (int k = 0; k < N_BUS; k++)       g_bl[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
             for (int k = 0; k < N_OUT; k++)       g_ol[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
@@ -246,30 +308,33 @@ module core_harness
     int err = 0;
 
     always @(posedge mclk) begin
-        logic [N_IN*SW-1:0] x;
+        pin_t  xp;
+        chin_t x, xc;
+        dst_t  d;
         gin_t gi; gim_t gm; gbl_t gb; gbm_t gbm; gol_t go;
         int m;
         bit clipped;
         if (rst_n) begin
             if (frame) x_q.push_back(in_flat);
             // Taps (Phase 13): during frame k the queues' fronts are frame k's
-            // samples and gains (frame k-1 was popped at its D).
-            if ((ti_v || tb_v || to_v) && (x_q.size() == 0 || gi_q.size() == 0)) begin
+            // samples, gains and patch (frame k-1 was popped at its D).
+            if ((ti_v || tb_v || to_v) && (x_q.size() == 0 || gi_q.size() == 0 || s_q.size() == 0)) begin
                 err++;
                 if (err < 10) $display("[%0t] %0d/%0d/%0d: tap beat outside a frame", $time, N_IN, N_BUS, N_OUT);
-            end else begin
-                if (ti_v && ti_d !== model_in(x_q[0], gi_q[0], int'(ti_c))) begin
+            end else if (ti_v || tb_v || to_v) begin
+                xc = chans(x_q[0], s_q[0]);
+                if (ti_v && ti_d !== model_in(xc, gi_q[0], int'(ti_c))) begin
                     err++;
                     if (err < 10) $display("[%0t] %0d/%0d/%0d: tap in ch%0d = %06h, model %06h", $time,
-                                           N_IN, N_BUS, N_OUT, ti_c, ti_d, model_in(x_q[0], gi_q[0], int'(ti_c)));
+                                           N_IN, N_BUS, N_OUT, ti_c, ti_d, model_in(xc, gi_q[0], int'(ti_c)));
                 end
-                if (tb_v && tb_d !== model_bus(x_q[0], gi_q[0], gm_q[0], gb_q[0], int'(tb_c))) begin
+                if (tb_v && tb_d !== model_bus(xc, gi_q[0], gm_q[0], gb_q[0], int'(tb_c))) begin
                     err++;
                     if (err < 10) $display("[%0t] %0d/%0d/%0d: tap bus ch%0d = %06h, model %06h", $time,
                                            N_IN, N_BUS, N_OUT, tb_c, tb_d,
-                                           model_bus(x_q[0], gi_q[0], gm_q[0], gb_q[0], int'(tb_c)));
+                                           model_bus(xc, gi_q[0], gm_q[0], gb_q[0], int'(tb_c)));
                 end
-                if (to_v && to_d !== model(x_q[0], gi_q[0], gm_q[0], gb_q[0], gbm_q[0], go_q[0], int'(to_c), 1'b1)) begin
+                if (to_v && to_d !== model(xc, gi_q[0], gm_q[0], gb_q[0], gbm_q[0], go_q[0], int'(to_c), 1'b1)) begin
                     err++;
                     if (err < 10) $display("[%0t] %0d/%0d/%0d: tap out ch%0d = %06h", $time,
                                            N_IN, N_BUS, N_OUT, to_c, to_d);
@@ -285,23 +350,29 @@ module core_harness
                     if (err < 10) $display("[%0t] %0d/%0d/%0d: output at cycle %0d, D = %0d",
                                            $time, N_IN, N_BUS, N_OUT, cyc, D);
                 end
-                x = x_q.pop_front();
+                xp = x_q.pop_front();
+                x = chans(xp, s_q.pop_front()); d = d_q.pop_front();
                 gi = gi_q.pop_front(); gm = gm_q.pop_front(); gb = gb_q.pop_front();
                 gbm = gbm_q.pop_front(); go = go_q.pop_front(); m = mode_q.pop_front();
                 clipped = 0;
-                for (int o = 0; o < N_OUT; o++) begin
+                for (int o = 0; o < N_OUT; o++)
+                    if (model(x, gi, gm, gb, gbm, go, o, 1'b0) !== model(x, gi, gm, gb, gbm, go, o, 1'b1))
+                        clipped = 1;
+                for (int p = 0; p < P_OUT; p++) begin
                     logic [SW-1:0] want;
-                    want = model(x, gi, gm, gb, gbm, go, o, 1'b1);
-                    if (out_flat[o*SW +: SW] !== want) begin
+                    int o;
+                    o = port_owner(d, p);
+                    want = (o < 0) ? '0 : model(x, gi, gm, gb, gbm, go, o, 1'b1);
+                    if (out_flat[p*SW +: SW] !== want) begin
                         err++;
-                        if (err < 10) $display("[%0t] %0d/%0d/%0d mode %0d: out%0d = %06h, model %06h",
-                                               $time, N_IN, N_BUS, N_OUT, m, o, out_flat[o*SW +: SW], want);
+                        if (err < 10) $display("[%0t] %0d/%0d/%0d mode %0d: port %0d (ch %0d) = %06h, model %06h",
+                                               $time, N_IN, N_BUS, N_OUT, m, p, o, out_flat[p*SW +: SW], want);
                     end
-                    if (model(x, gi, gm, gb, gbm, go, o, 1'b0) !== want) clipped = 1;
-                    if (m == 2 && o < N_IN && o < N_BUS && out_flat[o*SW +: SW] !== x[o*SW +: SW]) begin
+                    if (m == 2 && p < N_IN && p < N_BUS && p < N_OUT && p < P_IN
+                        && out_flat[p*SW +: SW] !== xp[p*SW +: SW]) begin
                         err++;
-                        if (err < 10) $display("[%0t] %0d/%0d/%0d reset routing: out%0d = %06h, in %06h",
-                                               $time, N_IN, N_BUS, N_OUT, o, out_flat[o*SW +: SW], x[o*SW +: SW]);
+                        if (err < 10) $display("[%0t] %0d/%0d/%0d reset routing: port %0d = %06h, in %06h",
+                                               $time, N_IN, N_BUS, N_OUT, p, out_flat[p*SW +: SW], xp[p*SW +: SW]);
                     end
                 end
                 if (clipped) bus_clips++;
@@ -317,7 +388,7 @@ module core_harness
 
     initial begin
         checked = 0; bus_clips = 0; done = 0; out_prev = '0;
-        g_in = '0; g_im = '0; g_bl = '0; g_bm = '0; g_ol = '0;
+        g_in = '0; g_im = '0; g_bl = '0; g_bm = '0; g_ol = '0; t_src = '0; t_dst = '0;
         wait (checked == FRAMES);
         done = 1;
     end
@@ -350,10 +421,13 @@ module tb_mixer_core;
     bit  d [NH];
 
     core_harness #(.N_IN (20), .N_BUS (20), .N_OUT (20)) h0 (.mclk, .rst_n, .frame, .cyc, .errors (e[0]), .checked (k[0]), .bus_clips (c[0]), .done (d[0]));
-    core_harness #(.N_IN (12), .N_BUS (12), .N_OUT (12)) h1 (.mclk, .rst_n, .frame, .cyc, .errors (e[1]), .checked (k[1]), .bus_clips (c[1]), .done (d[1]));
-    core_harness #(.N_IN (28), .N_BUS (28), .N_OUT (28)) h2 (.mclk, .rst_n, .frame, .cyc, .errors (e[2]), .checked (k[2]), .bus_clips (c[2]), .done (d[2]));
+    core_harness #(.N_IN (12), .N_BUS (12), .N_OUT (12), .P_IN (20), .P_OUT (20))
+                                                         h1 (.mclk, .rst_n, .frame, .cyc, .errors (e[1]), .checked (k[1]), .bus_clips (c[1]), .done (d[1]));
+    core_harness #(.N_IN (28), .N_BUS (28), .N_OUT (28), .P_IN (20), .P_OUT (20))
+                                                         h2 (.mclk, .rst_n, .frame, .cyc, .errors (e[2]), .checked (k[2]), .bus_clips (c[2]), .done (d[2]));
     core_harness #(.N_IN (20), .N_BUS (8),  .N_OUT (20)) h3 (.mclk, .rst_n, .frame, .cyc, .errors (e[3]), .checked (k[3]), .bus_clips (c[3]), .done (d[3]));
-    core_harness #(.N_IN (3),  .N_BUS (5),  .N_OUT (2))  h4 (.mclk, .rst_n, .frame, .cyc, .errors (e[4]), .checked (k[4]), .bus_clips (c[4]), .done (d[4]));
+    core_harness #(.N_IN (3),  .N_BUS (5),  .N_OUT (2), .P_IN (5), .P_OUT (4))
+                                                         h4 (.mclk, .rst_n, .frame, .cyc, .errors (e[4]), .checked (k[4]), .bus_clips (c[4]), .done (d[4]));
     core_harness #(.N_IN (7),  .N_BUS (5),  .N_OUT (3), .L1 (3), .L2 (2))
                                                          h5 (.mclk, .rst_n, .frame, .cyc, .errors (e[5]), .checked (k[5]), .bus_clips (c[5]), .done (d[5]));
     core_harness #(.N_IN (1),  .N_BUS (1),  .N_OUT (1))  h6 (.mclk, .rst_n, .frame, .cyc, .errors (e[6]), .checked (k[6]), .bus_clips (c[6]), .done (d[6]));
@@ -370,6 +444,7 @@ module tb_mixer_core;
         rst_n = 1;
         wait (d[0] && d[1] && d[2] && d[3] && d[4] && d[5] && d[6]);
         repeat (2) @(posedge mclk);
+        $display("  (I/O ports in/out, row by row: 20/20, 20/20, 20/20, 20/20, 5/4, 7/3, 1/1)");
         $display(row(20, 20, 20, h0.L1, h0.L2, e[0], k[0], c[0]));
         $display(row(12, 12, 12, h1.L1, h1.L2, e[1], k[1], c[1]));
         $display(row(28, 28, 28, h2.L1, h2.L2, e[2], k[2], c[2]));

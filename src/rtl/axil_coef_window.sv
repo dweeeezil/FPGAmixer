@@ -15,7 +15,9 @@
 //                  R   bit0 = BUSY, bit1 = QUEUED (from the store)
 //   0x00C  COMMITS  RO  commits completed (from the store)
 //   0x100  COEF[k]  RW  k = 0 .. N_COEF-1, at 0x100 + 4*k. COEF_WIDTH bits,
-//                       signed: reads return the value sign-extended to 32.
+//                       signed: reads return the value sign-extended to 32
+//                       (COEF_SIGNED = 0, Phase 15: unsigned, zero-extended,
+//                       for tables such as the patch's port numbers).
 // Unmapped addresses read 0 and ignore writes (OKAY response). WSTRB is
 // honoured per byte.
 //
@@ -38,6 +40,7 @@ module axil_coef_window #(
     parameter int  ADDR_WIDTH   = 12,
     parameter logic [31:0] ID_VALUE     = 32'h0,
     parameter logic [31:0] CONFIG_VALUE = 32'h0,
+    parameter bit  COEF_SIGNED  = 1'b1,
     localparam int IW = (N_COEF > 1) ? $clog2(N_COEF) : 1
 ) (
     input  logic                  aclk,
@@ -107,6 +110,11 @@ module axil_coef_window #(
         for (int b = 0; b < 4; b++)
             r[b*8 +: 8] = strb[b] ? new_v[b*8 +: 8] : old_v[b*8 +: 8];
         return r;
+    endfunction
+
+    // A stored coefficient as a 32-bit register value.
+    function automatic logic [31:0] widen(input logic [COEF_WIDTH-1:0] v);
+        return COEF_SIGNED ? 32'(signed'(v)) : 32'(v);
     endfunction
 
     // ----- one FSM for both channels: the store takes one request at a time --
@@ -193,11 +201,11 @@ module axil_coef_window #(
                 S_RWAIT:
                     if (st_rvalid) begin
                         if (op_write) begin
-                            merged   = apply_strb(32'(signed'(st_rdata)), w_data, w_strb);
+                            merged   = apply_strb(widen(st_rdata), w_data, w_strb);
                             st_wdata <= merged[COEF_WIDTH-1:0];
                             state    <= S_WR;
                         end else begin
-                            s_axi_rdata  <= 32'(signed'(st_rdata));
+                            s_axi_rdata  <= widen(st_rdata);
                             s_axi_rvalid <= 1'b1;
                             state        <= S_IDLE;
                         end
