@@ -1912,6 +1912,17 @@ class ChannelCounts(Phase15Case):
         self.echoes(a, "/mixer/set/system/outputCount", 4)
         self.assertEqual(self.get(a, "outputChannel/3/destination"), 0.0)
 
+    def test_a_recall_takes_a_hidden_destination_quietly_too(self):
+        a = self.tcp()
+        self.roundtrip(a, "/mixer/set/outputChannel/3/destination", 9.0)
+        self.echoes(a, "/mixer/set/system/outputCount", 3)
+        doc = {"snapshotVersion": 1, "values": {"outputChannel/0/destination": 9.0}}
+        a.send_message("/mixer/snapshot/apply", [json.dumps(doc)])
+        self.assertEqual(self.drain(a), [("set/outputChannel/0/destination", 9.0),
+                                         ("snapshot/loaded", ["", 1, 0])])   # nothing for output 3
+        self.echoes(a, "/mixer/set/system/outputCount", 4)
+        self.assertEqual(self.get(a, "outputChannel/3/destination"), 0.0)
+
     def test_groups_and_snapshots_see_only_the_shown_channels(self):
         a = self.tcp()
         for ch in (0, 3):
