@@ -2,7 +2,7 @@
 
 *Branch `phase13-metering`, from `phase12-levels-buses` at `2bf1346`. Covers controller-support step 6 (F4: the server's meter protocol) and F4a (the gateware peak detector), planned as "next" by Phase 12 decision L8.*
 
-**State: decided 2026-10-06 (M1–M9 all as recommended, §5); steps 1–2 in simulation (§6.1, §6.2), the Vivado build `p13` (§6.3), the server (§6.4) and the image (§6.5) done; the bench next.**
+**State: DONE 2026-10-06.** Decided 2026-10-06 (M1–M9 all as recommended, §5); RTL (§6.1, §6.2), Vivado `p13` (§6.3), server (§6.4), image `p13-meters-20261006` (§6.5), bench PASS (§6.6). Open items: §7.
 
 ---
 
@@ -150,3 +150,14 @@ Each step: build, test, commit, this doc updated.
 - **Build** (`~/edf/logs/p13-build.sh`): `gen-machine-conf` exit 0; **15,069 tasks, all succeeded**, 7 min 29 s, 22 warnings (the usual).
 - **Checked:** deployed bitstream MD5 = `p13`; the DTB has `M_AXI_INMTR@80009000`, `M_AXI_BUSMTR@8000a000`, `M_AXI_OUTMTR@8000b000` beside the earlier windows; the rootfs has `VERSION` `e3009a5`, `mixer_meters.py`, and the server's `handle_meter_subscribe`.
 - **`build/sd/p13-meters-20261006.wic.xz`** (109 MB, MD5 `9270c349…`, same on both ends).
+
+### 6.6 Bench (image `p13-meters-20261006`, Mac + board): PASS
+
+**User, 2026-10-06: "There was a UI bug that is now fixed, but everything in the pipe works great."** The bug was in the app (fixed in the controller repo); the board side needed no change. The bench plan was: `mixer_hw.py info` (the three meter windows), then the app's meters on the Inputs, Buses and Outputs tabs following USB audio into core input 4 through the reset routing, a fader move dropping all three, and a clip latching. The bench ran on the Mac, so the individual readings weren't captured in this session; recorded as reported. **Phase 13 is done**, and with it controller-support step 6 (F4) and F4a.
+
+## 7. Open items
+
+- **Pre-fader meters** (`meter/<zone>_pre`, reserved by the standard): three more `peak_regs_axil` on three more taps (the level stages' inputs); no new design.
+- **The controller repo** (not edited from here): F4 and F4a can be marked done in `FIRMWARE_CONTRACT.md`; the handoff note `docs/handoff/hdl-dsp-library-peak-detector.md` can be retired (the block lives in FPGAmixer, decision M7).
+- **One reader:** `mixer_hw.py meter` on the board takes a window from the server's next sample (said in its help).
+- Controller-support step 8 (the F1–F9 checks on the board) is still open; F4 can now be included in it.

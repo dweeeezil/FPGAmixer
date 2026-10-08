@@ -21,8 +21,10 @@
 #   make -f scripts/sim.mk link       # Phase 8 PS<->PL link front door (AXIS <-> PCM, two clocks)
 #   make -f scripts/sim.mk linkstat   # Phase 8 link status window (RO, snapshot atomicity)
 #   make -f scripts/sim.mk regs       # Phase 5 AXI gain registers + CDC + matrix
-#   make -f scripts/sim.mk phase3     # full phase-3 datapath integration test
-#   make -f scripts/sim.mk all        # both (default)
+#   make -f scripts/sim.mk topwin     # fpgamixer_top as a PS build: every window wired
+#   make -f scripts/sim.mk all        # all of them (default)
+# (The Pmod I2S tests rx, tx, txphase, loopback, phase3, dynamic moved to
+# src/archive/sim with the Pmod RTL in Phase 11.)
 #   make -f scripts/sim.mk clean
 # =============================================================================
 
@@ -34,10 +36,8 @@ BUILD    ?= build_sim
 RTL      := src/rtl
 SIM      := src/sim
 
-# RTL for the full non-PS top (fpgamixer_top without INCLUDE_PS): the platform
-# clocking, the I2S front doors and the PCM core. Excludes the legacy
-# phase1/phase2 tops and the control plane (not instantiated without the PS).
-# The PCM core: mixer_core = converters + gain stages + two time-shared
+# RTL for fpgamixer_top: the platform clocking and the PCM core (the Pmod
+# front doors are gone since Phase 11). The PCM core: mixer_core = converters + gain stages + two time-shared
 # matrices (Phase 12). The packages must come first. MXSIM: the single matrix
 # between the converters, for the matrix TBs (sim only).
 MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv \
@@ -46,44 +46,13 @@ MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv \
 MXSIM    := $(SIM)/matrix_packed_sim.sv
 
 CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
-            $(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv \
-            $(RTL)/i2s_clock_divider.sv $(RTL)/reset_sync.sv \
-            $(RTL)/audio_clocking.sv $(RTL)/i2s_port.sv
+            $(RTL)/reset_sync.sv $(RTL)/audio_clocking.sv
 
-.PHONY: all rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat phase3 topwin dynamic clean
-all: rx tx txphase loopback matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat phase3 topwin dynamic
+.PHONY: all matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat topwin clean
+all: matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat topwin
 
 $(BUILD):
 	@mkdir -p $(BUILD)
-
-# --- Phase 2 unit / integration tests ---
-rx: | $(BUILD)
-	@echo ">>> Building tb_i2s_receiver"
-	@$(IVERILOG) $(FLAGS) -s tb_i2s_receiver -o $(BUILD)/tb_i2s_receiver.vvp \
-		$(RTL)/i2s_receiver.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_receiver.sv
-	@$(VVP) $(BUILD)/tb_i2s_receiver.vvp
-
-tx: | $(BUILD)
-	@echo ">>> Building tb_i2s_transmitter"
-	@$(IVERILOG) $(FLAGS) -s tb_i2s_transmitter -o $(BUILD)/tb_i2s_transmitter.vvp \
-		$(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_transmitter.sv
-	@$(VVP) $(BUILD)/tb_i2s_transmitter.vvp
-
-# Pin-phase regression: sdata_o may only change while SCLK is low. Catches
-# the launch-on-sampling-edge class of bug that functional capture checks
-# (which use the in-house receiver as monitor) are structurally blind to.
-txphase: | $(BUILD)
-	@echo ">>> Building tb_i2s_tx_pin_phase"
-	@$(IVERILOG) $(FLAGS) -s tb_i2s_tx_pin_phase -o $(BUILD)/tb_i2s_tx_pin_phase.vvp \
-		$(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv $(SIM)/tb_i2s_tx_pin_phase.sv
-	@$(VVP) $(BUILD)/tb_i2s_tx_pin_phase.vvp
-
-loopback: | $(BUILD)
-	@echo ">>> Building tb_i2s_loopback"
-	@$(IVERILOG) $(FLAGS) -s tb_i2s_loopback -o $(BUILD)/tb_i2s_loopback.vvp \
-		$(RTL)/i2s_receiver.sv $(RTL)/i2s_transmitter.sv $(RTL)/i2s_clock_divider.sv \
-		$(SIM)/tb_i2s_loopback.sv
-	@$(VVP) $(BUILD)/tb_i2s_loopback.vvp
 
 # --- Matrix unit test: pure PCM in/out, checked vs an independent reference ---
 matrix: | $(BUILD)
@@ -193,37 +162,16 @@ peak: | $(BUILD)
 		$(SIM)/tb_pcm_peak.sv
 	@$(VVP) $(BUILD)/tb_pcm_peak.vvp
 
-# --- Phase-3 integration: real fpgamixer_top (no PS), MMCM stubbed, rx/tx as fixtures ---
-# -DSIM_ODDR selects the behavioral ODDR model inside oddr_out (the Xilinx
-# primitive doesn't elaborate under Icarus). Sim-only define -- Vivado
-# synthesis must see the real primitive. NOTE: a green run here only proves
-# the datapath logic; the ODDR/pin-constraint timing this guards is validated
-# by STA + hardware, not by this suite (handoff doc 6).
 # --- Phase 12: fpgamixer_top as a PS build (INCLUDE_PS), the BD replaced by
 # ps_sys_wrapper_stub: each register window on its port, driving its block ---
 topwin: | $(BUILD)
 	@echo ">>> Building tb_top_windows"
-	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -DINCLUDE_PS -s tb_top_windows -o $(BUILD)/tb_top_windows.vvp \
-		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
+	@$(IVERILOG) $(FLAGS) -DINCLUDE_PS -s tb_top_windows -o $(BUILD)/tb_top_windows.vvp \
+		$(CORE_RTL) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
 		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/pcm_peak.sv \
 		$(RTL)/peak_regs_axil.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
 	@$(VVP) $(BUILD)/tb_top_windows.vvp
-
-phase3: | $(BUILD)
-	@echo ">>> Building tb_phase3_datapath"
-	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_datapath -o $(BUILD)/tb_phase3_datapath.vvp \
-		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/fpgamixer_top.sv \
-		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_datapath.sv
-	@$(VVP) $(BUILD)/tb_phase3_datapath.vvp
-
-# --- Phase-3 dynamic: changing value every frame, checked sample-by-sample ---
-dynamic: | $(BUILD)
-	@echo ">>> Building tb_phase3_dynamic"
-	@$(IVERILOG) $(FLAGS) -DSIM_ODDR -s tb_phase3_dynamic -o $(BUILD)/tb_phase3_dynamic.vvp \
-		$(CORE_RTL) $(RTL)/oddr_out.sv $(RTL)/fpgamixer_top.sv \
-		$(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_phase3_dynamic.sv
-	@$(VVP) $(BUILD)/tb_phase3_dynamic.vvp
 
 clean:
 	@rm -rf $(BUILD)

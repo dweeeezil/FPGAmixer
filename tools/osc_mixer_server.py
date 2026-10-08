@@ -346,14 +346,17 @@ class MatrixBackend(Backend):
     busMatrix: bus -> output). With hw (a mixer_hw.MatrixHW) the level goes to
     the PL; with hw None the same rules run without it (simulator). Levels:
     -90 dB (off) to the gain ceiling, default off; at startup crosspoints
-    without a stored level get the reset routing (0 dB on the diagonal)."""
+    without a stored level get the reset routing (0 dB on the diagonal from
+    input identity_from on, the rest off: the PL's own reset, so a first
+    boot and a restore agree)."""
 
-    def __init__(self, zone, hw, n_in, n_out, max_db=SIM_MAX_DB):
+    def __init__(self, zone, hw, n_in, n_out, max_db=SIM_MAX_DB, identity_from=0):
         super().__init__(zone)
         self.hw = hw
         self.n_in = n_in
         self.n_out = n_out
         self.level = level_module(max_db)
+        self.identity_from = identity_from
 
     def describe(self):
         return (ZoneSpec("matrix", ("level",), rows=self.n_in, cols=self.n_out),
@@ -381,7 +384,7 @@ class MatrixBackend(Backend):
                 stored = state.get(key, default=None)
                 db, why = self.level.apply(stored) if stored is not None else (None, "missing")
                 if db is None:
-                    db = 0.0 if inp == out else OFF_DB
+                    db = 0.0 if inp == out and inp >= self.identity_from else OFF_DB
                     seeded[key] = db
                 elif db != stored:
                     seeded[key] = db
@@ -454,11 +457,14 @@ class GainBackend(Backend):
 BACKENDS = {}  # zone -> Backend, filled in main()
 
 
-def build_backends(use_hw, matrix_size, bus_layer=True):
+def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0):
     """The zone -> backend table. With use_hw each backend opens its register
     window (mixer_hw.WINDOWS, checked by ID; the level windows also by TAP);
     without, the same backends run in simulation with the given size
-    (bus_layer False: as a bitstream from before Phase 12).
+    (bus_layer False: as a bitstream from before Phase 12). identity_from:
+    the input matrix's first input seeded on the diagonal (Phase 11 H5: the
+    USB host's inputs 0-3 start off, so the service passes 4); the bus
+    matrix is always a full identity.
 
     The bus layer (Phase 12): inputChannel -> inputMatrix -> busChannel ->
     busMatrix -> outputChannel. Its four windows are present together or not
@@ -468,8 +474,9 @@ def build_backends(use_hw, matrix_size, bus_layer=True):
     if not use_hw:
         n = matrix_size
         if not bus_layer:
-            return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, None, n, n)}
-        backends = [GainBackend("inputChannel", None, n), MatrixBackend(MATRIX_ZONE, None, n, n),
+            return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, None, n, n, identity_from=identity_from)}
+        backends = [GainBackend("inputChannel", None, n),
+                    MatrixBackend(MATRIX_ZONE, None, n, n, identity_from=identity_from),
                     GainBackend("busChannel", None, n), MatrixBackend(BUS_MATRIX_ZONE, None, n, n),
                     GainBackend("outputChannel", None, n)]
         return {b.zone: b for b in backends}
@@ -487,7 +494,8 @@ def build_backends(use_hw, matrix_size, bus_layer=True):
         log(f"PL window '{name}' at 0x{found[name].base:08x}: {found[name].describe()}")
     if not found:
         log("No bus-layer windows (a bitstream from before Phase 12): inputMatrix is input -> output")
-        return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db)}
+        return {MATRIX_ZONE: MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db,
+                                           identity_from=identity_from)}
     missing = [name for name in mixer_hw.BUS_LAYER if name not in found]
     if missing:
         raise RuntimeError(f"bus layer incomplete: no window {', '.join(missing)}")
@@ -505,7 +513,8 @@ def build_backends(use_hw, matrix_size, bus_layer=True):
                                f"{w.gain_frac}, the input matrix is Q{m.gain_width - m.gain_frac}."
                                f"{m.gain_frac} ('level' is one module, D77)")
     backends = [GainBackend("inputChannel", il, il.n, max_db=max_db),
-                MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db),
+                MatrixBackend(MATRIX_ZONE, m, m.n_in, m.n_out, max_db=max_db,
+                              identity_from=identity_from),
                 GainBackend("busChannel", bl, bl.n, max_db=max_db),
                 MatrixBackend(BUS_MATRIX_ZONE, bm, bm.n_in, bm.n_out, max_db=max_db),
                 GainBackend("outputChannel", ol, ol.n, max_db=max_db)]
@@ -893,8 +902,13 @@ def main():
                         "(on the board, as root; Phase 5+ bitstream only)")
     p.add_argument("--matrix-size", type=int, default=20,
                    help="simulated size N without --hw: N inputs, N buses, N outputs "
-                        "(default: 20, the hardware: 4 Pmod + 8 link #1 (USB) + 8 link #2 "
-                        "(AVB) channels)")
+                        "(default: 20, the hardware: 4 link #3 (USB host) + 8 link #1 (USB) "
+                        "+ 8 link #2 (AVB) channels)")
+    p.add_argument("--identity-from", type=int, default=0,
+                   help="input-matrix crosspoints with no stored level start at 0 dB on the "
+                        "diagonal from this input on, the rest off (default 0: the whole "
+                        "diagonal; the board's service passes 4, Phase 11 H5: the USB host's "
+                        "inputs start off, matching the PL's reset)")
     p.add_argument("--no-bus-layer", action="store_true",
                    help="simulate a bitstream from before Phase 12: inputMatrix only, "
                         "input -> output (with --hw the windows decide)")
@@ -917,7 +931,8 @@ def main():
         p.error("--meter-source is for the simulator; with --hw the meters are the PL's (decision M8)")
 
     state = MixerState(args.mixer_name, args.state_file or None, log=log)
-    BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer))
+    BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer,
+                                   identity_from=args.identity_from))
     MODEL = build_model(BACKENDS, SYSTEM_SETTINGS)
     FIRMWARE = firmware_version()
     log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}")

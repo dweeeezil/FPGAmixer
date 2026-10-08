@@ -19,7 +19,7 @@
 //   output levels         + GAIN_LAT
 //   core D                + 1 (stream2pack)
 // D <= pcm_matrix_pkg::D_MAX (250): the whole chain stays inside the frame,
-// with the same latency to the link and the Pmods as the single matrix had.
+// with the same latency to the links as the single matrix had.
 //
 // chain_l1() / chain_l2() pick the lane counts (= DSP48E2s per matrix): the
 // fewest lanes in total with D <= D_MAX, ties to the smaller D, then to the

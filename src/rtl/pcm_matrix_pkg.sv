@@ -16,8 +16,10 @@
 //                                         front and pcm_stream2pack (+1) behind
 //
 // matrix_lanes() picks the smallest lane count (= DSP48E2s) with D <= D_MAX.
-// D_MAX = 250 leaves 3 cycles before i2s_port samples its pair (edge 254,
-// docs/architecture_modules.md 2.1).
+// D_MAX = 250 came from i2s_port (it sampled its pair on edge 254); since the
+// Pmods went (Phase 11 H.3) only the pcm_links consume the output, at the
+// next strobe, so up to 255 would do. Kept until something needs the room
+// (docs/architecture_modules.md 2.1).
 // -----------------------------------------------------------------------------
 package pcm_matrix_pkg;
 

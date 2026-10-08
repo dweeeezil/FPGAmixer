@@ -21,8 +21,8 @@ There are four kinds of block:
                  └───────────────────────────────────┬───────────┘
                                                      │ coefficient ports (§3)
    front doors (§2)            PCM core (since Phase 12)          front doors
- I2S rx ──┐           ┌──────────────────────────────────┐        ┌── I2S tx
- USB in ──┼─ PCM ────►│ levels → input matrix → levels → │─ PCM ──┼── USB out
+ USB host─┐           ┌──────────────────────────────────┐        ┌── USB host
+ USB dev ─┼─ PCM ────►│ levels → input matrix → levels → │─ PCM ──┼── USB dev
  AVB in ──┘ contract  │ bus matrix → levels   (DSP later)│ contr. └── AVB out
                       └──────────────────────────────────┘
                         platform: clocks, resets, PS, pins
@@ -30,7 +30,7 @@ There are four kinds of block:
 
 | Kind | Knows about | Must NOT know about |
 |---|---|---|
-| **Front door** (I2S, later USB, AVB) | its own pins/protocol/clock, and the PCM contract | the matrix, DSP, the PS, registers |
+| **Front door** (USB device, USB host, AVB; I2S until Phase 11) | its own pins/protocol/clock, and the PCM contract | the matrix, DSP, the PS, registers |
 | **PCM core block** (matrix, later bus matrix, DSP) | PCM in, PCM out, its coefficient port | where samples came from, where coefficients came from |
 | **Control plane** (register windows, CDC handoff, OSC server) | coefficient banks, addresses, OSC zones | audio data, protocol details of front doors |
 | **Platform** (top level, clocking, PS BD, XDC) | wiring the above together | any block's internals |
@@ -40,21 +40,22 @@ There are four kinds of block:
 | Kind | RTL / software | Role |
 |---|---|---|
 | Platform | `src/rtl/fpgamixer_top.sv` | wires everything; owns the channel map, the bus count (`N_BUS` = N, Phase 12), the reset state (`IN_MX_GAINS`, `BUS_MX_GAINS`: identity; `LEVEL_GAINS`: unity) and the choice of coefficient source (PS or constant) |
-| Platform | `src/rtl/audio_clocking.sv` | MMCM → `mclk`, `rst_n`, shared `sclk`/`lrck` |
+| Platform | `src/rtl/audio_clocking.sv` | MMCM → `mclk`, `rst_n`, and `frame`: the 48 kHz strobe, one `mclk` cycle in 256, that the core and every link run on (Phase 11 H.3; it was the Pmod receiver's `rx_valid` and the shared `sclk`/`lrck` before) |
 | Platform | `src/rtl/media_clock_meter.sv` + `constraints/media_clock_meter.xdc` | Phase 9 (P9.3): measures `mclk` against a 1PPS (in the top: the inverse of the PS's `tsu_timer_cnt[45]`, the gPTP second of the board's own PHC). Captures cycle count, frame count and frame phase per edge; software computes ppm and phase. Its only crossing is the 1-bit PPS into a 2FF synchronizer (the XDC marks it false). P9.4 adds the steering |
 | Control plane (binding) | `src/rtl/media_clock_stat_regs.sv` | the meter's read-only window (ID `0x4D43_5001`, CONFIG = nominal cycles per second), same pattern as `pcm_link_stat_regs` |
 | Platform | `src/rtl/media_clock_steer.sv` + `constraints/media_clock_steer.xdc` | Phase 9 (P9.4b): a signed RATE → the MMCM's dynamic fine phase shift (12.3 ps per step, at most one per 14 PSCLK cycles = ±88 ppm at 100 MHz). Runs on `pl_clk0` (= PSCLK, decision S1); only LOCKED crosses (2FF). Positive RATE = `mclk` slower. The loop that sets RATE is in Linux (S3) |
 | Control plane (generic) | `src/rtl/axil_reg_window.sv` | the third window type: RW + RO words for a block on the AXI clock (see §4.1) |
 | Control plane (binding) | `src/rtl/media_clock_ctrl_regs.sv` | the steerer's window (ID `0x4D53_5001`, CONFIG = PSCLK Hz; RATE; steps, dropped, flags, VCO_HZ, PS_DIV) |
-| Platform | `constraints/fpgamixer_genesys_zu.xdc` | pins, codec interface timing; names `u_clk/u_mmcm` and `u_jb|u_jc/u_fwd_*` |
+| Platform | `constraints/fpgamixer_genesys_zu.xdc` | since Phase 11 H.3 only `sysclk`: its pin, its clock, the MMCM's `CLOCK_DEDICATED_ROUTE` (names `u_clk/u_mmcm`). The Pmod pins and codec timing are in its git history |
 | Platform | `scripts/create_project.tcl` | the PS block design, the address map, scoped constraint files |
-| Front door | `src/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `oddr_out`) | one Pmod I2S2 ↔ 2 PCM channels, including its pin forwarding. Samples its output pair once per DAC frame, at the L load (Phase 9 fix of a one-sample L/R skew) |
-| Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8: `phase8_status_2026-09-25.md`). **Two instances since P9.5:** `u_link` (link #1, used by USB) and `u_link2` (link #2, `INCLUDE_LINK2`, for AVB), identical, each with its own formatter and status window |
+| (archived) | `src/archive/rtl/i2s_port.sv` (+ `i2s_receiver`, `i2s_transmitter`, `i2s_clock_divider`, `oddr_out`) | the Pmod I2S2 front door, Phases 1–10; **removed in Phase 11 H.3** (decision P1), kept for reference (`src/archive/README.md`) |
+| Front door | `src/rtl/pcm_link.sv` (+ `async_fifo`) | PS ↔ PL link, PL half: AMD Audio Formatter AXI4-Stream audio ↔ PCM contract, up to 8 ch each way; its only clock crossing is two `async_fifo`s. Knows nothing about USB/AVB (Phase 8: `phase8_status_2026-09-25.md`). **Three instances:** `u_link` (link #1, used by USB device mode), `u_link2` (link #2, `INCLUDE_LINK2`, P9.5, for AVB) and `u_link3` (link #3, `INCLUDE_LINK3`, Phase 11 H.3, for USB host mode: formatter at 0x8012_0000, status window at 0x8000_C000), identical, each with its own formatter and status window |
 | Front door (Linux half of a link) | `yocto/meta-fpgamixer/recipes-kernel/fpgamixer-link-card/` + the card nodes in `recipes-bsp/device-tree/files/system-user.dtsi` | the ASoC machine driver that makes a formatter an ALSA card; **one DT node per link**, the card name from `fpgamixer,card-name` (default `FPGAmixerLink` = link #1; link #2 = `FPGAmixerLink2`, P9.5) |
 | Generic | `src/rtl/async_fifo.sv` + `constraints/async_fifo.xdc` | dual-clock FIFO; XDC scoped to the module like `coef_bank_handoff.xdc` |
 | Platform (image) | `yocto/meta-fpgamixer/recipes-kernel/`, `recipes-apps/fpgamixer-usb-gadget` | kernel fragments (USB device mode; since P9.6 CBS + ETF); the UAC2 gadget (USB front door, Linux half) |
 | Front door (Linux half, generic) | `recipes-apps/fpgamixer-bridge-core/` (`bridge_core.{c,h}`, `bridge_convert.h`) | Phase 9 (P9.7): what every front-door bridge shares: capture → repack → playback at a fixed queue, one poll over both PCMs, xrun + coarse handling, logging, an optional servo hook. Knows no protocol |
 | Front door (USB, Linux half) | `recipes-apps/fpgamixer-usb-bridge/` | gadget ↔ `FPGAmixerLink` on the core, plus the pitch servo that steers the Mac to `mclk` |
+| Front door (USB host, Linux half) | `recipes-apps/fpgamixer-usbhost/` (+ `bridge_rate_src.{c,h}` in bridge-core) | Phase 11: a class-compliant interface on the Type-A port (the MOTU M2) ↔ a link card, through `bridge_core`'s rate stage (libsamplerate, `fastest`) and a PI ratio servo per direction, since the interface runs on its own clock. Config `/etc/fpgamixer/usbhost.conf`; exits when the card goes and systemd restarts it |
 | Front door (AVB, Linux half) | `recipes-apps/fpgamixer-avb/` (+ `tools/avb_net.py`) | Phase 9 (P9.6/P9.7): from `/etc/fpgamixer/avb.conf`: TAI offset, stream VLAN, class A shaping (software CBS + ETF), the AAF ALSA devices `avb_tx` / `avb_rx` (alsa-plugins AAF); `fpgamixer-avb-bridge`: AAF ↔ `FPGAmixerLink2` on the core, **no servo** (both sides on the PHC's time) |
 | Front door (AVB, control) | `tools/avb_entityd.py` + `avdecc_pdu.py`, `avdecc_model.py`, `avdecc_entity.py`, `msrp.py` (`fpgamixer-avb-entity.service`) | Phase 10: the board as an AVDECC entity (ADP/AECP/ACMP) and MSRP/MVRP participant: one 8-ch talker, one 8-ch listener; a controller's connection or format choice re-points the bridge (runtime file → `avb_net` → bridge restart). Knows nothing about the core; `avdecc_probe.py` is a minimal controller for tests |
 | PCM core | `src/rtl/mixer_core.sv` | the whole core as one block, packed contract on both sides. Since Phase 12: `pcm_pack2stream` → `pcm_gain` (input levels) → `pcm_matrix` (input matrix, N_IN → N_BUS) → `pcm_gain` (bus levels) → `pcm_matrix` (bus matrix, N_BUS → N_OUT) → `pcm_gain` (output levels) → `pcm_stream2pack`, with five coefficient read ports; every block saturates to 24 bits. Phase 9 (C4) as converters + one matrix; Phase 7 DSP blocks go into the chain |
@@ -102,7 +103,7 @@ Every audio connection between blocks uses this, and only this:
 
 Rules:
 
-- **One clock domain for the whole core.** A front door whose source runs on a different clock (USB host, network media clock, anything not derived from `mclk`) must bridge it **inside the front door** (elastic buffer, rate adaptation or ASRC), and present samples on `mclk` like the I2S receiver does. The core never contains a clock crossing for audio.
+- **One clock domain for the whole core.** A front door whose source runs on a different clock (USB host, network media clock, anything not derived from `mclk`) must bridge it **inside the front door** (elastic buffer, rate adaptation or ASRC), and present samples on `mclk` like `pcm_link` does (the USB host bridge's resampler is that rate adaptation, in its Linux half). The core never contains a clock crossing for audio.
 - **Packed vectors, not unpacked arrays**, on every port (Icarus drops unpacked-array outputs; see `pcm_matrix.sv` header).
 - Channel counts are parameters. A block states its channel count; the platform layer decides which front-door channels feed which core inputs.
 
@@ -124,12 +125,12 @@ Rules:
 - **All beats of frame *k* lie between strobe *k* and strobe *k*+1.** A block that can't finish inside the frame retimes to the next one and states the extra frame of latency.
 - **No back-pressure.** Schedules are static; each producer's timing is known at elaboration.
 - **Every block states its timing** in its header: first and last beat in cycles after the strobe. Cycle numbering: the edge that samples `frame` high is edge 0, and cycle *c* is the interval after edge *c*. A frame is exactly 256 cycles (LRCK = `mclk`/256), whatever `mclk`'s steering does to the cycle's length.
-- **The core's packed output updates on one edge at a stated cycle D of the same frame** (C2): today's latency to the link and the Pmods is kept. **D ≤ 250.** The earliest consumer is `i2s_port`, which samples the pair on edge 254 (needs the frame from cycle 253); `pcm_link` samples at the next strobe.
+- **The core's packed output updates on one edge at a stated cycle D of the same frame** (C2): today's latency to the links is kept. **D ≤ 250.** The bound came from `i2s_port` (sampled on edge 254, needed the frame from cycle 253); since the Pmods went (Phase 11 H.3) the only consumers are the `pcm_link`s, which sample at the next strobe, so D could grow to 255, but the bound is kept until something needs the room.
 - Consumers may check `s_ch` (as the link checks TID). `src/sim/pcm_stream_monitor.sv` checks all of the above and is used by every core TB.
 
 Boundary converters (generic, P9.A2): **`pcm_pack2stream`** captures the packed vector on the strobe and emits channels 0 … N−1 on cycles 1 … N. **`pcm_stream2pack`** collects beats by `s_ch` and moves all channels to its packed output together, one cycle after the beat for N−1; `err_o` pulses on an out-of-order beat or an incomplete frame.
 
-Today's channel map (platform layer, `fpgamixer_top`, since Phase 8; grown in P9.5): ch0 = JB_L, ch1 = JB_R, ch2 = JC_L, ch3 = JC_R, **ch4–ch11 = PS↔PL link #1 channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records), **ch12–ch19 = link #2 channels 0–7** (card `FPGAmixerLink2`, the AVB front door's; P9.5). Each `i2s_port` carries L at `[0 +: 24]` and R at `[24 +: 24]`, so the map is the concatenation `{link2, link, jc, jb}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without a link (non-PS builds; link #2 also in `phase8` builds) its channels read as silence; the core is **20 × 20 in every build**: since Phase 12, 20 inputs → 20 buses → 20 outputs, with levels on all three (4 + 4 matrix lanes + 3 gain DSPs, D = 249; the single matrix was 2 lanes, D = 227).
+Today's channel map (platform layer, `fpgamixer_top`, since Phase 8; grown in P9.5; **ch0–3 changed in Phase 11 H.3**): **ch0–ch3 = PS↔PL link #3 channels 0–3** (card `FPGAmixerLink3`, the USB host front door: the MOTU M2 uses 0–1; link #3's channels 4–7 aren't connected, in reads nothing and out sends silence). They were the Pmods (JB_L, JB_R, JC_L, JC_R) until then; the M2 took their slots on purpose (it *is* the board's analog I/O now), and their input-matrix crosspoints start all off (H5). **ch4–ch11 = PS↔PL link #1 channels 0–7** (in = what Linux plays into the link, e.g. the Mac's USB outputs 1–8; out = what Linux records), **ch12–ch19 = link #2 channels 0–7** (card `FPGAmixerLink2`, the AVB front door's; P9.5). The map is the concatenation `{link2, link, link3[0:3]}`. **New channels are appended, never interleaved**, so saved crosspoint indices keep their meaning as the core grows. Without a link (non-PS builds; link #2 also in `phase8` builds) its channels read as silence; the core is **20 × 20 in every build**: since Phase 12, 20 inputs → 20 buses → 20 outputs, with levels on all three (4 + 4 matrix lanes + 3 gain DSPs, D = 249; the single matrix was 2 lanes, D = 227).
 
 ---
 

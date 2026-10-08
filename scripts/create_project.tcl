@@ -40,10 +40,16 @@ if {[file isdirectory $xhub_boards]} {
 # onwards) whether the PS block design is built.
 set current_phase "phase9"
 set synth_top     "${current_phase}_top"
-set sim_top       "tb_phase3_datapath"
+# tb_mixer_core: the core alone, which builds against the real IP (the
+# tb_phase3_* top-level TBs went with the Pmods, Phase 11 H.3; tb_top_windows
+# needs the PS stub, which collides with the BD wrapper here).
+set sim_top       "tb_mixer_core"
 set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 
-# phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top).
+# phase1 / phase2 : the historical loopback tops (phase1_top, phase2_top);
+#                   archived in src/archive/ since Phase 11 H.3, so these two
+#                   no longer build from this tree. phase3 still builds but,
+#                   with the Pmods gone, has no audio in or out.
 # phase3          : fpgamixer_top WITHOUT the PS -- the static core, every
 #                   coefficient tied to its reset bank (identity, unity).
 # phase4, phase5  : fpgamixer_top WITH the PS (INCLUDE_PS): the BD, the
@@ -80,6 +86,7 @@ set include_ps   0
 set include_link 0
 set include_mclk 0
 set include_link2 0
+set include_link3 0
 set scoped_xdc {}
 if {$current_phase in {phase3 phase4 phase5 phase8 phase9}} {
     set synth_top "fpgamixer_top"
@@ -101,6 +108,8 @@ if {$current_phase in {phase8 phase9}} {
 if {$current_phase in {phase9}} {
     set include_mclk 1
     set include_link2 1
+    # Phase 11 (H.3): link #3, the USB host front door (decision P1)
+    set include_link3 1
     lappend scoped_xdc {constraints/media_clock_meter.xdc media_clock_meter}
     lappend scoped_xdc {constraints/media_clock_steer.xdc media_clock_steer}
 }
@@ -417,9 +426,11 @@ if {$include_ps} {
     # Phase 12: the four bus-layer windows take the next four masters in
     # every PS build (M01-M04 in phase5, M03-M06 in phase8, M07-M10 in phase9);
     # Phase 13: the three meter windows the next three (phase9: M11-M13).
+    # Phase 11 (H.3, phase9): M14 = formatter #3, M15 = link #3's status
+    # window -- 16 masters, the SmartConnect's limit.
     set n_mi_base [expr {$include_link2 ? 7 : ($include_mclk ? 5 : ($include_link ? 3 : 1))}]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$n_mi_base + 7}]] $smc
+        CONFIG.NUM_MI [expr {$n_mi_base + 7 + ($include_link3 ? 2 : 0)}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -484,7 +495,7 @@ zynq_ultra_ps_e_0/Data/SEG_M_AXI_CTRL_Reg]] (4K), pl_clk0 $pl_clk0_hz Hz"
     # inputs) into pl_ps_irq0, the SAME aud_mclk (link_mclk), streams
     # M_AXIS_LINK2_MM2S / S_AXIS_LINK2_S2MM. Still no PS8 setting changes.
     if {$include_link} {
-        set n_links [expr {$include_link2 ? 2 : 1}]
+        set n_links [expr {$include_link3 ? 3 : ($include_link2 ? 2 : 1)}]
 
         set link_mclk [create_bd_port -dir I -type clk -freq_hz 12288000 link_mclk]
         set link_mreset [create_bd_port -dir I -type rst link_mreset]
@@ -652,6 +663,52 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
         "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_BUSMX:M_AXI_INLVL:M_AXI_BUSLVL:M_AXI_OUTLVL:M_AXI_INMTR:M_AXI_BUSMTR:M_AXI_OUTMTR" \
         [get_bd_ports ctrl_aclk]
 
+    # ----- Phase 11 (H.3): link #3, the USB host front door (decision P1) -----
+    # A third copy of link #1/#2 (add_link_formatter): formatter #3's
+    # registers on M14 at 0x8012_0000 (driver-owned range, like #1 and #2),
+    # its DMA on link_dma_smc S04/S05 into HPC0, its IRQs on link_irqs In4/In5,
+    # the same aud_mclk, streams M_AXIS_LINK3_MM2S / S_AXIS_LINK3_S2MM; its
+    # status window (pcm_link_stat_regs u_link3_stat) on M15 at 0x8000_C000,
+    # the next free window slot. It follows the Phase 12/13 windows so their
+    # master numbers don't move. Still no PS8 setting changes.
+    if {$include_link3} {
+        set fmt3 [add_link_formatter link3_formatter $smc [format "M%02d_AXI" $mi] \
+                      $dma_smc 4 $irqs 4 LINK3 $rst $pl_clk0_hz]
+        assign_bd_address -offset 0x80120000 -range 64K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs $fmt3/s_axi_lite/reg0]
+        puts "INFO: link3_formatter = 0x80120000 (64K) on [format "M%02d" $mi]"
+        incr mi
+
+        set m_stat3 [create_bd_intf_port -mode Master \
+            -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_LINK3STAT]
+        set_property -dict [list \
+            CONFIG.PROTOCOL   {AXI4LITE} \
+            CONFIG.DATA_WIDTH {32} \
+            CONFIG.ADDR_WIDTH {32} \
+            CONFIG.FREQ_HZ    $pl_clk0_hz \
+        ] $m_stat3
+        connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] $m_stat3
+        assign_bd_address -offset 0x8000C000 -range 4K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs M_AXI_LINK3STAT/Reg]
+        puts "INFO: M_AXI_LINK3STAT = 0x8000C000 (4K) on [format "M%02d" $mi]"
+        incr mi
+
+        set_property CONFIG.ASSOCIATED_BUSIF \
+            "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_LINK3STAT:M_AXIS_LINK3_MM2S:S_AXIS_LINK3_S2MM" \
+            [get_bd_ports ctrl_aclk]
+
+        # Its DMA masters see DDR through HPC0, like #1 and #2.
+        assign_bd_address
+        foreach sp [get_bd_addr_spaces $fmt3/*] {
+            foreach seg [get_bd_addr_segs -of_objects $sp] {
+                puts "INFO: link3_formatter [get_property NAME $sp] -> \
+[get_property NAME $seg] [get_property OFFSET $seg] [get_property RANGE $seg]"
+            }
+        }
+    }
+
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"
     puts "INFO: PS GEM0 TSU     = [get_property CONFIG.PSU__ENET0__TSU__ENABLE $ps] \
 (src [get_property CONFIG.PSU__CRL_APB__GEM_TSU_REF_CTRL__SRCSEL $ps], \
@@ -671,7 +728,10 @@ dynamic [get_property CONFIG.PSU_DYNAMIC_DDR_CONFIG_EN $ps]"
     add_files -norecurse [make_wrapper -files [get_files ${bd_name}.bd] -top]
 
     # Turns on the `ifdef INCLUDE_PS instance of ps_sys_wrapper in fpgamixer_top.
-    if {$include_link2} {
+    if {$include_link3} {
+        set_property verilog_define {INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2 INCLUDE_LINK3} [get_filesets sources_1]
+        puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2 INCLUDE_LINK3 -- + link #3 (USB host)"
+    } elseif {$include_link2} {
         set_property verilog_define {INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2} [get_filesets sources_1]
         puts "INFO: verilog_define INCLUDE_PS INCLUDE_LINK INCLUDE_MCLK INCLUDE_LINK2 -- + media clock, link #2"
     } elseif {$include_mclk} {

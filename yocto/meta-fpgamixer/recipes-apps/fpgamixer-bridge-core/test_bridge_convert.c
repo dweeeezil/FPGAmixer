@@ -51,6 +51,26 @@ int main(void)
 	CHECK(o2[0] == -8388608, "S32_BE -> s32 [0]: %d", o2[0]);
 	CHECK(o2[1] == 1, "S32_BE -> s32 [1]: %d", o2[1]);
 
+	/* S24_LE from a link card: sign from bit 23, whatever the top byte holds
+	 * (zero, garbage, or a proper extension) */
+	const int32_t s24w[5] = { 0x00FFFFFE, (int32_t)0xFFFFFFFE, 0x007FFFFF,
+				  (int32_t)0xAB800000, 0x12000001 };
+	const int32_t s24want[5] = { -2, -2, 8388607, -8388608, 1 };
+	int32_t s24o[5];
+	s24le_to_s32(s24w, s24o, 5);
+	for (int i = 0; i < 5; i++)
+		CHECK(s24o[i] == s24want[i], "S24_LE word -> s32 [%d]: %d, want %d", i, s24o[i], s24want[i]);
+
+	/* S32_LE with 24-bit audio (Phase 11, the MOTU M2): left-justified in a
+	 * little-endian word, low byte zero; the incoming low byte dropped */
+	s32_to_s32le(v, b4, 2);
+	const uint8_t l4_want[8] = { 0x00, 0x56, 0x34, 0x12,  0x00, 0xFE, 0xFF, 0xFF };
+	CHECK(!memcmp(b4, l4_want, 8), "S32_LE layout");
+	const uint8_t l4_in[8] = { 0x7F, 0x00, 0x00, 0x80,  0xFF, 0x01, 0x00, 0x00 };
+	s32le_to_s32(l4_in, o2, 2);
+	CHECK(o2[0] == -8388608, "S32_LE -> s32 [0]: %d", o2[0]);
+	CHECK(o2[1] == 1, "S32_LE -> s32 [1]: %d", o2[1]);
+
 	/* round trips: edges and a sweep */
 	uint32_t x = 12345;
 	for (int i = 0; i < 200000; i++) {
@@ -70,6 +90,8 @@ int main(void)
 		uint8_t q[4];
 		s32_to_s32be(&s, q, 1); s32be_to_s32(q, &r, 1);
 		CHECK(r == s, "S32_BE round trip %d -> %d", s, r);
+		s32_to_s32le(&s, q, 1); s32le_to_s32(q, &r, 1);
+		CHECK(r == s, "S32_LE round trip %d -> %d", s, r);
 		if (fails > 10)
 			break;
 	}

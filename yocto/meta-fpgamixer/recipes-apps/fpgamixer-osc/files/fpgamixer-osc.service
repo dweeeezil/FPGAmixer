@@ -10,9 +10,12 @@ Type=simple
 # Root: the server maps the PL register windows through /dev/mem.
 # TCP framing is the server's default, len32 (OSC 1.0 size prefix). --advertise
 # dnssd publishes _studiorunner._tcp through systemd-resolved (osc_discovery.py,
-# fpgamixer-mdns.conf), rewritten on every rename.
+# fpgamixer-mdns.conf), rewritten on every rename. --identity-from 4: core
+# inputs 0-3 are the USB host interface's (link #3, Phase 11), whose
+# input-matrix crosspoints start off (H5), as in the PL's reset.
 ExecStart=/usr/bin/python3 /usr/lib/fpgamixer/osc_mixer_server.py \
     --tcp-port 8000 --udp-port 8001 --hw --advertise dnssd \
+    --identity-from 4 \
     --state-file /var/lib/fpgamixer/mixer_state.json
 WorkingDirectory=/usr/lib/fpgamixer
 # Creates /var/lib/fpgamixer (root filesystem, ext4) if it doesn't exist.
