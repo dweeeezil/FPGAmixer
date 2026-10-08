@@ -185,9 +185,11 @@ Smoothing (click-free gain changes) is a property of the core block, added later
 | 0x8000_9000 | input peak meter (`u_inmtr_regs`, `peak_regs_axil`, ID `0x504B_5001`, TAP 0; tap `tap_in`; `M_AXI_INMTR`); every PS build | Phase 13 |
 | 0x8000_A000 | bus peak meter (`u_busmtr_regs`, TAP 1; `M_AXI_BUSMTR`) | Phase 13 |
 | 0x8000_B000 | output peak meter (`u_outmtr_regs`, TAP 2; `M_AXI_OUTMTR`) | Phase 13 |
-| 0x8000_C000… | reserved: DSP blocks | — |
+| 0x8000_C000 | PS↔PL **link #3** status (`u_link3_stat`, read-only, ID `0x4C4B_5001`, the same binding as links #1/#2; SmartConnect M15, its last master); `phase9` builds | Phase 11 (H.3) |
+| 0x8000_D000… | proposed: the input / output patch windows (0x8000_D000 / 0x8000_E000, behind a second SmartConnect; `phase15_status_2026-10-08.md`); then DSP blocks | — |
 | 0x8010_0000 (64K) | AMD Audio Formatter #1 registers (`link_formatter`, card `FPGAmixerLink`): **driver-owned** (`xlnx_formatter_pcm`), not a self-describing window; software never maps it | Phase 8 |
 | 0x8011_0000 (64K) | AMD Audio Formatter #2 registers (`link2_formatter`, card `FPGAmixerLink2`): driver-owned, as #1; `phase9` builds | Phase 9 (P9.5) |
+| 0x8012_0000 (64K) | AMD Audio Formatter #3 registers (`link3_formatter`, card `FPGAmixerLink3`, the USB host front door): driver-owned, as #1; SmartConnect M14; `phase9` builds | Phase 11 (H.3) |
 
 Driver-owned devices go at 0x801x_xxxx, so the 0x8000_x000 range stays for windows with the ID/CONFIG header.
 
