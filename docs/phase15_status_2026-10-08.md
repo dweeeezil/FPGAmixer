@@ -2,7 +2,9 @@
 
 **Branch:** `phase15-sources` (from `phase14-vgroups`, which holds snapshots, groups and the unshipped channel names; not yet merged to `main`).
 **Plan:** `docs/plans/plan_channel_sources_2026-10-06.md` (written before Phase 11 and the rest of Phase 14; the corrections are in `docs/prompt_channel_sources_2026-10-08.md` and folded in below).
-**State:** proposal; decisions CS1–CS13 to the user.
+**State:** decided 2026-10-08 (§4: as recommended, except **CS5: no default patch**). Step 1 (the standard) done; the app's handoff is §7.
+
+**Terms.** An **I/O port** is one channel of one of the mixer's interfaces, whatever the interface: the analog interface on the USB host port, **USB** (the computer, USB device mode) and the **network** (AVB). "Port" below always means that; it isn't limited to analog jacks (the user's clarification, 2026-10-08). A **channel** is the mixer's own, generic: input channel, bus, output channel.
 
 ---
 
@@ -12,9 +14,9 @@
 
 ## 2. Today
 
-- **Core channel k is physical port k**, both ways (`fpgamixer_top`: `core_in = {link2_rx, link_rx, link3_rx[0:3]}`):
+- **Core channel k is I/O port k**, both ways (`fpgamixer_top`: `core_in = {link2_rx, link_rx, link3_rx[0:3]}`):
 
-  | Physical port | Front door | Label (proposed, CS4) |
+  | I/O port | Front door | Label (CS4) |
   |---|---|---|
   | 0–3 | link #3, USB host (the MOTU M2 uses 0–1; 2–3 silent) | Analog 1–4 |
   | 4–11 | link #1, USB device (the Mac) | USB 1–8 |
@@ -29,24 +31,24 @@
 ### 3.1 Signal flow
 
 ```
-physical in (20) ─► input patch ─► input channels (N) ─► levels ─► input matrix ─► buses (Y) ─► levels
-                    ch k ← source[k]                                                              │
-physical out (20) ◄─ output patch ◄─ output channels (Z) ◄─ levels ◄─ bus matrix ◄──────────────────┘
-                    port ← the channel whose destination it is
+I/O in (20) ─► input patch ─► input channels (N) ─► levels ─► input matrix ─► buses (Y) ─► levels
+               ch k ← source[k]                                                              │
+I/O out (20) ◄─ output patch ◄─ output channels (Z) ◄─ levels ◄─ bus matrix ◄──────────────────┘
+               port ← the channel whose destination it is
 ```
 
-- **Input patch:** each input channel picks **one physical input or None** (silence). Any number of channels may pick the same input (the same mic on two channels with different processing).
-- **Output patch:** each output channel picks **one physical output or None**. A physical output belongs to at most one output channel; picking one that another channel holds **takes it** (the other channel becomes None and is echoed, CS2). One mix to several places is what the bus matrix is for (a bus to two output channels, each with its own destination), so the patch stays a plain one-to-one selector.
-- **The default patch is identity** (input k ← port k, output k → port k), so every saved state, snapshot and crosspoint keeps its meaning and the mixer sounds exactly as today until someone repatches.
+- **Input patch:** each input channel picks **one I/O input (analog, USB or AVB) or None** (silence). Any number of channels may pick the same input (the same mic on two channels with different processing).
+- **Output patch:** each output channel picks **one I/O output (analog, USB or AVB) or None**. An I/O output belongs to at most one output channel; picking one that another channel holds **takes it** (the other channel becomes None and is echoed, CS2). One mix to several places is what the bus matrix is for (a bus to two output channels, each with its own destination), so the patch stays a plain one-to-one selector.
+- **No default patch (CS5, the user):** *"A blank slate should be a blank slate."* Every `source` and `destination` starts as None, in the PL's reset tables and in the server; nothing is heard until something is patched. **Upgrading a board** whose state predates the patch gives the same: the state has no `source`/`destination`, so all are None and the mixer is silent until patched in the app (its levels and crosspoints are kept). Non-PS builds (no runtime control: `tb_top_*` and the non-PS projects) keep an identity reset patch, since nothing could ever patch them.
 
 ### 3.2 Gateware (CS1, CS10, CS11)
 
 Two new generic **core-boundary blocks** replace the two converters inside `mixer_core` (the converters stay, for `matrix_packed_sim` and the matrix TBs):
 
-- **`pcm_patch2stream`** (packed P_IN → stream N_IN): captures the physical frame on the strobe like `pcm_pack2stream`, then per beat k reads `source[k]` through a coefficient read port and emits that port's sample (0 = None → silence). +1 cycle against `pcm_pack2stream` (the read port's latency; a read before the strobe would see the previous frame's table).
-- **`pcm_stream2patch`** (stream N_OUT → packed P_OUT): per beat c reads `destination[c]` through a read port and writes the sample to that physical output's slot; the slots are cleared at the strobe, so a port no channel picks is silent. All ports move to the packed output together, +1 cycle against `pcm_stream2pack`.
-- **Tables:** register value = OSC value: 0 = None, p + 1 = physical port p. Each a `coef_bank_ram` (ROW_LEN 1, W = 5 bits for 20 ports), so a repatch lands whole on one frame strobe like every other coefficient change (§3 of `architecture_modules.md`). Two drivers on one port (only reachable by bypassing the server) resolve deterministically: the later channel wins.
-- **`mixer_core`** gains `P_IN` / `P_OUT` (physical ports) and two read ports (`in_patch_*`, `out_patch_*`); its packed sides become physical. It still knows nothing about what the ports are; `fpgamixer_top` keeps the port map and the reset tables (identity).
+- **`pcm_patch2stream`** (packed P_IN → stream N_IN): captures the I/O frame on the strobe like `pcm_pack2stream`, then per beat k reads `source[k]` through a coefficient read port and emits that port's sample (0 = None → silence). +1 cycle against `pcm_pack2stream` (the read port's latency; a read before the strobe would see the previous frame's table).
+- **`pcm_stream2patch`** (stream N_OUT → packed P_OUT): per beat c reads `destination[c]` through a read port and writes the sample to that I/O output's slot; the slots are cleared at the strobe, so a port no channel picks is silent. All ports move to the packed output together, +1 cycle against `pcm_stream2pack`.
+- **Tables:** register value = OSC value: 0 = None, p + 1 = I/O port p. Each a `coef_bank_ram` (ROW_LEN 1, W = 5 bits for 20 ports), so a repatch lands whole on one frame strobe like every other coefficient change (§3 of `architecture_modules.md`). Two drivers on one port (only reachable by bypassing the server) resolve deterministically: the later channel wins.
+- **`mixer_core`** gains `P_IN` / `P_OUT` (I/O ports) and two read ports (`in_patch_*`, `out_patch_*`); its packed sides become the I/O ports. It still knows nothing about what the ports are; `fpgamixer_top` keeps the port map and the reset tables (all None in PS builds, identity without the PS; CS5).
 - **Latency:** D = 249 + 2 = **251**. D_MAX is re-derived as **255**: since the Pmods went, the only consumers of the core's output are the three `pcm_link`s, which take it at the next strobe (cycle 256). To be confirmed against `pcm_link`'s capture in step 2 and checked at elaboration; the lane chooser keeps 4 + 4 (one lane fewer costs about two matrix passes, far over 255).
 - **Windows:** a binding `patch_regs_axil` (ID `0x5054_5001`, "PT"; CONFIG = rows, ports, direction (0 in, 1 out), entry width) over `axil_coef_window` + `coef_bank_ram`, two instances: **input patch at 0x8000_D000, output patch at 0x8000_E000**.
 - **SmartConnect (the main BD question):** a **second SmartConnect `ctrl_smc2` cascaded from the first's M15**; link #3's status window moves onto it (its address 0x8000_C000 and its port name stay, so no RTL or software changes), and the two patch windows join it. That leaves 13 free masters for Phase 7's DSP windows, which would hit the same wall. Nothing else moves; still no PS8 setting changes. To check in the build: sdtgen still emits a device-tree node per window behind the cascade (the server's `WindowAbsent` guard depends on it).
@@ -60,7 +62,7 @@ Two new generic **core-boundary blocks** replace the two converters inside `mixe
 
 ### 3.4 Protocol (amend the standard first)
 
-- **`source`** on `inputChannel`, **`destination`** on `outputChannel`: `enum`, `options` [0, 1, …, 20], **`optionLabels`** ["None", "Analog 1", …, "Analog 4", "USB 1", …, "USB 8", "AVB 1", …, "AVB 8"], metadata `group` `"patch"`, never `linked`. The module `default` is 0 (None); the identity patch is seeded into the state on first start (like the identity crosspoints today), so `values` lists every channel's source and destination.
+- **`source`** on `inputChannel`, **`destination`** on `outputChannel`: `enum`, `options` [0, 1, …, 20], **`optionLabels`** ["None", "Analog 1", …, "Analog 4", "USB 1", …, "USB 8", "AVB 1", …, "AVB 8"], metadata `group` `"patch"`, never `linked`. The module `default` is 0 (None), and nothing is seeded (CS5), so the config's sparse `values` list only the channels that are patched.
 - **`optionLabels`** (new, optional, any `enum`): a list of strings the same length as `options`, the label for each option. Additive, `schemaVersion` stays 1; a controller without it shows the numbers.
 - **A taken destination** is echoed: the requested `set` first, then `outputChannel/<other>/destination 0` (the vGroups echo order). One `apply_many`, one COMMIT, so the two changes land on the same frame.
 - **Counts:** `system/inputCount`, `system/busCount`, `system/outputCount` (`int`, `min` 1, `max` 20, `default` 20), in the config's `system` block.
@@ -83,7 +85,7 @@ A count change alters the topology, which `set`s can't express. After the count'
 
 ### 3.7 Server
 
-- `mixer_hw`: `PatchHW` (window, ID and CONFIG checked, the table as OSC values), the windows `inpatch` / `outpatch`, and **`PHYSICAL_PORTS`**: the platform's port list with labels, an explicit copy of `fpgamixer_top`'s map like `WINDOWS` (checked against the windows' CONFIG port count at startup).
+- `mixer_hw`: `PatchHW` (window, ID and CONFIG checked, the table as OSC values), the windows `inpatch` / `outpatch`, and **`IO_PORTS`**: the platform's port list with labels, an explicit copy of `fpgamixer_top`'s map like `WINDOWS` (checked against the windows' CONFIG port count at startup).
 - The channel zones gain modules served by a second window (`source` → input patch, `level` → input levels), so the channel backends delegate per module instead of assuming one window per zone; `vgroup` and `name` stay stored-only.
 - The counts: the model is rebuilt from them; a topology step pushes the hidden-channel overrides (§3.3) through `apply_many`; `MeterHub` slices to the counts.
 - An older bitstream without the patch windows: no `source` / `destination`, no count settings; everything else as today.
@@ -93,10 +95,10 @@ A count change alters the topology, which `set`s can't express. After the count'
 | # | Question | Recommended | Alternative |
 |---|---|---|---|
 | CS1 | Where the patch lives | in the PL at the core boundary: `pcm_patch2stream` / `pcm_stream2patch`, tables in `coef_bank_ram`, repatch on a frame strobe (§3.2) | in the Linux bridges (can't move a channel between links; no AVB → MOTU without another copy and latency) |
-| CS2 | Output semantics | each **output channel** picks one destination or None; picking a taken one **takes it** (the other becomes None, echoed); one-to-many through the bus matrix | refuse a taken destination (clear it first); or per-physical-output pickers (a new zone the standard doesn't have) |
+| CS2 | Output semantics | each **output channel** picks one destination or None; picking a taken one **takes it** (the other becomes None, echoed); one-to-many through the bus matrix | refuse a taken destination (clear it first); or per-I/O-output pickers (a new zone the standard doesn't have) |
 | CS3 | Input semantics | each input channel picks one source or None; sources may be shared | exclusive sources |
 | CS4 | Port labels | **Analog 1–4, USB 1–8, AVB 1–8** (enum 0 = None, 1–20 in port order); "Analog" because the host port's interface can change | "MOTU 1–2" with link #3's unused ports 2–3 not offered |
-| CS5 | Default patch | identity (input k ← port k, output k → port k), seeded on first start | all None |
+| CS5 | Default patch | ~~identity (input k ← port k, output k → port k), seeded on first start~~ | **all None — chosen by the user** |
 | CS6 | N × Y × Z | runtime `system` settings `inputCount` / `busCount` / `outputCount`, 1–20; gateware stays 20 × 20 × 20 | sizes at build time (a rebuild per change); or a bigger maximum now (28 × 28 × 28 fits the frame on 10 + 10 lanes) |
 | CS7 | Hidden channels | values kept, out of the config, silenced in hardware; they come back unchanged | reset to defaults when hidden |
 | CS8 | Topology change | broadcast `/<name>/config/changed`; controllers refetch with the connect ordering (§3.5) | drop every TCP connection so controllers reconnect |
@@ -106,16 +108,56 @@ A count change alters the topology, which `set`s can't express. After the count'
 | CS12 | Enum labels | optional `optionLabels` beside `options` (additive) | labels in the app only |
 | CS13 | Names | ship with this image (no separate one), as planned | — |
 
+**Decided by the user 2026-10-08: "as recommended"**, except **CS5: no default patch** (*"Don't do default patching. A blank slate should be a blank slate."*). Clarified at the same time: sources and destinations are every interface's channels, network (AVB) and USB included, not only analog (the *Terms* note at the top).
+
 ## 5. Steps (once decided)
 
 1. **Standard:** `source` / `destination`, `optionLabels`, the counts, `config/changed` (+ the *Command kinds* row), the taken-destination echo, the change log. User review; the app is built from it.
 2. **RTL:** `pcm_patch2stream`, `pcm_stream2patch` (TBs bit-exact against a model at random tables and random audio, None = silence, identity = the old converters, timing to the cycle with `pcm_stream_monitor`); `mixer_core` with P_IN / P_OUT and the two read ports (`tb_mixer_core` at random patches; D = 251 checked); D_MAX re-derived; `patch_regs_axil` (+ its TB); `fpgamixer_top` (reset tables, windows, `tb_top_windows` reaching both); `xsim_regress.ps1` and `sim.mk` in step. **Mutation-tested**, baseline first.
 3. **BD:** `ctrl_smc2`, link #3's window moved, the two patch ports; `architecture_modules.md` address map and block table in the same change.
-4. **Server:** `PatchHW`, `PHYSICAL_PORTS`, per-module delegation on the channel backends, `optionLabels`, the take rule, counts + hidden-channel overrides + `config/changed`, meters sliced; tests (assignments, the take echo, counts in and out with values kept, hidden channels silent in `InProcess`, snapshots carrying the patch, recall resolving duplicates, the older-bitstream fallback). Mutation-tested. Any new Python module into the `fpgamixer-osc` recipe's file list.
+4. **Server:** `PatchHW`, `IO_PORTS`, per-module delegation on the channel backends, `optionLabels`, the take rule, counts + hidden-channel overrides + `config/changed`, meters sliced; tests (assignments, the take echo, counts in and out with values kept, hidden channels silent in `InProcess`, snapshots carrying the patch, recall resolving duplicates, the older-bitstream fallback). Mutation-tested. Any new Python module into the `fpgamixer-osc` recipe's file list.
 5. **Build:** bitstream, sdtgen, `gen-machine-conf`, image (names included). Checks: windows in the device tree, D in the build log.
 6. **Bench (user, by ear in the app):** the user's example — inputs 1–5 ← AVB, outputs 1–3 → USB 1–3 — then counts down and back up.
 7. **App (user):** pickers with the labels, the count settings, the refetch on `config/changed`.
 
+### 5.1 Step 1 done (2026-10-08)
+
+**Standard** (`docs/FPGA Mixer OSC Standard.md`): new sections *I/O patch* (with the reference server's port table and a config example), *Channel counts*, *Config changed* (under *Config*); `optionLabels` in the module metadata; the `config` row in *Command kinds*; "current counts" in `zones`; meter blobs sized by their length; hidden channels in the error list; the change log. Additive, `schemaVersion` 1.
+
 ## 6. Log
 
 - **2026-10-08:** branch `phase15-sources` from `phase14-vgroups`. Read the plan, `architecture_modules.md`, the standard, `fpgamixer_top`'s map, the BD. Proposal (§3) and decisions CS1–CS13 to the user. Fixed in passing: `architecture_modules.md`'s address map still showed 0x8000_C000 as reserved (it's link #3's status window since Phase 11 H.3) and lacked formatter #3.
+- **2026-10-08:** decisions as recommended except CS5 (no default patch: all None); "I/O port" covers analog, USB and AVB. Step 1 done: the standard amended (§5.1); the app's handoff in §7. Next: step 2 (RTL).
+
+## 7. For the app (controller repo)
+
+The standard's *I/O patch*, *Channel counts* and *Config changed* sections are the spec; this is the checklist. Everything is additive (`schemaVersion` stays 1), and every new item is optional: show it only when the config has it.
+
+**New in the config**
+
+| Where | What | Meaning |
+|---|---|---|
+| `modules.<any enum>.optionLabels` | list of strings, same length and order as `options` | the label for each option; send and store the **number**, show the label |
+| `zones.inputChannel.modules` | `"source"` | `enum`, options 0–20, 0 = None, `group` `"patch"`, not `linked` |
+| `zones.outputChannel.modules` | `"destination"` | the same, for outputs |
+| `system.inputCount` / `busCount` / `outputCount` | `int`, `min` 1, `max` 20, `default` 20 | the channel counts |
+| `zones.*.count`, `rows`, `cols` | — | now the **current** counts (they change at runtime) |
+
+**New messages**
+
+| Message | Direction | What to do |
+|---|---|---|
+| `/<name>/set/inputChannel/<k>/source <f>` | both | an input channel's source; 0 = None |
+| `/<name>/set/outputChannel/<k>/destination <f>` | both | an output channel's destination; 0 = None |
+| `/<name>/set/system/inputCount <f>` (and `busCount`, `outputCount`) | both | the counts; set from a setup screen |
+| `/<name>/config/changed` (no arguments) | mixer → controller | re-fetch: send `get/system/config`, drop every `set` until the reply arrives, then rebuild the UI from it (the connect ordering again) |
+
+**Behaviour to handle**
+
+1. **Pickers:** a source picker on each input strip, a destination picker on each output strip, filled from `options` + `optionLabels` (None, Analog 1–4, USB 1–8, AVB 1–8 on this mixer; don't hard-code them). Ports are interfaces' channels of every kind: analog, USB and AVB alike.
+2. **Moved destinations:** setting a destination that another output channel has makes the mixer send two `set`s: yours first, then `outputChannel/<other>/destination 0`. Treat the second as an ordinary device-originated set (D44's path). The UI may warn before taking one ("USB 3 is used by Output 5"), since it has the values.
+3. **Blank slate:** every `source` and `destination` defaults to 0 and is absent from the sparse `values` until patched. A new or upgraded mixer is silent until patched; a "nothing patched" hint on an empty mixer would help.
+4. **Counts:** after a count `set` the echo arrives, then `config/changed`; zones, matrices and meters shrink or grow after the refetch. Channels beyond a count are hidden by the mixer (gets and sets of them are refused) and come back with their old values.
+5. **Meters:** size each blob by its length, (length − 4) / 2, not by the config's count: right after a count change they can disagree briefly.
+6. **Snapshots:** carry `source` / `destination` like any value (a recall repatches); they don't carry the counts.
+7. **Older firmware:** no `source` / `destination` / counts in the config → no pickers or count settings; it never sends `config/changed`.

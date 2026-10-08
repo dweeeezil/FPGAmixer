@@ -1,5 +1,5 @@
 Alexander Kelly
-18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups, channel names)
+18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups, channel names, I/O patch, channel counts, config changed)
 
 This is the one source of truth for the mixer's OSC protocol. The 4 Oct 2026 revision merges the amendments agreed for the StudioRunner controller (A: name and alias, B: config, C: metering, D: TCP framing, E: discovery, F: value encoding, G: error reply, H: ping) and the device rules decided with them. The change log is at the end.
 
@@ -51,6 +51,7 @@ The segment after the mixer name is the command kind:
 | `error` | mixer → controller | `/<name>/error <path> <reason>` | *Error reply* |
 | `ping` / `pong` | controller → mixer / mixer → controller | `/<name>/ping <token>`, `/<name>/pong <token>` | *Ping* |
 | `snapshot` | both | `/<name>/snapshot/<request> ...` (controller), `/<name>/snapshot/list|data|loaded ...` (mixer) | *Snapshots* |
+| `config` | mixer → controller | `/<name>/config/changed` | *Config changed* |
 
 A message with any other kind is ignored.
 
@@ -161,8 +162,8 @@ Shape:
 Rules:
 
 - **`schemaVersion`** (required) is a breaking-change number. A controller refuses a newer version than it supports. Additive changes (new optional keys, new module types) don't bump it.
-- **`zones`** (required): channel zones have `count`, matrix zones `rows` and `cols`, and every zone lists its `modules`. For a matrix, row = source, column = destination. A zone absent from `zones` does not exist on the mixer; a module absent from a zone's list is not implemented there. `system` is never listed here.
-- **`modules`** (required) is metadata, keyed by module name: `type` (`float`, `int`, `bool`, `enum`, `string`), and optionally `unit`, `min`, `max`, `default`, `options` (for `enum`), `group` and `linked`. `group` is for UI clustering (`level`, `eq`, `dynamics`, `delay`, ...); grouping is never inferred from underscores in module names. `linked: true` means the module follows virtual groups (*Virtual groups*); absent means it doesn't. `maxLength` (strings) is the longest value the mixer accepts, in UTF-8 bytes; longer is refused.
+- **`zones`** (required): channel zones have `count`, matrix zones `rows` and `cols`, and every zone lists its `modules`. With *Channel counts* these are the current counts, not the hardware's maximum. For a matrix, row = source, column = destination. A zone absent from `zones` does not exist on the mixer; a module absent from a zone's list is not implemented there. `system` is never listed here.
+- **`modules`** (required) is metadata, keyed by module name: `type` (`float`, `int`, `bool`, `enum`, `string`), and optionally `unit`, `min`, `max`, `default`, `options` (for `enum`), `group` and `linked`. `group` is for UI clustering (`level`, `eq`, `dynamics`, `delay`, ...); grouping is never inferred from underscores in module names. `linked: true` means the module follows virtual groups (*Virtual groups*); absent means it doesn't. `maxLength` (strings) is the longest value the mixer accepts, in UTF-8 bytes; longer is refused. `optionLabels` (enums) is a list of strings, the same length as `options`: the label to show for each option, in the same order (`"optionLabels": ["None", "Analog 1", ...]` beside `"options": [0, 1, ...]`). Absent: a controller shows the numbers. The value sent and stored is always the number, never the label.
 - **`system`**: the mixer's settings, keyed by setting name, with the same metadata fields as `modules` plus optional `readOnly`. Absent: the mixer has only `deviceName`.
 - **`level`** has the mixer's real range: `min` −90 (off) and `max` the hardware ceiling.
 - **`values`** keys are `<zone>/<index>/<module>`, the same as the address tail of a `set`, so applying the snapshot reuses the path for incoming sets. For `system` the key is `system/<setting>`. Values are **sparse**: an absent entry is its module's `default`. `system/deviceName` is always present.
@@ -183,6 +184,20 @@ No revision counters: TCP ordering is the mechanism.
 
 This requires the mixer to serialize the snapshot into the **same TCP stream** as its broadcast `set`s: no broadcast may be sent between reading the state for the snapshot and sending it.
 
+### Config changed
+
+When the mixer's topology changes (a zone's count, rows or columns; a zone or module appearing or going), `set`s can't describe it. The mixer then sends, to **every** TCP controller:
+
+```
+/<name>/config/changed
+```
+
+(no arguments). A controller answers by running *Connect ordering* again from step 2: send `get/system/config`, discard every `set` that arrives before the reply, apply the reply. Nothing is lost: the reply holds every value, and it is serialized into the same stream as the broadcasts.
+
+- It follows the broadcast of the `set` that caused it (today: a *Channel counts* setting), so every controller first sees the echo, then `config/changed`. A `set` that doesn't change the value is echoed as usual but sends no `config/changed`.
+- Until the new config is applied, a controller may receive `set`s or meter blobs for the new topology: it discards the `set`s (as above) and sizes a meter blob by its length (*Metering*).
+- A controller that doesn't know the `config` kind ignores it (the rule for unknown kinds) and keeps the old topology until it reconnects.
+
 ## Error reply
 
 The mixer answers a refused request with
@@ -195,7 +210,7 @@ to the requesting TCP controller only. `path` is the request's address tail afte
 
 Refused requests:
 
-- a `get` or `set` of a path the mixer doesn't have (unknown zone, index out of range, module not implemented there, unknown setting);
+- a `get` or `set` of a path the mixer doesn't have (unknown zone, index out of range (including a channel beyond a *Channel counts* setting), module not implemented there, unknown setting);
 - a `set` without a value, or with a value of the wrong kind;
 - a string longer than its module's `maxLength`, or containing a control character;
 - a `set` of a `readOnly` setting;
@@ -229,7 +244,7 @@ Meters stream over UDP, mixer → controller, separate from TCP control. The con
 /<name>/meter/<zone>     <blob>
 ```
 
-- Blob, big-endian: `uint32 sequence`, then `N × int16` peaks in units of 0.01 dBFS; `-32768` is silence / no signal. `N` is the zone's channel `count` from the config.
+- Blob, big-endian: `uint32 sequence`, then `N × int16` peaks in units of 0.01 dBFS; `-32768` is silence / no signal. `N` is the zone's channel `count` from the config. After a count change (*Channel counts*) blobs carry the new count at once, possibly before the controller has the new config: a controller takes `N` from the blob's length, (length − 4) / 2, and ignores peaks for channels it doesn't show.
 - `sequence` is per zone per subscriber: it starts at 0 when the subscription starts, increments by 1 per message and wraps at 2³². A message that is dropped still uses its number, so gaps are visible.
 - The peak is the highest since the previous message for that zone (nothing between two ticks is lost).
 - Tap point: post-DSP of that zone. Reserved for later: `meter/<zone>_pre`.
@@ -249,6 +264,63 @@ Optional (the channel zones list the module `vgroup`). Channels of one zone can 
 - **Matrix crosspoints never link**, whatever the groups of their row and column channels: grouped channels stay independently routable (a stereo pair can go to different buses and outputs instead of being summed). Linking applies to channel zones only, even for a module like `level` that matrices share.
 - **Joining or leaving a group changes no other value**; the next set of a linked module brings the members together.
 - **A snapshot recall** sets each parameter to its stored value; linking doesn't apply to it.
+
+## I/O patch (sources and destinations)
+
+Optional (`inputChannel` lists the module `source`, `outputChannel` lists `destination`). The mixer's channels are generic; the patch says which **I/O port** each one uses. An I/O port is one channel of any of the mixer's interfaces: analog, USB, network (AVB), whatever the mixer has.
+
+- **`source`** (`enum`, on `inputChannel`): the I/O input the channel takes its signal from. **0 = None** (silence). Several input channels may use the same input.
+- **`destination`** (`enum`, on `outputChannel`): the I/O output the channel feeds. **0 = None** (it feeds nothing). An I/O output belongs to **at most one** output channel: a `set` of a destination that another output channel has **moves it**: that channel's `destination` becomes 0. The echo is the requested `set` first, then `outputChannel/<other>/destination 0`; both take effect together. To send one mix to several outputs, route a bus to several output channels.
+- **Options:** the config lists them (`options`) with their labels (`optionLabels`, *Config*); controllers show the labels in a picker and never assume a numbering. An option's number is stable: an I/O port keeps its number when ports are added.
+- **Default: 0 for every channel.** A mixer that has never been patched is silent; nothing is patched for you.
+- Ordinary parameters: set, get, echo, kept across a power cycle, carried by snapshots (a recall sets the patch; a recall that would leave two output channels on one destination resolves in index order like a run of `set`s: the later channel keeps it, the earlier is echoed as 0). Never linked (*Virtual groups*).
+
+The reference server's I/O ports (informative; the config is authoritative), the same numbers for inputs and outputs:
+
+| Option | Label | Interface |
+|---|---|---|
+| 0 | None | — |
+| 1–4 | Analog 1–4 | the USB audio interface on the mixer's USB host port (a MOTU M2 uses 1–2) |
+| 5–12 | USB 1–8 | the computer on the mixer's USB device port |
+| 13–20 | AVB 1–8 | the network (AVB stream, 8 channels each way) |
+
+In the config (shortened; `destination` is described the same way):
+
+```json
+"modules": {
+  "source": { "type": "enum", "options": [0, 1, 2, 3, 4, 5, ..., 20],
+              "optionLabels": ["None", "Analog 1", "Analog 2", "Analog 3", "Analog 4", "USB 1", ..., "AVB 8"],
+              "default": 0, "group": "patch" }
+}
+```
+
+```
+/<name>/set/inputChannel/0/source        13.0     input 1 ← AVB 1
+/<name>/set/outputChannel/2/destination  7.0      output 3 → USB 3
+```
+
+## Channel counts
+
+Optional (the config's `system` block lists `inputCount`, `busCount` and `outputCount`). They set how many input channels, buses and output channels the mixer has, up to the hardware's maximum.
+
+- **`system/inputCount`**, **`system/busCount`**, **`system/outputCount`** (`int`, `min` 1, `max` the hardware's maximum (the reference server: 20), `default` the maximum).
+- The config follows them: `inputChannel.count` = inputs, `inputMatrix` inputs × buses, `busChannel.count` = buses, `busMatrix` buses × outputs, `outputChannel.count` = outputs; so do the meter blobs.
+- A change is echoed like any `set`, then `config/changed` goes to every TCP controller (*Config changed*).
+- **Channels beyond a count are hidden**, not deleted: they aren't in the config, a `get` or `set` of them is refused, snapshots don't hold them and virtual groups don't reach them. They keep their values and are silent: nothing reaches an output through a hidden channel. Raising the count brings them back with their values. A hidden output channel's `destination` can be taken by a visible one (it becomes 0; nobody is told, since no controller has it).
+- Counts are `system` settings, so snapshots don't carry them; a snapshot from a mixer with more channels counts the extra entries as skipped.
+
+```json
+"system": {
+  "inputCount":  { "type": "int", "min": 1, "max": 20, "default": 20 },
+  "busCount":    { "type": "int", "min": 1, "max": 20, "default": 20 },
+  "outputCount": { "type": "int", "min": 1, "max": 20, "default": 20 }
+}
+```
+
+```
+/<name>/set/system/inputCount  8.0        (echo to every controller, then:)
+/<name>/config/changed
+```
 
 ## Snapshots
 
@@ -335,3 +407,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 - **8 Oct 2026:** *Snapshots* (the `snapshot` command kind, the snapshot JSON, recall rules) and the config's optional `capabilities`; additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase14_status_2026-10-08.md` (S1–S8).
 - **8 Oct 2026 (later):** *Virtual groups* (the `vgroup` module, linking rules, the echo order) and the module metadata key `linked`; additive, `schemaVersion` stays 1. Decided in the same doc (V1–V8). Revised the same day before any controller shipped it: matrix crosspoints never link (V5 changed by the user).
 - **8 Oct 2026 (later still):** *Channel names* (the `name` module on channel zones) and the string metadata key `maxLength`; strings with control characters are refused. Additive, `schemaVersion` stays 1.
+- **8 Oct 2026 (channel sources):** *I/O patch* (`source` on `inputChannel`, `destination` on `outputChannel`, the move rule and its echo), *Channel counts* (`system/inputCount`, `busCount`, `outputCount`, hidden channels), *Config changed* (the `config` command kind, `/<name>/config/changed`), the enum metadata key `optionLabels`, meter blobs sized by their length. Additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase15_status_2026-10-08.md` (CS1–CS13; no default patch).
