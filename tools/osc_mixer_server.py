@@ -121,6 +121,21 @@ made here so you can compare against the real firmware once it exists):
     snapshot/loaded; all under the ordering lock. save/store/delete are
     confirmed by a broadcast snapshot/list. The config lists
     "capabilities": ["snapshots"].
+  - I/O patch (standard "I/O patch", Phase 15): 'source' on inputChannel and
+    'destination' on outputChannel, enums 0 = None, p + 1 = I/O port p
+    (labels from mixer_hw.IO_PORTS: Analog 1-4, USB 1-8, AVB 1-8), each
+    served by its own window (PatchPart inside the channel's GainBackend).
+    Nothing is patched until someone patches it (decision CS5: no seeding).
+    A destination another output channel holds moves to the new one: one
+    COMMIT, echoed requested first, then '<other>/destination 0'; a recall
+    resolves its destinations the same way, in index order. Never linked.
+  - Channel counts (standard "Channel counts", Phase 15): system/inputCount,
+    busCount, outputCount (int 1..the hardware's), only with the patch. The
+    model shows the first N / Y / Z channels (apply_topology); hidden
+    channels keep their stored values but are silent at the hardware
+    (GainBackend.hide: source / destination None, bus level off). A change
+    is echoed, then '/<name>/config/changed' goes to every controller.
+    Meter blobs carry the counts. --no-patch simulates an older bitstream.
   - Ordering (F3): ClientRegistry.lock is held while a change is applied,
     stored and echoed, while any packet is sent, and while the config
     snapshot is read and sent. Echoes therefore follow the store order, two
@@ -331,6 +346,35 @@ VGROUP_MODULE = ModuleSpec("int", min=0, max=VGROUP_MAX, default=0, group="link"
 CHANNEL_NAME_MAX_BYTES = 32
 NAME_MODULE = ModuleSpec("string", default="", max_length=CHANNEL_NAME_MAX_BYTES)
 
+# The I/O patch (standard "I/O patch", Phase 15): which I/O port a channel
+# uses. One module per side, on its channel zone, served by its own window.
+PATCH_MODULES = {"inputChannel": "source", "outputChannel": "destination"}
+
+
+def patch_module(labels):
+    """'source' / 'destination': enum 0 = None, p + 1 = I/O port p, a label
+    per option (optionLabels); default None, so nothing is patched until
+    someone patches it (decision CS5); never linked."""
+    return ModuleSpec("enum", options=tuple(float(v) for v in range(len(labels) + 1)),
+                      option_labels=("None",) + tuple(labels), default=0.0, group="patch")
+
+
+class PatchPart:
+    """One patch window (mixer_hw.PatchHW) serving one module of a channel
+    zone: 'source' on inputChannel, 'destination' on outputChannel. With hw
+    None the same rules run without hardware (simulator)."""
+
+    def __init__(self, module, hw, labels):
+        self.module = module
+        self.hw = hw
+        self.spec = patch_module(labels)
+
+    def write(self, entries):
+        """{channel: entry (float)} -> {channel: entry applied}, one COMMIT."""
+        ints = {c: int(v) for c, v in entries.items()}
+        got = ints if self.hw is None else self.hw.set_entries(ints)
+        return {c: float(v) for c, v in got.items()}
+
 
 class Backend:
     """Serves one OSC zone.
@@ -387,12 +431,19 @@ class MatrixBackend(Backend):
         self.hw = hw
         self.n_in = n_in
         self.n_out = n_out
+        self.rows, self.cols = n_in, n_out     # shown (Phase 15: the channel counts)
         self.level = level_module(max_db)
         self.identity_from = identity_from
 
     def describe(self):
-        return (ZoneSpec("matrix", ("level",), rows=self.n_in, cols=self.n_out),
+        return (ZoneSpec("matrix", ("level",), rows=self.rows, cols=self.cols),
                 {"level": self.level})
+
+    def set_shape(self, rows, cols):
+        """Phase 15: show the first rows x cols crosspoints. Nothing reaches
+        the hardware: a crosspoint of a hidden channel is silent because the
+        channel is (GainBackend.hide)."""
+        self.rows, self.cols = min(rows, self.n_in), min(cols, self.n_out)
 
     def crosspoint_key(self, inp, out):
         return f"{self.zone}/{inp}_{out}/level"
@@ -455,41 +506,124 @@ class GainBackend(Backend):
     then lists those levels explicitly. Phase 14: each channel also has a
     'vgroup' (VGROUP_MODULE) and a 'name' (NAME_MODULE), plain stored
     parameters that never reach the hardware; linking uses vgroup
-    (link_targets)."""
+    (link_targets).
 
-    def __init__(self, zone, hw, n, max_db=SIM_MAX_DB):
+    Phase 15: `patch` (a PatchPart) adds the zone's patch module ('source' /
+    'destination'), served by its own window: the backend sends each module
+    to the window that implements it. `count` is how many channels the zone
+    shows (the runtime channel counts; n is the hardware's); a hidden channel
+    keeps its stored values, but `hide` = (module, value) is what its
+    hardware gets instead (a source or destination of None, a bus level off),
+    so nothing reaches an output through it."""
+
+    def __init__(self, zone, hw, n, max_db=SIM_MAX_DB, patch=None, hide=None):
         super().__init__(zone)
         self.hw = hw
         self.n = n
+        self.count = n
         self.level = level_module(max_db)
+        self.patch = patch
+        self.hide = hide
 
     def describe(self):
-        return (ZoneSpec("channels", ("level", "vgroup", "name"), count=self.n),
-                {"level": self.level, "vgroup": VGROUP_MODULE, "name": NAME_MODULE})
+        modules = {"level": self.level, "vgroup": VGROUP_MODULE, "name": NAME_MODULE}
+        order = ("level", "vgroup", "name")
+        if self.patch is not None:
+            modules[self.patch.module] = self.patch.spec
+            order = ("level", self.patch.module, "vgroup", "name")
+        return ZoneSpec("channels", order, count=self.count), modules
 
     def level_key(self, ch):
         return f"{self.zone}/{ch}/level"
 
+    def _hidden(self, ch, module):
+        """Whether channel ch's `module` reaches the hardware as hide's value."""
+        return self.hide is not None and module == self.hide[0] and ch >= self.count
+
     def apply(self, index, module, value):
+        ch = int(index)
+        if self.patch is not None and module == self.patch.module:
+            return self.apply_many({(index, module): value})[(index, module)]
         if self.hw is not None and module == "level":
-            return float32(self.hw.set_db(int(index), value))
+            if self._hidden(ch, module):
+                self.hw.set_db(ch, self.hide[1])
+                return value
+            return float32(self.hw.set_db(ch, value))
         return value
 
     def apply_many(self, changes):
-        """The levels in one bank write and one COMMIT; other modules
-        (vgroup) as given."""
+        """The levels in one bank write and one COMMIT, the patch entries in
+        one more; other modules (vgroup, name) as given. A hidden channel's
+        hardware gets hide's value; its stored value is what was asked."""
         got = dict(changes)
         levels = {int(index): v for (index, m), v in changes.items() if m == "level"}
         if self.hw is not None and levels:
-            applied = self.hw.set_bank_db(levels)
+            applied = self.hw.set_bank_db({c: (self.hide[1] if self._hidden(c, "level") else v)
+                                           for c, v in levels.items()})
             for (index, m) in changes:
-                if m == "level":
+                if m == "level" and not self._hidden(int(index), m):
                     got[(index, m)] = float32(applied[int(index)])
+        if self.patch is not None:
+            pm = self.patch.module
+            entries = {int(index): v for (index, m), v in changes.items() if m == pm}
+            if entries:
+                applied = self.patch.write({c: (self.hide[1] if self._hidden(c, pm) else v)
+                                            for c, v in entries.items()})
+                for (index, m) in changes:
+                    if m == pm and not self._hidden(int(index), m):
+                        got[(index, m)] = applied[int(index)]
         return got
+
+    def stored_entries(self, state):
+        """Every channel's patch entry from the store (absent = None; a stored
+        value the module refuses, e.g. a port this mixer lacks, = None too)."""
+        entries = {}
+        for ch in range(self.n):
+            stored = state.get(f"{self.zone}/{ch}/{self.patch.module}", default=None)
+            v, why = self.patch.spec.apply(stored) if stored is not None else (0.0, None)
+            if why is not None:
+                log(f"    {self.zone}/{ch}/{self.patch.module}: stored {stored!r} ignored ({why})")
+                v = 0.0
+            entries[ch] = v
+        return entries
+
+    def push_patch(self, state):
+        """The whole patch table to the hardware (one COMMIT), hidden channels as hide says."""
+        if self.patch is None:
+            return
+        pm = self.patch.module
+        entries = {c: (self.hide[1] if self._hidden(c, pm) else v)
+                   for c, v in self.stored_entries(state).items()}
+        self.patch.write(entries)
+        if self.patch.hw is not None:
+            log(f"Pushed {len(entries)} {self.zone} {pm}(s) to the PL "
+                f"({sum(1 for v in entries.values() if v)} patched; {self.patch.hw.status()})")
+
+    def push_levels(self, state):
+        """Every level from the store to the hardware (one COMMIT), hidden channels as hide says."""
+        if self.hw is None:
+            return
+        levels = {}
+        for ch in range(self.n):
+            db, why = self.level.apply(state.get(self.level_key(ch), default=0.0))
+            db = 0.0 if why is not None else db
+            levels[ch] = self.hide[1] if self._hidden(ch, "level") else db
+        self.hw.set_bank_db(levels)
+
+    def set_count(self, count, state, push=True):
+        """Phase 15: show the first `count` channels; with push, the module
+        that silences a hidden channel goes to the hardware again."""
+        self.count = max(0, min(count, self.n))
+        if push and self.hide is not None:
+            if self.hide[0] == "level":
+                self.push_levels(state)
+            else:
+                self.push_patch(state)
 
     def seed_and_push(self, state):
         """Fill in missing levels with 0 dB, bring stored ones inside the
-        rules, then (hw) push the whole bank in one commit."""
+        rules, then (hw) push the whole bank in one commit; then the patch
+        table (Phase 15: nothing seeded, absent = None)."""
         levels, seeded, normalised = {}, {}, 0
         for ch in range(self.n):
             key = self.level_key(ch)
@@ -509,14 +643,41 @@ class GainBackend(Backend):
             log(f"    {normalised} stored {self.zone} level(s) brought inside "
                 f"{self.level.min}..{self.level.max} dB")
         if self.hw is not None:
-            self.hw.set_bank_db(levels)
+            self.hw.set_bank_db({c: (self.hide[1] if self._hidden(c, "level") else db)
+                                 for c, db in levels.items()})
             log(f"Pushed {len(levels)} {self.zone} level(s) to the PL ({self.hw.status()})")
+        self.push_patch(state)
 
 
 BACKENDS = {}  # zone -> Backend, filled in main()
 
 
-def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0):
+def io_port_labels():
+    """The I/O ports' labels, in port order (mixer_hw.IO_PORTS, the copy of
+    fpgamixer_top's port map). Imported here so the simulator never needs
+    the hardware module at startup otherwise."""
+    import mixer_hw
+    return mixer_hw.IO_PORTS
+
+
+# What a hidden channel's hardware gets (Phase 15, decision CS7): nothing
+# reaches an output through it.
+HIDE = {"inputChannel": ("source", 0.0), "busChannel": ("level", OFF_DB),
+        "outputChannel": ("destination", 0.0)}
+
+
+def add_patch(backends, in_hw=None, out_hw=None, labels=None):
+    """Phase 15: the patch modules on the input and output channels, and the
+    hidden-channel rule on all three channel zones (counts need the patch)."""
+    labels = io_port_labels() if labels is None else labels
+    backends["inputChannel"].patch = PatchPart("source", in_hw, labels)
+    backends["outputChannel"].patch = PatchPart("destination", out_hw, labels)
+    for zone in LEVEL_ZONES:
+        backends[zone].hide = HIDE[zone]
+    return backends
+
+
+def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0, patch=True):
     """The zone -> backend table. With use_hw each backend opens its register
     window (mixer_hw.WINDOWS, checked by ID; the level windows also by TAP);
     without, the same backends run in simulation with the given size
@@ -529,7 +690,13 @@ def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0):
     busMatrix -> outputChannel. Its four windows are present together or not
     at all; on an older bitstream (none present) only inputMatrix is served,
     and there it is still input -> output. A partial set, or sizes that don't
-    chain, is refused: the hardware isn't what this server describes."""
+    chain, is refused: the hardware isn't what this server describes.
+
+    The I/O patch (Phase 15): with the bus layer, the two patch windows
+    (mixer_hw.PATCH) add 'source' / 'destination' and make the channel
+    counts possible; both or neither (neither = a bitstream from before
+    Phase 15); their channels must match the level stages and their port
+    count mixer_hw.IO_PORTS. The simulator has them unless patch is False."""
     if not use_hw:
         n = matrix_size
         if not bus_layer:
@@ -538,7 +705,8 @@ def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0):
                     MatrixBackend(MATRIX_ZONE, None, n, n, identity_from=identity_from),
                     GainBackend("busChannel", None, n), MatrixBackend(BUS_MATRIX_ZONE, None, n, n),
                     GainBackend("outputChannel", None, n)]
-        return {b.zone: b for b in backends}
+        backends = {b.zone: b for b in backends}
+        return add_patch(backends) if patch else backends
 
     import mixer_hw  # next to this script; needs /dev/mem
     m = mixer_hw.open_window("matrix")
@@ -577,7 +745,29 @@ def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0):
                 GainBackend("busChannel", bl, bl.n, max_db=max_db),
                 MatrixBackend(BUS_MATRIX_ZONE, bm, bm.n_in, bm.n_out, max_db=max_db),
                 GainBackend("outputChannel", ol, ol.n, max_db=max_db)]
-    return {b.zone: b for b in backends}
+    backends = {b.zone: b for b in backends}
+    patches = {}
+    for name in mixer_hw.PATCH:
+        try:
+            patches[name] = mixer_hw.open_window(name)
+        except mixer_hw.WindowAbsent:
+            continue
+        log(f"PL window '{name}' at 0x{patches[name].base:08x}: {patches[name].describe()}")
+    if not patches:
+        log("No patch windows (a bitstream from before Phase 15): no sources, "
+            "destinations or channel counts; channel k is I/O port k")
+        return backends
+    if len(patches) != len(mixer_hw.PATCH):
+        raise RuntimeError(f"patch incomplete: no window "
+                           f"{', '.join(n for n in mixer_hw.PATCH if n not in patches)}")
+    ip, op = (patches[name] for name in mixer_hw.PATCH)
+    for w, levels in ((ip, il), (op, ol)):
+        if w.n != levels.n:
+            raise RuntimeError(f"{w.describe()}: {w.n} channels, the level stage {levels.n}")
+        if w.ports != len(mixer_hw.IO_PORTS):
+            raise RuntimeError(f"{w.describe()}: {w.ports} I/O ports, mixer_hw.IO_PORTS lists "
+                               f"{len(mixer_hw.IO_PORTS)} (the port map and the bitstream disagree)")
+    return add_patch(backends, ip, op, mixer_hw.IO_PORTS)
 
 
 # The system zone's settings (standard: "The system zone"). deviceName is
@@ -590,6 +780,60 @@ SYSTEM_SETTINGS = {
                              read_only=True),
 }
 CONFIG_PATH = "system/config"
+
+# Channel counts (standard "Channel counts", Phase 15, decision CS6): how many
+# input channels, buses and output channels the mixer shows, up to the
+# hardware's. Only with the I/O patch (a hidden channel needs it to go
+# silent). Each count sets the channel zone and the matrix sides it shapes.
+COUNT_SETTINGS = {"inputCount": "inputChannel", "busCount": "busChannel",
+                  "outputCount": "outputChannel"}
+CONFIG_CHANGED = "config/changed"
+
+
+def system_settings(backends):
+    """SYSTEM_SETTINGS, plus the channel counts when the mixer can have them:
+    the five bus-layer zones and the patch."""
+    settings = dict(SYSTEM_SETTINGS)
+    channel = [backends.get(z) for z in LEVEL_ZONES]
+    if all(isinstance(b, GainBackend) for b in channel) and channel[0].patch is not None:
+        for name, zone in COUNT_SETTINGS.items():
+            n = backends[zone].n
+            settings[name] = ModuleSpec("int", min=1, max=n, default=n)
+    return settings
+
+
+def counts_of(state, system):
+    """{zone: count} from the store (absent or refused: the default, all)."""
+    counts = {}
+    for name, zone in COUNT_SETTINGS.items():
+        spec = system.get(name)
+        if spec is None:
+            continue
+        stored = state.get(f"{SYSTEM_ZONE}/{name}", default=None)
+        v, why = spec.apply(stored) if stored is not None else (spec.default, None)
+        if why is not None:
+            log(f"    {SYSTEM_ZONE}/{name}: stored {stored!r} ignored ({why})")
+            v = spec.default
+        counts[zone] = int(v)
+    return counts
+
+
+def apply_topology(counts, state, push=True):
+    """Phase 15: every backend shows what the counts say (the matrices take
+    their sides from the channel zones), hidden channels go silent in the
+    hardware (push), and the model is rebuilt from the new descriptions.
+    Called under the ordering lock (or before the server runs)."""
+    global MODEL
+    if not counts:
+        return
+    for zone, n in counts.items():
+        BACKENDS[zone].set_count(n, state, push=push)
+    ni, nb, no = (counts[z] for z in LEVEL_ZONES)
+    BACKENDS[MATRIX_ZONE].set_shape(ni, nb)
+    BACKENDS[BUS_MATRIX_ZONE].set_shape(nb, no)
+    MODEL = build_model(BACKENDS, MODEL.system)
+    if METER_HUB is not None:
+        METER_HUB.set_visible(counts)
 
 
 def firmware_version(here=os.path.dirname(os.path.abspath(__file__))):
@@ -685,42 +929,82 @@ def apply_set(tail, value, state, registry, reply, via):
     the model, apply the module's value rules, hand the value to its zone's
     backend, store, then broadcast the confirmation (the echo). Any refusal
     goes back to the requester as an error reply (amendment G); clamping is
-    not a refusal."""
-    try:
-        param = MODEL.resolve(tail)
-    except Refused as r:
-        return send_error(reply, state, r.path, r.reason, via)
-    if param.spec.read_only:
-        return send_error(reply, state, param.path, f"{param.path} is read-only", via)
-    applied, why = param.spec.apply(value)
-    if why is not None:
-        return send_error(reply, state, param.path, why, via)
-    conflict = state.check(param.path)
-    if conflict is not None:     # only an old, hand-edited state file can do this
-        return send_error(reply, state, param.path, f"can't store: {conflict}", via)
-    backend = BACKENDS.get(param.zone)
-    with registry.lock:          # apply, store and echo as one step (ClientRegistry)
-        targets = link_targets(param, state)   # read under the lock: groups can't change midway
+    not a refusal. All of it under the ordering lock (re-entrant), so the
+    model it resolves against can't change midway (Phase 15: the channel
+    counts replace it)."""
+    with registry.lock:          # resolve, apply, store and echo as one step (ClientRegistry)
+        try:
+            param = MODEL.resolve(tail)
+        except Refused as r:
+            return send_error(reply, state, r.path, r.reason, via)
+        if param.spec.read_only:
+            return send_error(reply, state, param.path, f"{param.path} is read-only", via)
+        applied, why = param.spec.apply(value)
+        if why is not None:
+            return send_error(reply, state, param.path, why, via)
+        conflict = state.check(param.path)
+        if conflict is not None:     # only an old, hand-edited state file can do this
+            return send_error(reply, state, param.path, f"can't store: {conflict}", via)
+        if param.zone == SYSTEM_ZONE and param.index in COUNT_SETTINGS:
+            return set_count(param, applied, state, registry, via)
+        backend = BACKENDS.get(param.zone)
+        # a virtual group's members (Phase 14), then a destination's previous holder (Phase 15)
+        targets = [(t, applied) for t in link_targets(param, state)]
+        targets += [(Param(param.zone, ix, param.module, param.spec), 0.0)
+                    for ix in destination_holders(param, applied, state)]
         if len(targets) == 1:
             if backend is not None:
                 applied = backend.apply(param.index, param.module, applied)
             state.set(param.path, applied)
             registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
-        else:                    # a virtual group: one push (one COMMIT) for every member
-            changes = {(t.index, t.module): applied for t in targets}
+        else:                    # one push (one COMMIT) for every target
+            changes = {(t.index, t.module): v for t, v in targets}
             got = backend.apply_many(changes) if backend is not None else changes
-            stored = {t.path: got[(t.index, t.module)] for t in targets}
+            stored = {t.path: got[(t.index, t.module)] for t, _v in targets}
             rejected = state.set_many(stored)
-            for t in targets:    # the requested parameter first (app D44), then the members
+            for t, _v in targets:    # the requested parameter first (app D44), then the others
                 if t.path in rejected:
-                    log(f"    [{via}] could not store linked {t.path}: {rejected[t.path]}")
+                    log(f"    [{via}] could not store {t.path}: {rejected[t.path]}")
                     continue
+                if MODEL.zones[t.zone].index(t.index) is None:
+                    continue     # a hidden channel (Phase 15): no controller has it
                 registry.broadcast(encode_message(f"/{state.mixer_name}/set/{t.path}",
                                                   [stored[t.path]]))
             applied = stored[param.path]
     if VERBOSE:
         log(f"    [{via}] SET {param.path} = {applied!r}"
-            + (f" (+{len(targets) - 1} linked)" if len(targets) > 1 else ""))
+            + (f" (+{len(targets) - 1} more)" if len(targets) > 1 else ""))
+
+
+def destination_holders(param, value, state):
+    """Standard "I/O patch": an I/O output belongs to at most one output
+    channel. The channels (indices, hidden ones included) that hold the
+    destination `param` is being set to, and so lose it; [] for anything
+    else, or None (0)."""
+    if param.zone != "outputChannel" or param.module != PATCH_MODULES["outputChannel"] or not value:
+        return []
+    backend = BACKENDS.get(param.zone)
+    return [str(ch) for ch in range(backend.n)
+            if str(ch) != param.index
+            and state.get(f"{param.zone}/{ch}/{param.module}", default=0.0) == value]
+
+
+def set_count(param, applied, state, registry, via):
+    """A channel count (standard "Channel counts"), under the ordering lock:
+    store it; if it changed, show the new topology (hidden channels silent,
+    the model rebuilt); echo the set to every controller; then, if it
+    changed, config/changed (standard "Config changed")."""
+    old = current_value(param, state)
+    state.set(param.path, applied)
+    changed = applied != old
+    if changed:
+        apply_topology(counts_of(state, MODEL.system), state)
+    registry.broadcast(encode_message(f"/{state.mixer_name}/set/{param.path}", [applied]))
+    if changed:
+        registry.broadcast(encode_message(f"/{state.mixer_name}/{CONFIG_CHANGED}", []))
+        log(f"    [{via}] {param.path} = {int(applied)}: topology "
+            + ", ".join(f"{z} {s.count if s.kind == 'channels' else f'{s.rows}x{s.cols}'}"
+                        for z, s in MODEL.zones.items()))
 
 
 def handle_devicename_change(new_name, state, registry, reply, via):
@@ -898,6 +1182,7 @@ def recall_snapshot(fitted, skipped, label, state, registry, via):
         for param, value in fitted.values():
             if value != current_value(param, state):
                 by_zone.setdefault(param.zone, {})[(param.index, param.module)] = value
+        recall_destinations(by_zone, state)
         stored = {}
         for zone, changes in by_zone.items():
             backend = BACKENDS.get(zone)
@@ -908,12 +1193,40 @@ def recall_snapshot(fitted, skipped, label, state, registry, via):
         for path, why in rejected.items():
             log(f"    [{via}] could not store {path}: {why}")
         for path, value in stored.items():
-            if path not in rejected:
+            zone, index, _module = path.split("/")
+            if path not in rejected and MODEL.zones[zone].index(index) is not None:
                 registry.broadcast(encode_message(f"/{state.mixer_name}/set/{path}", [value]))
         registry.broadcast(encode_message(f"/{state.mixer_name}/snapshot/loaded",
                                           [label, len(fitted), skipped]))
     log(f"    [{via}] snapshot {label!r} recalled: {len(fitted)} applied, "
         f"{len(stored)} changed, {skipped} skipped")
+
+
+def recall_destinations(by_zone, state):
+    """Phase 15 (standard "I/O patch"): a recall's destinations, taken in
+    index order like a run of sets, so an I/O output still ends up with at
+    most one output channel: the later channel keeps it, the others (hidden
+    ones included) become None. Rewrites by_zone['outputChannel'] in place."""
+    backend = BACKENDS.get("outputChannel")
+    changes = by_zone.get("outputChannel")
+    if backend is None or backend.patch is None or not changes:
+        return
+    pm = backend.patch.module
+    current = {str(ch): state.get(f"outputChannel/{ch}/{pm}", default=0.0) for ch in range(backend.n)}
+    final = dict(current)
+    for (index, module), value in sorted(changes.items(), key=lambda kv: int(kv[0][0])):
+        if module != pm:
+            continue
+        final[index] = value
+        if value:
+            for other, held in final.items():
+                if other != index and held == value:
+                    final[other] = 0.0
+    for index, value in final.items():
+        if value != current[index]:
+            changes[(index, pm)] = value
+        else:                        # e.g. set by the snapshot, then taken by a later channel
+            changes.pop((index, pm), None)
 
 
 def handle_snapshot(tail, args, state, registry, reply, via):
@@ -1217,6 +1530,9 @@ def main():
     p.add_argument("--no-bus-layer", action="store_true",
                    help="simulate a bitstream from before Phase 12: inputMatrix only, "
                         "input -> output (with --hw the windows decide)")
+    p.add_argument("--no-patch", action="store_true",
+                   help="simulate a bitstream from before Phase 15: no I/O patch (source, "
+                        "destination) and no channel counts (with --hw the windows decide)")
     p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
                    help="TCP stream framing: len32 = OSC 1.0 4-byte size prefix per packet "
                         "(default); none = unframed messages back to back (older controllers)")
@@ -1246,10 +1562,13 @@ def main():
     SNAPSHOTS = mixer_snapshots.SnapshotStore(snapshot_dir, log=log)
     log(f"Snapshots: {snapshot_dir or 'in memory'} ({len(SNAPSHOTS.list())} stored)")
     BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer,
-                                   identity_from=args.identity_from))
-    MODEL = build_model(BACKENDS, SYSTEM_SETTINGS)
+                                   identity_from=args.identity_from, patch=not args.no_patch))
+    MODEL = build_model(BACKENDS, system_settings(BACKENDS))
+    counts = counts_of(state, MODEL.system)
+    apply_topology(counts, state, push=False)   # before the first push: hidden channels never sound
     FIRMWARE = firmware_version()
-    log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}")
+    log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}"
+        + (f"; counts {', '.join(f'{z} {n}' for z, n in counts.items())}" if counts else ""))
     for backend in BACKENDS.values():
         backend.seed_and_push(state)
     registry = ClientRegistry(args.tcp_framing)
@@ -1264,6 +1583,8 @@ def main():
     if source is not None:
         meter_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         METER_HUB = mixer_meters.MeterHub(source, meter_sock.sendto, lambda: state.mixer_name, log=log)
+        if counts:
+            METER_HUB.set_visible(counts)
         threading.Thread(target=METER_HUB.run, daemon=True).start()
         log(f"Meters: {', '.join(f'{z} ({n})' for z, n in source.zones().items())}")
 

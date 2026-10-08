@@ -17,6 +17,7 @@ Every window has the same header (src/rtl/axil_coef_window.sv):
                     R   bit0 = BUSY, bit1 = QUEUED
     0x00C  COMMITS  RO  commits applied (wraps)
     0x100  COEF[k]  RW  k = 0.., signed, read back sign-extended
+                        (the patch windows, Phase 15: unsigned, zero-extended)
 
 Coefficients are written to a shadow bank and only reach the audio when
 COMMIT is written; the whole bank then changes on one frame. COMMIT never has
@@ -48,6 +49,8 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py meter <window>        # peaks since the last snapshot (Phase 13:
                                               # inmeter, busmeter, outmeter); steals one
                                               # window from the OSC server's meters
+    python3 mixer_hw.py patch                 # both patch tables with port labels
+                                              # (Phase 15; read only)
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
     python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
@@ -285,6 +288,55 @@ class OutputLevelHW(GainHW):
     TAP = 2
 
 
+class PatchHW(RegWindow):
+    """A patch window (src/rtl/patch_regs_axil.sv, Phase 15): one entry per
+    channel, the OSC value itself: 0 = None, p + 1 = I/O port p. CONFIG =
+    [31:24] channels, [23:16] I/O ports, [15:8] DIR (0 input: sources, 1
+    output: destinations), [7:0] entry width; entries unsigned. A subclass
+    names the DIR it expects, so opening the other side is refused."""
+
+    ID = 0x5054_5001
+    DIR = None
+    DIR_NAMES = {0: "input", 1: "output"}
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.ports = (self.config >> 16) & 0xFF
+        self.dir = (self.config >> 8) & 0xFF
+        self.width = self.config & 0xFF
+        if self.DIR is not None and self.dir != self.DIR:
+            raise RuntimeError(f"window at 0x{base:08x}: patch DIR {self.dir}, expected "
+                               f"{self.DIR} ({self.DIR_NAMES.get(self.DIR)} patch; wrong address map?)")
+
+    def describe(self):
+        return (f"{self.DIR_NAMES.get(self.dir, f'dir {self.dir}')} patch, {self.n} channels, "
+                f"{self.ports} ports")
+
+    def _c(self, ch):
+        if not 0 <= ch < self.n:
+            raise IndexError(f"channel {ch} outside {self.n} channels")
+        return ch
+
+    def read_entry(self, ch):
+        return self.rd(REG_COEF0 + 4 * self._c(ch))     # unsigned (COEF_SIGNED 0)
+
+    def set_entries(self, entries):
+        """entries: {channel: 0 (None) or port + 1}; one COMMIT for the lot.
+        Returns {channel: entry applied} (a value past the ports is None)."""
+        applied = {c: (int(v) if 0 <= int(v) <= self.ports else 0) for c, v in entries.items()}
+        self.write_coefs({self._c(c): v for c, v in applied.items()})
+        return applied
+
+
+class InputPatchHW(PatchHW):
+    DIR = 0
+
+
+class OutputPatchHW(PatchHW):
+    DIR = 1
+
+
 class PeakHW(RegWindow):
     """A peak-meter window (src/rtl/peak_regs_axil.sv, Phase 13): per-channel
     peak magnitudes of one zone. CONFIG = [31:24] channels, [23:16] TAP (0
@@ -515,7 +567,21 @@ WINDOWS = {
     "outmeter":  (0x8000_B000, OutputMeterHW),
     # Phase 11 (H.3): link #3, the USB host front door (core channels 0-3)
     "linkstat3": (0x8000_C000, LinkStatHW),
+    # Phase 15: the I/O patch (every PS bitstream from then on)
+    "inpatch":   (0x8000_D000, InputPatchHW),
+    "outpatch":  (0x8000_E000, OutputPatchHW),
 }
+
+# The patch's windows: present together (a Phase 15 bitstream) or not at all.
+PATCH = ("inpatch", "outpatch")
+
+# The I/O ports, in port order: an explicit copy of fpgamixer_top's I/O port
+# map (Phase 15), with the labels the pickers show (decision CS4). Port p is
+# patch entry p + 1; entry 0 is None. Appended, never interleaved. The
+# server checks the count against the patch windows' CONFIG.
+IO_PORTS = (tuple(f"Analog {i}" for i in range(1, 5))     # link #3: the USB host interface
+            + tuple(f"USB {i}" for i in range(1, 9))      # link #1: the computer (USB device)
+            + tuple(f"AVB {i}" for i in range(1, 9)))     # link #2: the network
 
 # The meters: present all together (a Phase 13 bitstream) or not at all.
 METERS = ("inmeter", "busmeter", "outmeter")
@@ -636,6 +702,18 @@ def _main(argv):
         for c, p in enumerate(mt.snapshot()):
             db = 20.0 * math.log10(p / (1 << 23)) if p else float("-inf")
             print(f"{c:>6} {p:#08x} {'silence' if not p else f'{db:7.2f} dBFS'}")
+        return 0
+
+    if cmd == "patch":
+        # Phase 15: both patch tables, with the port labels (read only; the
+        # OSC server owns them, so set the patch through it)
+        for name in PATCH:
+            pt = open_window(name)
+            print(pt.describe())
+            for c in range(pt.n):
+                e = pt.read_entry(c)
+                label = "None" if e == 0 else (IO_PORTS[e - 1] if e <= len(IO_PORTS) else f"? {e}")
+                print(f"{c:>6} {e:>3}  {label}")
         return 0
 
     if cmd == "level" and len(argv) == 5:

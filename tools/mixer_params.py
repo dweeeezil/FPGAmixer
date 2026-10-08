@@ -11,8 +11,9 @@ Standard: docs/FPGA Mixer OSC Standard.md ("Values", "Set and get", "The
 system zone", "Config", "Error reply").
 
   ModuleSpec   one module's (or system setting's) metadata: type (float,
-               int, bool, enum, string), unit, min, max, default, options,
-               group, read_only. apply(value) is the value rule:
+               int, bool, enum, string), unit, min, max, default, options
+               (+ option_labels, Phase 15), group, read_only, linked,
+               max_length. apply(value) is the value rule:
                  - numbers: non-finite remapped (NaN, -inf -> -99.9; +inf ->
                    +99.9), clamped to min/max, bool snapped to 0/1 (>= 0.5
                    is 1), int rounded (halves away from zero); an enum value
@@ -77,6 +78,7 @@ class ModuleSpec:
     read_only: bool = False
     linked: bool = False      # follows virtual groups (standard "Virtual groups")
     max_length: int = None    # strings: at most this many UTF-8 bytes (config "maxLength")
+    option_labels: tuple = () # enums: a label per option, same order (config "optionLabels", Phase 15)
 
     def __post_init__(self):
         if self.type not in TYPES:
@@ -85,6 +87,9 @@ class ModuleSpec:
             raise ValueError(f"min {self.min} > max {self.max}")
         if self.type == "enum" and not self.options:
             raise ValueError("an enum needs options")
+        if self.option_labels and len(self.option_labels) != len(self.options):
+            raise ValueError(f"{len(self.option_labels)} option labels for "
+                             f"{len(self.options)} options")
 
     def default_value(self):
         """The declared default, or the implicit one: '' for strings, the
@@ -146,6 +151,8 @@ class ModuleSpec:
         d["default"] = self.default_value()
         if self.options:
             d["options"] = list(self.options)
+        if self.option_labels:
+            d["optionLabels"] = list(self.option_labels)
         if self.read_only:
             d["readOnly"] = True
         if self.linked:
