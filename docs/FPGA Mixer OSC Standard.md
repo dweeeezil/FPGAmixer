@@ -1,5 +1,5 @@
 Alexander Kelly
-18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in)
+18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots)
 
 This is the one source of truth for the mixer's OSC protocol. The 4 Oct 2026 revision merges the amendments agreed for the StudioRunner controller (A: name and alias, B: config, C: metering, D: TCP framing, E: discovery, F: value encoding, G: error reply, H: ping) and the device rules decided with them. The change log is at the end.
 
@@ -50,12 +50,13 @@ The segment after the mixer name is the command kind:
 | `meter` | both | `/<name>/meter/subscribe ...` (controller), `/<name>/meter/<zone> <blob>` (mixer) | *Metering* |
 | `error` | mixer → controller | `/<name>/error <path> <reason>` | *Error reply* |
 | `ping` / `pong` | controller → mixer / mixer → controller | `/<name>/ping <token>`, `/<name>/pong <token>` | *Ping* |
+| `snapshot` | both | `/<name>/snapshot/<request> ...` (controller), `/<name>/snapshot/list|data|loaded ...` (mixer) | *Snapshots* |
 
 A message with any other kind is ignored.
 
 ### Transports
 
-- **TCP** (two-way): every command. The mixer's replies, echoes and broadcasts go to TCP controllers. Framing: see *TCP framing*.
+- **TCP** (two-way): every command; `snapshot` is TCP only. The mixer's replies, echoes and broadcasts go to TCP controllers. Framing: see *TCP framing*.
 - **UDP control** (write-only): `set` only, one OSC message per datagram. Nothing is ever sent back over it: no reply, no error. An accepted UDP `set` is broadcast to the TCP controllers like any other.
 - **UDP meters** (mixer → controller): see *Metering*.
 
@@ -167,6 +168,7 @@ Rules:
 - **`values`** keys are `<zone>/<index>/<module>`, the same as the address tail of a `set`, so applying the snapshot reuses the path for incoming sets. For `system` the key is `system/<setting>`. Values are **sparse**: an absent entry is its module's `default`. `system/deviceName` is always present.
 - Numbers in `values` should be float32-representable: OSC carries float32, and controllers store values at that precision.
 - `deviceName` (top level) is the current name, `firmware` a version string, `sampleRate` in Hz.
+- **`capabilities`** (optional): a list of optional features the mixer implements. Today: `"snapshots"` (*Snapshots*). Absent or empty: none. A mixer ignores a command kind it doesn't implement without a reply, so controllers check this list before offering a feature.
 - Tolerance (controllers): unknown keys are ignored, unknown module types are shown as a plain number, missing optional fields get defaults. A missing or invalid required field (`schemaVersion`, `zones`, `modules`) fails the connection.
 
 ### Connect ordering
@@ -198,7 +200,8 @@ Refused requests:
 - a `set` of a `readOnly` setting;
 - an `enum` value outside its `options`;
 - an invalid `deviceName` (after the current-name reply, see *The `system` zone*);
-- a malformed `meter/subscribe` (see *Metering*).
+- a malformed `meter/subscribe` (see *Metering*);
+- a refused `snapshot` request (see *Snapshots*).
 
 Clamping is never an error. UDP requests never get an error reply. A message under an unknown name, or with an unknown command kind, is ignored without one.
 
@@ -230,6 +233,65 @@ Meters stream over UDP, mixer → controller, separate from TCP control. The con
 - The peak is the highest since the previous message for that zone (nothing between two ticks is lost).
 - Tap point: post-DSP of that zone. Reserved for later: `meter/<zone>_pre`.
 
+## Snapshots
+
+Optional (config `capabilities` contains `"snapshots"`). A snapshot is every parameter of the mixer, stored on the mixer under a name, or held by a controller as a file. TCP only: a `snapshot` message over UDP is ignored.
+
+**Requests** (controller → mixer):
+
+| Request | Effect |
+|---|---|
+| `/<name>/snapshot/list` | the list of stored snapshots, to the requester |
+| `/<name>/snapshot/save <name:string>` | stores the live state under that name; replaces a snapshot of the same name |
+| `/<name>/snapshot/load <name:string>` | recalls a stored snapshot |
+| `/<name>/snapshot/delete <name:string>` | deletes a stored snapshot |
+| `/<name>/snapshot/fetch` | the live state as snapshot JSON, to the requester |
+| `/<name>/snapshot/fetch <name:string>` | a stored snapshot's JSON, to the requester |
+| `/<name>/snapshot/apply <json:string>` | recalls a snapshot sent by the controller |
+| `/<name>/snapshot/store <name:string> <json:string>` | stores a snapshot sent by the controller, under that name, without recalling it; replaces one of the same name |
+
+**Replies and broadcasts** (mixer → controller):
+
+| Message | Sent |
+|---|---|
+| `/<name>/snapshot/list <json:string>` | to the requester of `list`; **to every TCP controller after an accepted `save`, `store` or `delete`** (the confirmation, as a `set`'s broadcast is) |
+| `/<name>/snapshot/data <name:string> <json:string>` | to the requester of `fetch`; `name` is `""` for the live state |
+| `/<name>/snapshot/loaded <name:string> <applied:int> <skipped:int>` | to every TCP controller after an accepted `load` or `apply`, after the `set`s it caused |
+
+A refused request gets an *Error reply* with `path` `snapshot/<request>` (`snapshot/load`, …): an unknown snapshot name, a name that breaks the rules, a malformed snapshot, a missing or wrong-kind argument, a limit reached. A refused request changes nothing.
+
+The list is a JSON array, sorted by name: `[{"name": "Song A", "savedAt": "2026-10-08T17:02:11Z"}, ...]`. An entry with `"auto": true` was made by the mixer (below). `applied` and `skipped` travel as OSC `i`; controllers also accept `f`.
+
+**Snapshot JSON** (the same on the mixer and in a controller's file):
+
+```json
+{
+  "snapshotVersion": 1,
+  "name": "Song A",
+  "savedAt": "2026-10-08T17:02:11Z",
+  "source": { "deviceName": "FOHmixer", "firmware": "0.5.0" },
+  "zones": { "inputChannel": { "count": 8, "modules": ["level"] } },
+  "values": { "inputChannel/0/level": -6.0, "inputMatrix/5_8/level": -24.0 }
+}
+```
+
+- `snapshotVersion` (required) is a breaking-change number; a mixer refuses a newer one. Unknown keys are ignored.
+- `values` (required) uses the config's `values` keys. A mixer writes **every** parameter (not sparse) and never `system/*`.
+- `name`, `savedAt` (UTC, ISO 8601), `source` and `zones` (the topology it was saved from) are informational. On `store`, the name in the request replaces the file's.
+
+**Names:** 1–63 bytes of UTF-8; spaces allowed; no `/`, `\` or control characters; no leading `.`; no leading or trailing space; case-sensitive. A mixer may limit how many snapshots it stores and their size (the reference server: 128, 1 MiB each); past a limit `save`/`store` is refused.
+
+**Recall** (`load`, `apply`):
+
+1. The snapshot is checked first. If it isn't JSON, lacks `values` or a supported `snapshotVersion`, or has a value of the wrong kind, the request is refused and nothing changes.
+2. Entries the mixer doesn't have (zone, index or module) are skipped and counted; `system/*` entries are ignored. Numbers are clamped and snapped as for a `set` (*Values*).
+3. Parameters the snapshot doesn't mention keep their current value.
+4. Just before recalling, the mixer stores the live state as the snapshot **`Before load`** (`"auto": true`), replacing the previous one, so a recall can be undone by loading it. This store is not announced with a `list` broadcast; the next `list` shows it.
+5. Every value that changed is broadcast as a `set` to every TCP controller, then `snapshot/loaded`. A controller that ignores `snapshot/loaded` stays in sync through the `set`s. `applied` counts the snapshot's entries the mixer has, `skipped` those it doesn't.
+6. The recalled state is kept across a power cycle like any other change.
+
+A recall changes many parameters at once and may be audible (a click), since the mixer doesn't smooth gain changes.
+
 ## Ping
 
 Optional: a mixer may not implement it, and controllers then fall back to TCP state and meter sequence gaps.
@@ -253,3 +315,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 
 - **18 Aug 2026:** first version (set/get, zones, matrix and channel examples, `deviceName`).
 - **4 Oct 2026:** amendments A–H folded in (from the StudioRunner controller's `OSC_Amendments_Proposed.md`, agreed 4 Oct 2026), with the device rules decided alongside them (controller `DECISIONS.md` D33, D37, D38, D39, D50) and in the firmware session: `mixer` is the factory name; the error `path` has no trailing slash; UDP never replies; a malformed `meter/subscribe` gets an error. The `deviceName` example lost its trailing slash (both forms are accepted). Wording fix: a rename is confirmed under the old *name*, also when the request came through `/mixer/`.
+- **8 Oct 2026:** *Snapshots* (the `snapshot` command kind, the snapshot JSON, recall rules) and the config's optional `capabilities`; additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase14_status_2026-10-08.md` (S1–S8).

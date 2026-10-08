@@ -2,7 +2,7 @@
 
 **Branch:** `phase14-snapshots` (from `main` at `68b541b`, the Phase 11 merge, PR #9).
 **Plans:** `docs/plans/plan_snapshots_2026-10-06.md` (this phase), then `plan_virtual_groups_…`, `plan_channel_sources_…`; bundled in `docs/prompt_phase14_qol.md`.
-**Status: snapshot API proposed (§2), awaiting the user's decisions (§3).** Nothing built. The user updates the controller (StudioRunner) side from the agreed API; the standard (`docs/FPGA Mixer OSC Standard.md`) is amended once it's agreed.
+**Status: snapshot API decided 2026-10-08 (S1–S8 all as recommended, §3); building.** The user updates the controller (StudioRunner) side from the agreed API; the standard (`docs/FPGA Mixer OSC Standard.md`) is amended once it's agreed.
 
 ---
 
@@ -108,7 +108,9 @@ Integers (`applied`, `skipped`) travel as OSC `i`, like `pong`'s token; a contro
 | S7 | `store` (upload a computer file to the board without recalling it) | include | leave out (the app can `apply` then `save`, at the cost of recalling it) |
 | S8 | Recall scope | everything (there's only one kind of parameter until channel sources add the I/O patch; "recall safe" for the patch is decided then) | — |
 
-## 4. Steps (after the decisions)
+**Decided by the user 2026-10-08: "as recommended"** (S1–S8, the left column).
+
+## 4. Steps
 
 1. Amend the standard (*Snapshots* section, *Command kinds* row, `capabilities` in *Config*, change log); user review.
 2. `tools/mixer_snapshots.py` (the store: list, read, write crash-safely, delete, name rules, limits; the format's validation) + `test_mixer_snapshots.py`.
@@ -119,3 +121,4 @@ Integers (`applied`, `skipped`) travel as OSC `i`, like `pong`'s token; a contro
 ## 5. Log
 
 - **2026-10-08:** Phase 11 merged (PR #9); branch `phase14-snapshots`. Snapshot API proposed (§2), decisions S1–S8 to the user.
+- **2026-10-08:** decisions S1–S8 as recommended. Next: the standard, then the store and the server.
