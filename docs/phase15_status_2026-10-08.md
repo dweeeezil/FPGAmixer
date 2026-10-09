@@ -163,6 +163,7 @@ A count change alters the topology, which `set`s can't express. After the count'
 - **2026-10-08:** decisions as recommended except CS5 (no default patch: all None); "I/O port" covers analog, USB and AVB. Step 1 done: the standard amended (§5.1); the app's handoff in §7. Next: step 2 (RTL).
 - **2026-10-08:** step 2 done (§5.2): the patch converters, the core at D = 251, `patch_regs_axil`, the top (blank slate); 17/17 TBs, mutants 13/13 + 13/13. Next: step 3 (the BD), then the server.
 - **2026-10-08:** steps 3–5 done (§5.3–§5.5): `ctrl_smc2`; the server (patch, move rule, counts, `config/changed`; 188 Windows / 245 Linux tests, mutants 26/26); bitstream `p15a` (WNS 4.710) and **image `p15a-sources-20261008`**. Next: the lean board check (user), then the app (user, §7) and the by-ear bench (step 6).
+- **2026-10-08:** **board check PASS** on `p15a-sources` (user): the server opened `inpatch` (0x8000_D000) and `outpatch` (0x8000_E000), 20 channels × 20 ports each; `Firmware 230b8c0`, counts 20/20/20; both tables pushed with 0 patched; `mixer_hw.py patch` reads every entry None (the blank slate). *"Looks good to me."* Next: the app (user, §7), then the by-ear bench with the user's example (step 6).
 
 ## 7. For the app (controller repo)
 
