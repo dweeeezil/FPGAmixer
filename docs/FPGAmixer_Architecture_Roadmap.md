@@ -125,6 +125,8 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 | — ✅ *done 2026-10-04* | Controller support (F1–F9) | The OSC server meets the StudioRunner app's contract: the merged standard, config reply, errors, ordering, ping, Bonjour, TCP framing (`controller_support_status_2026-10-04.md`) | **The app connects to the board.** Open: metering (F4 + gateware F4a), the F1–F9 checks on the board |
 | 12 ✅ *done 2026-10-06* | Channel levels and the bus layer | Levels on every input, bus and output (`pcm_gain`), and inputs → input matrix → 20 buses → bus matrix → outputs, inside one frame (D = 249, 11 DSPs); four new register windows; five OSC zones (`phase12_status_2026-10-04.md`) | **Met:** the app's Inputs, Buses and Outputs tabs and both matrix tabs work on the board; old state files keep their meaning. The first slice of Phase 7 |
 | 13 ✅ *done 2026-10-06* | Metering | Peak meters on the three level stages' outputs (`pcm_peak`, tap ports on `mixer_core`, windows 0x8000_9000–B000), the server's meter protocol (`mixer_meters`: subscribe, lease, UDP stream) (`phase13_status_2026-10-06.md`) | **Met:** the app's meters follow the audio on every channel tab. Controller F4 + F4a done |
+| 14 ✅ *done 2026-10-08* | Quality of life: snapshots, virtual groups, channel names | Snapshots (the `snapshot` command kind, on-board store, "Before load" undo), virtual groups (`vgroup`, linked modules, crosspoints never link), channel names (`name`, `maxLength`) — server only (`phase14_status_2026-10-08.md`) | **Met:** snapshots and groups benched with the app; names shipped in Phase 15's image |
+| 15 ✅ *done 2026-10-08* | Channel sources (I/O patch, runtime counts) | `pcm_patch2stream` / `pcm_stream2patch` at the core boundary (D = 251, D_MAX 255), two patch windows behind a second control SmartConnect, `source` / `destination` with `optionLabels`, `system/inputCount` / `busCount` / `outputCount` with hidden channels silenced, `config/changed`; no default patch (`phase15_status_2026-10-08.md`) | **Met:** image `p15a-sources`; board check PASS; the board has been the user's studio router since, through many reboots and power cuts |
 
 ---
 
@@ -156,10 +158,10 @@ Phases 0–3 are the board-agnostic RTL core and are **already hardware-verified
 8. ~~Phase 8 remainder, Phases 9, 10, controller support, 12~~ Done or mostly done, see the table. **Open as of 2026-10-06**, in no fixed order (the user picks):
    - ~~Metering~~ Done 2026-10-06 (Phase 13).
    - ~~Phase 11, USB host mode~~ Done 2026-10-07: the MOTU M2 is the board's headphone/mic I/O on link #3, the **Pmods removed** (`phase11_status_2026-09-30.md` §8).
-   - **Next: snapshots → virtual groups → channel sources (I/O patching)**: dated plans in `docs/plans/`, bundled in `docs/prompt_phase14_qol.md`.
-   - **The F1–F9 checks on the board** (controller-support step 8: `osc_mixer_test.py` from the Mac).
-   - **AVB loose ends:** a clean boot with no manual steps, two streams to one listener, P9.7 checks, P9.8 soak, a multi-hop soak through a switch.
-   - **Phase 7, the rest of the DSP:** mute, EQ, dynamics, delay, gain smoothing.
+   - ~~Snapshots → virtual groups → channel sources~~ Done 2026-10-08 (Phases 14, 15).
+   - **Now (2026-10-10): hardening before the DSP library** (`hardening_status_2026-10-10.md`): bit-exact loopback null tests, a 24 h soak with all three front doors, control changes under load, the F1–F9 checks on the board, then the core's multi-frame budget (decision A) and the library's block template.
+   - **AVB loose ends:** a clean boot with no manual steps (the user occasionally reboots before the network connects: to be timed), two streams to one listener, P9.7 checks, P9.8 soak. A multi-hop soak needs an AVB switch (none on the bench).
+   - **Phase 7, the rest of the DSP:** in the separate HDL library repo (mute, EQ, dynamics, delay; click-free coefficient changes in the block template; multi-input blocks such as sidechains pick their extra inputs like channel sources). A spatial processor / binauralizer is planned as its own section of the mixer, not a plugin.
    - **Phase 8 remainder:** one 8 × 8 device on the Mac (`f_uac2` single clock source, a carried kernel patch).
-   - Recorded, not scheduled: OSC aliases (`proposal_osc_aliases.md`); reading the MAC from QSPI instead of hard-coding it.
-   - Housekeeping: `main` has everything through Phase 13 (PR #8); `phase11-usb-host` (Phase 11) is the one branch on top of it.
+   - Recorded, not scheduled: OSC aliases (`proposal_osc_aliases.md`); reading the MAC from QSPI instead of hard-coding it (before a second board).
+   - Housekeeping: `main` has everything through Phase 15 (merged 2026-10-10, tag `phase15-baseline`).
