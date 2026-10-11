@@ -179,6 +179,36 @@ class Config(unittest.TestCase):
                                                      "options": [48000], "readOnly": True})
         self.assertEqual(c["system"]["deviceName"], {"type": "string", "default": "mixer"})
 
+    def test_linked_is_listed_only_when_true(self):
+        """Phase 14 (standard "Virtual groups"): `linked` is optional metadata."""
+        self.assertEqual(ModuleSpec("float", linked=True).describe(),
+                         {"type": "float", "default": 0.0, "linked": True})
+        self.assertNotIn("linked", ModuleSpec("float").describe())
+
+    def test_string_rules_and_max_length(self):
+        """Phase 14 (channel names): no control characters in any string;
+        max_length counts UTF-8 bytes and is described as maxLength."""
+        name = ModuleSpec("string", default="", max_length=4)
+        self.assertEqual(name.describe(), {"type": "string", "default": "", "maxLength": 4})
+        self.assertNotIn("maxLength", ModuleSpec("string").describe())
+        self.assertEqual(name.apply("abcd"), ("abcd", None))
+        self.assertEqual(name.apply("éé"), ("éé", None))               # 4 bytes
+        for bad in ("abcde", "ééé", "a\tb", "\x7f", 1.0):
+            self.assertIsNone(name.apply(bad)[0], repr(bad))
+        self.assertEqual(ModuleSpec("string").apply("x" * 500)[1], None)   # no limit by default
+
+    def test_option_labels(self):
+        """Phase 15 (I/O patch): optionLabels, one per option, listed only
+        when given; the value is still the number."""
+        spec = ModuleSpec("enum", options=(0.0, 1.0, 2.0), option_labels=("None", "A", "B"), default=0.0)
+        self.assertEqual(spec.describe(), {"type": "enum", "default": 0.0, "options": [0.0, 1.0, 2.0],
+                                           "optionLabels": ["None", "A", "B"]})
+        self.assertEqual(spec.apply(2), (2.0, None))
+        self.assertIsNotNone(spec.apply("A")[1])                          # a label is not a value
+        self.assertNotIn("optionLabels", ModuleSpec("enum", options=(1.0,)).describe())
+        with self.assertRaises(ValueError):
+            ModuleSpec("enum", options=(0.0, 1.0), option_labels=("None",))
+
     def test_values_are_sparse_plus_device_name(self):
         current = {"inputMatrix/1_2/level": 0.0, "inputChannel/1/mute": 1.0,
                    "system/deviceName": "mixer", "system/location": "FOH riser"}

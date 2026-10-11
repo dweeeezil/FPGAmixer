@@ -107,6 +107,19 @@ class Hub(unittest.TestCase):
         self.assertEqual(len(ins[0][3]), 3)                              # N = the zone's count
         self.assertEqual(self.msgs(zone="busChannel"), [])
 
+    def test_blobs_follow_the_channel_counts(self):
+        """Phase 15: after set_visible each blob carries the zone's first
+        `count` channels; zones not named keep all; more than the source
+        has is capped."""
+        self.hub.subscribe("A", "10.0.0.9", 9000, 30, ["inputChannel", "busChannel", "outputChannel"])
+        self.advance(0.1)
+        self.hub.set_visible({"inputChannel": 1, "outputChannel": 9})
+        self.sent.clear()
+        self.advance(0.1)
+        self.assertEqual({len(m[3]) for m in self.msgs(zone="inputChannel")}, {1})
+        self.assertEqual({len(m[3]) for m in self.msgs(zone="busChannel")}, {2})
+        self.assertEqual({len(m[3]) for m in self.msgs(zone="outputChannel")}, {3})
+
     def test_a_transient_reaches_every_subscriber_exactly_once(self):
         """Two subscribers at different rates; one source sample carries a
         spike: each sees it in exactly one message, none loses it."""

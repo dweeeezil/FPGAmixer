@@ -6,13 +6,15 @@
 //
 //   sysclk -> audio_clocking -> mclk, rst_n, frame  (shared by everything)
 //
-//   PS (Audio Formatter #3) <-> pcm_link u_link3 <-> ch0..3 ----.  (Phase 11: the
+//   PS (Audio Formatter #3) <-> pcm_link u_link3 <-> port 0..3 ----.  (Phase 11: the
 //                                     USB-host interface, e.g. the MOTU M2)
-//   PS (Audio Formatter #1) <-> pcm_link u_link  <-> ch4..11 ---+-> mixer_core
-//   PS (Audio Formatter #2) <-> pcm_link u_link2 <-> ch12..19 --'   u_core
-//   (ch0..3 were the Pmod I2S2 modules on JB/JC until Phase 11, decision P1)
+//   PS (Audio Formatter #1) <-> pcm_link u_link  <-> port 4..11 ---+-> mixer_core
+//   PS (Audio Formatter #2) <-> pcm_link u_link2 <-> port 12..19 --'   u_core
+//   (ports 0..3 were the Pmod I2S2 modules on JB/JC until Phase 11, decision P1)
 //                    (Phase 12: 20 in -> levels -> input matrix -> 20 buses
-//                     -> levels -> bus matrix -> levels -> 20 out)
+//                     -> levels -> bus matrix -> levels -> 20 out;
+//                     Phase 15: between the input and output patch, which
+//                     say which I/O port each channel uses)
 //   control plane (INCLUDE_PS): PS -> M_AXI_CTRL -> matrix_regs_axil u_regs
 //                                   -> input matrix read port -> u_core
 //                  Phase 12: M_AXI_BUSMX -> matrix_regs_axil u_busmx_regs,
@@ -21,6 +23,8 @@
 //                  Phase 13: the core's tap ports -> peak_regs_axil
 //                  u_inmtr_regs / u_busmtr_regs / u_outmtr_regs <-
 //                  M_AXI_INMTR / BUSMTR / OUTMTR (the meters)
+//                  Phase 15: M_AXI_INPATCH / OUTPATCH -> patch_regs_axil
+//                  u_inpatch_regs / u_outpatch_regs (the I/O patch)
 //                  (without the PS: coef_flat_readers over the reset banks)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
@@ -29,17 +33,19 @@
 //                  media_clock_meter -> media_clock_stat_regs <- M_AXI_MCLKSTAT
 //
 // Everything this file decides:
-//   - the channel map: which front-door channel is which core channel;
-//   - N_BUS (= N, decision L2) and the reset state: IN_MX_GAINS, BUS_MX_GAINS
-//     (identity), LEVEL_GAINS (unity);
+//   - the I/O port map: which front-door channel is which I/O port (Phase 15;
+//     until then it was the channel map: port k WAS core channel k);
+//   - N (channels), N_BUS (= N, decision L2) and the reset state:
+//     IN_MX_GAINS, BUS_MX_GAINS (identity), LEVEL_GAINS (unity), the patch
+//     (all None with the PS, decision CS5; identity without);
 //   - where the coefficients come from: the PS (INCLUDE_PS builds), or the
 //     reset banks tied on directly (non-PS projects and the Icarus/XSim
 //     integration TBs);
 //   - whether the PS<->PL links exist (INCLUDE_LINK, phase8 builds; link #2,
 //     INCLUDE_LINK2, phase9 builds: the AVB front door's PL half; link #3,
 //     INCLUDE_LINK3, phase9 builds since Phase 11: the USB-host front door's).
-//     Without a link its channels read as silence, so the core is 20 x 20 in
-//     every build.
+//     Without a link its ports read as silence, so the core has 20 ports and
+//     20 x 20 x 20 channels in every build.
 //
 // Phase 11 (decision P1): the Pmod I2S2 front doors are gone, with their pins,
 // their codec timing constraints and the frame strobe they provided (now
@@ -60,7 +66,10 @@ module fpgamixer_top (
     localparam int N_HOST  = 4;             // ... of which core channels 0..3 (the Pmods' slots)
     localparam int N_LINK  = 8;             // PS<->PL link #1 (USB), each way
     localparam int N_LINK2 = 8;             // PS<->PL link #2 (AVB), each way
-    localparam int N  = N_HOST + N_LINK + N_LINK2;  // core channels in = out (20)
+    localparam int P  = N_HOST + N_LINK + N_LINK2;  // I/O ports in = out (20)
+    localparam int N  = 20;    // core channels in = out: the maximum the runtime
+                               // counts reach (Phase 15, CS6); no longer = P
+    localparam int PW = $clog2(P + 1);      // a patch entry: 0 = None, port + 1
     localparam int SW = 24;
     localparam int GW = 18;    // gain width,  Q2.16
     localparam int GF = 16;    // gain fraction bits
@@ -89,21 +98,25 @@ module fpgamixer_top (
     logic [N_LINK2*SW-1:0] link2_rx, link2_tx;
     logic [N_LINK3*SW-1:0] link3_rx, link3_tx;
 
-    // ----- Channel map (core ch0 at the LSB) -----
-    //   ch0..ch3   = link #3 channels 0..3 (Phase 11: the USB-host front door,
-    //                card FPGAmixerLink3; the MOTU M2 uses 0..1). Link #3's
-    //                channels 4..7 are not in the core: dropped in, zero out.
-    //                (Until Phase 11: the Pmods, JB_L, JB_R, JC_L, JC_R.)
-    //   ch4..ch11  = link #1 channels 0..7: inputs = what the PS plays (USB: the
-    //                Mac's outputs 1-8), outputs = what the PS records
-    //   ch12..ch19 = link #2 channels 0..7 (Phase 9, P9.5: the AVB front door's
-    //                ALSA card FPGAmixerLink2)
-    // New channels are appended, never interleaved, so saved crosspoint
-    // indices keep their meaning when the core grows.
-    logic [N*SW-1:0] core_in, core_out;
+    // ----- I/O port map (port 0 at the LSB) -----
+    // Since Phase 15 the core's packed sides are the I/O PORTS, and its input /
+    // output patch says which port each channel uses (OSC "source" /
+    // "destination" = port + 1, 0 = None). Ports, the same numbers each way:
+    //   port 0..3   = link #3 channels 0..3 (Phase 11: the USB-host front door,
+    //                 card FPGAmixerLink3; the MOTU M2 uses 0..1): "Analog 1-4".
+    //                 Link #3's channels 4..7 are not ports: dropped in, zero out.
+    //                 (Until Phase 11: the Pmods, JB_L, JB_R, JC_L, JC_R.)
+    //   port 4..11  = link #1 channels 0..7: in = what the PS plays (USB: the
+    //                 Mac's outputs 1-8), out = what the PS records: "USB 1-8"
+    //   port 12..19 = link #2 channels 0..7 (Phase 9, P9.5: the AVB front door's
+    //                 ALSA card FPGAmixerLink2): "AVB 1-8"
+    // New ports are appended, never interleaved, so stored patch entries keep
+    // their meaning. The server's copy of this table, with the labels, is
+    // tools/mixer_hw.py IO_PORTS.
+    logic [P*SW-1:0] io_in, io_out;
     logic [N_HOST*SW-1:0] host_tx;
-    assign core_in = { link2_rx, link_rx, link3_rx[N_HOST*SW-1:0] };
-    assign { link2_tx, link_tx, host_tx } = core_out;
+    assign io_in = { link2_rx, link_rx, link3_rx[N_HOST*SW-1:0] };
+    assign { link2_tx, link_tx, host_tx } = io_out;
     assign link3_tx = { {(N_LINK3 - N_HOST)*SW{1'b0}}, host_tx };
 
     // ----- Buses (Phase 12, decision L2): one per output -----
@@ -142,6 +155,19 @@ module fpgamixer_top (
     localparam logic [N*N_BUS*GW-1:0] BUS_MX_GAINS = identity_bus_mx();
     localparam logic [N*GW-1:0]       LEVEL_GAINS  = unity_levels();
 
+    // The patch (Phase 15). PS builds start with NOTHING patched (decision
+    // CS5, "a blank slate should be a blank slate"): every source and
+    // destination None, so nothing is heard until the server patches. Builds
+    // without the PS can never be patched, so they read the identity patch
+    // (channel k <-> port k), which with the banks above is today's routing.
+    function automatic logic [N*PW-1:0] identity_patch();
+        logic [N*PW-1:0] t = '0;
+        for (int c = 0; c < N && c < P; c++) t[c*PW +: PW] = PW'(c + 1);
+        return t;
+    endfunction
+    localparam logic [N*PW-1:0] PATCH_NONE     = '0;
+    localparam logic [N*PW-1:0] PATCH_IDENTITY = identity_patch();
+
     // ----- Control plane: where the coefficients come from -----
     // The core reads each block's coefficients through a read port
     // (docs/architecture_modules.md 3): from the PS's register windows
@@ -159,6 +185,8 @@ module fpgamixer_top (
     logic [L1*GW-1:0]  in_mx_data;
     logic [BMX_AW-1:0] bus_mx_addr;
     logic [L2*GW-1:0]  bus_mx_data;
+    logic [CW-1:0]     in_patch_addr, out_patch_addr;   // Phase 15
+    logic [PW-1:0]     in_patch_data, out_patch_data;
 
     // the core's tap ports (Phase 13): the level stages' output streams,
     // metered in PS builds (unused without the PS)
@@ -243,6 +271,24 @@ module fpgamixer_top (
     logic        omt_awvalid, omt_awready, omt_wvalid, omt_wready;
     logic        omt_bvalid, omt_bready, omt_arvalid, omt_arready;
     logic        omt_rvalid, omt_rready;
+
+    // Phase 15 (decision CS10): the two patch windows, the same way, behind
+    // the BD's second SmartConnect (the clock and reset are the same):
+    //   M_AXI_INPATCH 0x8000_D000 ipt_*   M_AXI_OUTPATCH 0x8000_E000 opt_*
+    logic [31:0] ipt_awaddr, ipt_araddr, ipt_wdata, ipt_rdata;
+    logic [2:0]  ipt_awprot, ipt_arprot;
+    logic [3:0]  ipt_wstrb;
+    logic [1:0]  ipt_bresp, ipt_rresp;
+    logic        ipt_awvalid, ipt_awready, ipt_wvalid, ipt_wready;
+    logic        ipt_bvalid, ipt_bready, ipt_arvalid, ipt_arready;
+    logic        ipt_rvalid, ipt_rready;
+    logic [31:0] opt_awaddr, opt_araddr, opt_wdata, opt_rdata;
+    logic [2:0]  opt_awprot, opt_arprot;
+    logic [3:0]  opt_wstrb;
+    logic [1:0]  opt_bresp, opt_rresp;
+    logic        opt_awvalid, opt_awready, opt_wvalid, opt_wready;
+    logic        opt_bvalid, opt_bready, opt_arvalid, opt_arready;
+    logic        opt_rvalid, opt_rready;
 
 `ifdef INCLUDE_LINK
     // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
@@ -574,6 +620,44 @@ module fpgamixer_top (
         .M_AXI_OUTMTR_rresp   (omt_rresp),
         .M_AXI_OUTMTR_rvalid  (omt_rvalid),
         .M_AXI_OUTMTR_rready  (omt_rready),
+        .M_AXI_INPATCH_awaddr   (ipt_awaddr),
+        .M_AXI_INPATCH_awprot   (ipt_awprot),
+        .M_AXI_INPATCH_awvalid  (ipt_awvalid),
+        .M_AXI_INPATCH_awready  (ipt_awready),
+        .M_AXI_INPATCH_wdata    (ipt_wdata),
+        .M_AXI_INPATCH_wstrb    (ipt_wstrb),
+        .M_AXI_INPATCH_wvalid   (ipt_wvalid),
+        .M_AXI_INPATCH_wready   (ipt_wready),
+        .M_AXI_INPATCH_bresp    (ipt_bresp),
+        .M_AXI_INPATCH_bvalid   (ipt_bvalid),
+        .M_AXI_INPATCH_bready   (ipt_bready),
+        .M_AXI_INPATCH_araddr   (ipt_araddr),
+        .M_AXI_INPATCH_arprot   (ipt_arprot),
+        .M_AXI_INPATCH_arvalid  (ipt_arvalid),
+        .M_AXI_INPATCH_arready  (ipt_arready),
+        .M_AXI_INPATCH_rdata    (ipt_rdata),
+        .M_AXI_INPATCH_rresp    (ipt_rresp),
+        .M_AXI_INPATCH_rvalid   (ipt_rvalid),
+        .M_AXI_INPATCH_rready   (ipt_rready),
+        .M_AXI_OUTPATCH_awaddr  (opt_awaddr),
+        .M_AXI_OUTPATCH_awprot  (opt_awprot),
+        .M_AXI_OUTPATCH_awvalid (opt_awvalid),
+        .M_AXI_OUTPATCH_awready (opt_awready),
+        .M_AXI_OUTPATCH_wdata   (opt_wdata),
+        .M_AXI_OUTPATCH_wstrb   (opt_wstrb),
+        .M_AXI_OUTPATCH_wvalid  (opt_wvalid),
+        .M_AXI_OUTPATCH_wready  (opt_wready),
+        .M_AXI_OUTPATCH_bresp   (opt_bresp),
+        .M_AXI_OUTPATCH_bvalid  (opt_bvalid),
+        .M_AXI_OUTPATCH_bready  (opt_bready),
+        .M_AXI_OUTPATCH_araddr  (opt_araddr),
+        .M_AXI_OUTPATCH_arprot  (opt_arprot),
+        .M_AXI_OUTPATCH_arvalid (opt_arvalid),
+        .M_AXI_OUTPATCH_arready (opt_arready),
+        .M_AXI_OUTPATCH_rdata   (opt_rdata),
+        .M_AXI_OUTPATCH_rresp   (opt_rresp),
+        .M_AXI_OUTPATCH_rvalid  (opt_rvalid),
+        .M_AXI_OUTPATCH_rready  (opt_rready),
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -745,6 +829,43 @@ module fpgamixer_top (
         .s_axi_rvalid  (omt_rvalid), .s_axi_rready (omt_rready),
         .mclk (mclk), .frame_i (frame),
         .s_valid (tap_out_valid), .s_ch (tap_out_ch), .s_data (tap_out_data)
+    );
+
+    // Phase 15: the I/O patch, one window per side (zones inputChannel
+    // "source", outputChannel "destination"); DIR in CONFIG says which. Both
+    // start all None (CS5).
+    patch_regs_axil #(.N (N), .P (P), .DIR (0), .ADDR_WIDTH (12), .RESET_TABLE (PATCH_NONE))
+    u_inpatch_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (ipt_awaddr[11:0]), .s_axi_awvalid (ipt_awvalid),
+        .s_axi_awready (ipt_awready),
+        .s_axi_wdata   (ipt_wdata),  .s_axi_wstrb  (ipt_wstrb),
+        .s_axi_wvalid  (ipt_wvalid), .s_axi_wready (ipt_wready),
+        .s_axi_bresp   (ipt_bresp),  .s_axi_bvalid (ipt_bvalid),
+        .s_axi_bready  (ipt_bready),
+        .s_axi_araddr  (ipt_araddr[11:0]), .s_axi_arvalid (ipt_arvalid),
+        .s_axi_arready (ipt_arready),
+        .s_axi_rdata   (ipt_rdata),  .s_axi_rresp  (ipt_rresp),
+        .s_axi_rvalid  (ipt_rvalid), .s_axi_rready (ipt_rready),
+        .mclk (mclk), .frame_i (frame),
+        .coef_addr (in_patch_addr), .coef_data (in_patch_data)
+    );
+
+    patch_regs_axil #(.N (N), .P (P), .DIR (1), .ADDR_WIDTH (12), .RESET_TABLE (PATCH_NONE))
+    u_outpatch_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (opt_awaddr[11:0]), .s_axi_awvalid (opt_awvalid),
+        .s_axi_awready (opt_awready),
+        .s_axi_wdata   (opt_wdata),  .s_axi_wstrb  (opt_wstrb),
+        .s_axi_wvalid  (opt_wvalid), .s_axi_wready (opt_wready),
+        .s_axi_bresp   (opt_bresp),  .s_axi_bvalid (opt_bvalid),
+        .s_axi_bready  (opt_bready),
+        .s_axi_araddr  (opt_araddr[11:0]), .s_axi_arvalid (opt_arvalid),
+        .s_axi_arready (opt_arready),
+        .s_axi_rdata   (opt_rdata),  .s_axi_rresp  (opt_rresp),
+        .s_axi_rvalid  (opt_rvalid), .s_axi_rready (opt_rready),
+        .mclk (mclk), .frame_i (frame),
+        .coef_addr (out_patch_addr), .coef_data (out_patch_data)
     );
 
 `ifdef INCLUDE_LINK
@@ -998,6 +1119,15 @@ module fpgamixer_top (
         .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
         .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
     );
+    // ... and the identity patch (nothing could ever patch these builds)
+    coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_patch (
+        .mclk (mclk), .frame_i (frame), .coefs_flat (PATCH_IDENTITY),
+        .rd_addr (in_patch_addr), .rd_data (in_patch_data)
+    );
+    coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_patch (
+        .mclk (mclk), .frame_i (frame), .coefs_flat (PATCH_IDENTITY),
+        .rd_addr (out_patch_addr), .rd_data (out_patch_data)
+    );
     assign link_rx  = '0;
     assign link2_rx = '0;
     assign link3_rx = '0;
@@ -1005,22 +1135,24 @@ module fpgamixer_top (
 
     // ----- PCM core -----
     // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->
-    // bus matrix -> output levels, between the stream converters. core_out
-    // updates D cycles after the strobe (249 at 20 -> 20 -> 20 on 4 + 4 lanes;
-    // the single matrix was 227), before the links take their frame (the next
-    // strobe): the same latency in frames as the parallel matrix had. (D_MAX
-    // = 250 was set by the Pmods' i2s_port, gone since Phase 11; it could now
-    // loosen to just under a frame, not needed yet.)
+    // bus matrix -> output levels; since Phase 15 between the input and
+    // output patch (I/O ports <-> channels). io_out updates D cycles after
+    // the strobe (251 at 20 -> 20 -> 20 on 4 + 4 lanes; 249 before the patch,
+    // the single matrix 227), before the links take their frame (the next
+    // strobe, edge 256: D_MAX = 255): the same latency in frames as the
+    // parallel matrix had.
     mixer_core #(
-        .N_IN (N), .N_BUS (N_BUS), .N_OUT (N), .SW (SW), .GW (GW), .GF (GF),
-        .L1 (L1), .L2 (L2)
+        .N_IN (N), .N_BUS (N_BUS), .N_OUT (N), .P_IN (P), .P_OUT (P),
+        .SW (SW), .GW (GW), .GF (GF), .L1 (L1), .L2 (L2)
     ) u_core (
         .mclk (mclk), .rst_n (rst_n),
         .frame_i (frame),
-        .in_flat  (core_in),
-        .out_flat (core_out),
+        .in_flat  (io_in),
+        .out_flat (io_out),
         .valid_o  (),
         .err_o    (),
+        .in_patch_addr  (in_patch_addr),  .in_patch_data  (in_patch_data),
+        .out_patch_addr (out_patch_addr), .out_patch_data (out_patch_data),
         .in_lvl_addr  (in_lvl_addr),  .in_lvl_data  (in_lvl_data),
         .in_mx_addr   (in_mx_addr),   .in_mx_data   (in_mx_data),
         .bus_lvl_addr (bus_lvl_addr), .bus_lvl_data (bus_lvl_data),

@@ -3,15 +3,20 @@
 //
 // Phase 12 step 3: the platform layer's register-window wiring, in the real
 // fpgamixer_top compiled as a PS build (INCLUDE_PS; no links, no media clock,
-// as phase5), with the block design replaced by ps_sys_wrapper_stub (five
-// AXI4-Lite master BFMs) and the MMCM by clk_wiz_audio_stub.
+// as phase5), with the block design replaced by ps_sys_wrapper_stub (an
+// AXI4-Lite master BFM per window) and the MMCM by clk_wiz_audio_stub.
 //
 // Checks:
 //   - each window answers on its own port with its own ID and CONFIG:
 //     input matrix and bus matrix (0x4D58_5001, 20 x 20), input / bus /
 //     output levels (0x474E_5001, N = 20, TAP 0 / 1 / 2);
-//   - the reset state: identity and unity, except the USB-host channels 0..3
-//     whose input matrix starts all off (Phase 11, H5);
+//   - Phase 15: the patch windows (0x5054_5001; N 20, P 20, DIR 0 / 1, 5-bit
+//     entries); the reset state is a BLANK SLATE (decision CS5): every patch
+//     entry None, every I/O output silent although the matrices and levels
+//     start at identity and unity;
+//   - after patching identity through the two windows: identity and unity,
+//     except the USB-host channels 0..3 whose input matrix starts all off
+//     (Phase 11, H5); the I/O port map (links in -> io_in, io_out -> links);
 //   - each window drives ITS block: with the core's input forced to known
 //     samples, one change per window (on channels B = 4 .. 6, which start at
 //     identity), chosen so that a swapped or misrouted window gives a
@@ -23,7 +28,10 @@
 //       output level ch B+1 = 0.5
 //     expected: out B = 0; out B+1 = (in B/4 + in B+1) / 2; out B+2 =
 //     in B+2 / 4; outputs 0..3 silent; every other output = its input;
-//   - Phase 13: each meter reads its own zone.
+//   - Phase 13: each meter reads its own zone;
+//   - Phase 15: a crossing repatch, input channel B+3 <- port 13 and output
+//     channel B+3 -> port 2 (channel 2 -> None): port 2 carries port 13's
+//     signal, port B+3 goes silent; swapped patch windows give otherwise.
 // Phase 11: fpgamixer_top has no Pmod pins any more (decision P1).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
@@ -82,8 +90,9 @@ module tb_top_windows;
 
     localparam int CTRL = 0, BUSMX = 1, INLVL = 2, BUSLVL = 3, OUTLVL = 4;
     localparam int INMTR = 5, BUSMTR = 6, OUTMTR = 7;                    // Phase 13
-    string name [8] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
-                        "input meter", "bus meter", "output meter"};
+    localparam int INPATCH = 8, OUTPATCH = 9;                             // Phase 15
+    string name [10] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
+                         "input meter", "bus meter", "output meter", "input patch", "output patch"};
 
     function automatic logic [31:0] mag(input logic [SW-1:0] x);       // as pcm_peak
         if (x == 24'h800000) return 32'h7F_FFFF;
@@ -147,23 +156,42 @@ module tb_top_windows;
         rd(BUSMTR, 32'h004, r); check("bus meter CONFIG",     r, 32'h1401_1800);
         rd(OUTMTR, 32'h000, r); check("output meter ID",      r, 32'h504B_5001);
         rd(OUTMTR, 32'h004, r); check("output meter CONFIG",  r, 32'h1402_1800);
+        rd(INPATCH,  32'h000, r); check("input patch ID",      r, 32'h5054_5001);
+        rd(INPATCH,  32'h004, r); check("input patch CONFIG",  r, 32'h1414_0005);
+        rd(OUTPATCH, 32'h000, r); check("output patch ID",     r, 32'h5054_5001);
+        rd(OUTPATCH, 32'h004, r); check("output patch CONFIG", r, 32'h1414_0105);
 
-        $display("-- reset state: identity and unity, output = input; channels 0..3 off (H5)");
+        $display("-- reset state: a blank slate (CS5): nothing patched, every port silent");
         repeat (3) @(posedge u_dut.u_core.valid_o);
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
-            check($sformatf("reset out%0d", k), 32'(u_dut.core_out[k*SW +: SW]),
+            check($sformatf("reset port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'h0);
+        for (int c = 0; c < N; c++) begin
+            rd(INPATCH,  lv(c), r); check($sformatf("source[%0d] None", c), r, 32'h0);
+            rd(OUTPATCH, lv(c), r); check($sformatf("destination[%0d] None", c), r, 32'h0);
+        end
+
+        $display("-- patched identity: output = input; channels 0..3 off (H5)");
+        for (int c = 0; c < N; c++) begin
+            wr(INPATCH,  lv(c), 32'(c + 1));
+            wr(OUTPATCH, lv(c), 32'(c + 1));
+        end
+        commit(INPATCH); commit(OUTPATCH);
+        repeat (3) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        for (int k = 0; k < N; k++)
+            check($sformatf("identity port%0d", k), 32'(u_dut.io_out[k*SW +: SW]),
                   k < NH ? 32'h0 : 32'(stim[k*SW +: SW]));
 
-        $display("-- the channel map (Phase 11): links in -> core in, core out -> links out");
-        check("core_in = the links in map order", 32'(u_dut.core_in == stim), 1);
+        $display("-- the I/O port map (Phase 11/15): links in -> io_in, io_out -> links out");
+        check("io_in = the links in port order", 32'(u_dut.io_in == stim), 1);
         for (int c = 0; c < 8; c++) begin
             check($sformatf("link #1 out ch%0d", c), 32'(u_dut.link_tx[c*SW +: SW]),
-                  32'(u_dut.core_out[(4 + c)*SW +: SW]));
+                  32'(u_dut.io_out[(4 + c)*SW +: SW]));
             check($sformatf("link #2 out ch%0d", c), 32'(u_dut.link2_tx[c*SW +: SW]),
-                  32'(u_dut.core_out[(12 + c)*SW +: SW]));
+                  32'(u_dut.io_out[(12 + c)*SW +: SW]));
             check($sformatf("link #3 out ch%0d", c), 32'(u_dut.link3_tx[c*SW +: SW]),
-                  c < NH ? 32'(u_dut.core_out[c*SW +: SW]) : 32'h0);
+                  c < NH ? 32'(u_dut.io_out[c*SW +: SW]) : 32'h0);
         end
 
         $display("-- one change per window (channels B = 4 .. 6)");
@@ -183,7 +211,7 @@ module tb_top_windows;
         repeat (3) @(posedge u_dut.u_core.valid_o);
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
-            check($sformatf("out%0d", k), 32'(u_dut.core_out[k*SW +: SW]), 32'(exp_out[k]));
+            check($sformatf("out%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
 
         $display("-- each meter reads its own zone (Phase 13)");
         begin
@@ -201,6 +229,20 @@ module tb_top_windows;
             check_meter(BUSMTR, want_bus, "post-level");
             check_meter(OUTMTR, exp_out,  "post-level");
         end
+
+        $display("-- a crossing repatch (Phase 15): in ch B+3 <- port 13, out ch B+3 -> port 2");
+        wr(INPATCH,  lv(B+3), 32'd14);                  // port 13 + 1
+        wr(OUTPATCH, lv(2), 32'd0);                     // channel 2 lets port 2 go
+        wr(OUTPATCH, lv(B+3), 32'd3);                   // port 2 + 1
+        commit(INPATCH); commit(OUTPATCH);
+        exp_out[2]   = stim[13*SW +: SW];               // channel B+3, fed by port 13
+        exp_out[B+3] = '0;                              // no channel names port B+3
+        repeat (3) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        for (int k = 0; k < N; k++)
+            check($sformatf("repatched port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
+        rd(INPATCH,  lv(B+3), r); check("source[B+3] reads back", r, 32'd14);
+        rd(OUTPATCH, lv(B+3), r); check("destination[B+3] reads back", r, 32'd3);
 
         $display("-- the GAIN registers read back");
         rd(INLVL,  lv(B), r);       check("input level B",    r, 32'h0000_8000);

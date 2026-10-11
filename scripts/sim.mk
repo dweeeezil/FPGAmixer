@@ -42,14 +42,15 @@ SIM      := src/sim
 # between the converters, for the matrix TBs (sim only).
 MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv \
             $(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
+            $(RTL)/pcm_patch2stream.sv $(RTL)/pcm_stream2patch.sv \
             $(RTL)/pcm_matrix.sv $(RTL)/pcm_gain.sv $(RTL)/mixer_core.sv
 MXSIM    := $(SIM)/matrix_packed_sim.sv
 
 CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
             $(RTL)/reset_sync.sv $(RTL)/audio_clocking.sv
 
-.PHONY: all matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat topwin clean
-all: matrix matrix_rect corepkg gain core stream coefram mclk steer regs gainregs peak link linkstat topwin
+.PHONY: all matrix matrix_rect corepkg gain core stream patch coefram mclk steer regs gainregs patchregs peak link linkstat topwin clean
+all: matrix matrix_rect corepkg gain core stream patch coefram mclk steer regs gainregs patchregs peak link linkstat topwin
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -99,6 +100,14 @@ stream: | $(BUILD)
 		$(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
 		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_stream.sv
 	@$(VVP) $(BUILD)/tb_pcm_stream.vvp
+
+# --- Phase 15: the patch converters (input / output patch), random tables vs a model ---
+patch: | $(BUILD)
+	@echo ">>> Building tb_pcm_patch"
+	@$(IVERILOG) $(FLAGS) -s tb_pcm_patch -o $(BUILD)/tb_pcm_patch.vvp \
+		$(RTL)/pcm_patch2stream.sv $(RTL)/pcm_stream2patch.sv $(RTL)/coef_flat_reader.sv \
+		$(SIM)/pcm_stream_monitor.sv $(SIM)/tb_pcm_patch.sv
+	@$(VVP) $(BUILD)/tb_pcm_patch.vvp
 
 # --- Phase 9: coefficient bank in RAM (read port, swap at the frame), unrelated clocks ---
 coefram: | $(BUILD)
@@ -154,6 +163,14 @@ gainregs: | $(BUILD)
 		$(RTL)/gain_regs_axil.sv $(SIM)/tb_gain_regs.sv
 	@$(VVP) $(BUILD)/tb_gain_regs.vvp
 
+# --- Phase 15: the two patch windows across aclk/mclk into the patch converters ---
+patchregs: | $(BUILD)
+	@echo ">>> Building tb_patch_regs"
+	@$(IVERILOG) $(FLAGS) -s tb_patch_regs -o $(BUILD)/tb_patch_regs.vvp \
+		$(RTL)/pcm_patch2stream.sv $(RTL)/pcm_stream2patch.sv $(RTL)/coef_bank_ram.sv \
+		$(RTL)/axil_coef_window.sv $(RTL)/patch_regs_axil.sv $(SIM)/tb_patch_regs.sv
+	@$(VVP) $(BUILD)/tb_patch_regs.vvp
+
 # --- Phase 13: the peak meter window (SNAP, windows vs a model) across aclk/mclk ---
 peak: | $(BUILD)
 	@echo ">>> Building tb_pcm_peak"
@@ -169,7 +186,7 @@ topwin: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -DINCLUDE_PS -s tb_top_windows -o $(BUILD)/tb_top_windows.vvp \
 		$(CORE_RTL) $(RTL)/coef_bank_ram.sv $(RTL)/axil_coef_window.sv \
 		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/pcm_peak.sv \
-		$(RTL)/peak_regs_axil.sv $(RTL)/fpgamixer_top.sv \
+		$(RTL)/peak_regs_axil.sv $(RTL)/patch_regs_axil.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
 	@$(VVP) $(BUILD)/tb_top_windows.vvp
 

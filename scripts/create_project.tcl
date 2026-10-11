@@ -71,6 +71,11 @@ set xdc_file      "constraints/${current_phase}_genesys_zu.xdc"
 #                   door's PL half. phase8 stays selectable and builds its
 #                   BD as before (the core is 20 x 20 in every build since
 #                   P9.5, the link #2 channels silent without link #2).
+#                   Since Phase 11 H.3 also link #3 (INCLUDE_LINK3).
+# Phase 15 (every PS build): a second control SmartConnect, ctrl_smc2, on
+#                   ctrl_smc's last master, with the two I/O patch windows
+#                   (0x8000_D000 / 0x8000_E000) and, in phase9, link #3's
+#                   status window (docs/phase15_status_2026-10-08.md, CS10).
 #
 # The top-level XDC names a few instances by path (u_clk/u_mmcm and
 # u_jb|u_jc/u_fwd_*/u_oddr). Adding hierarchy ABOVE fpgamixer_top, or renaming
@@ -428,9 +433,12 @@ if {$include_ps} {
     # Phase 13: the three meter windows the next three (phase9: M11-M13).
     # Phase 11 (H.3, phase9): M14 = formatter #3, M15 = link #3's status
     # window -- 16 masters, the SmartConnect's limit.
+    # Phase 15 (decision CS10): the LAST master feeds a second SmartConnect,
+    # ctrl_smc2 (below), which carries the two patch windows and, in phase9,
+    # link #3's status window (moved there, same address): phase9 = M15.
     set n_mi_base [expr {$include_link2 ? 7 : ($include_mclk ? 5 : ($include_link ? 3 : 1))}]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {$n_mi_base + 7 + ($include_link3 ? 2 : 0)}]] $smc
+        CONFIG.NUM_MI [expr {$n_mi_base + 7 + ($include_link3 ? 1 : 0) + 1}]] $smc
     connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] \
                         [get_bd_intf_pins $smc/S00_AXI]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc/aclk]
@@ -668,9 +676,11 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     # registers on M14 at 0x8012_0000 (driver-owned range, like #1 and #2),
     # its DMA on link_dma_smc S04/S05 into HPC0, its IRQs on link_irqs In4/In5,
     # the same aud_mclk, streams M_AXIS_LINK3_MM2S / S_AXIS_LINK3_S2MM; its
-    # status window (pcm_link_stat_regs u_link3_stat) on M15 at 0x8000_C000,
-    # the next free window slot. It follows the Phase 12/13 windows so their
-    # master numbers don't move. Still no PS8 setting changes.
+    # status window (pcm_link_stat_regs u_link3_stat) at 0x8000_C000, the
+    # next free window slot: on M15 until Phase 15, now on ctrl_smc2 (below;
+    # the address and the port name are unchanged). It follows the Phase
+    # 12/13 windows so their master numbers don't move. Still no PS8 setting
+    # changes.
     if {$include_link3} {
         set fmt3 [add_link_formatter link3_formatter $smc [format "M%02d_AXI" $mi] \
                       $dma_smc 4 $irqs 4 LINK3 $rst $pl_clk0_hz]
@@ -680,23 +690,8 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
         puts "INFO: link3_formatter = 0x80120000 (64K) on [format "M%02d" $mi]"
         incr mi
 
-        set m_stat3 [create_bd_intf_port -mode Master \
-            -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_LINK3STAT]
-        set_property -dict [list \
-            CONFIG.PROTOCOL   {AXI4LITE} \
-            CONFIG.DATA_WIDTH {32} \
-            CONFIG.ADDR_WIDTH {32} \
-            CONFIG.FREQ_HZ    $pl_clk0_hz \
-        ] $m_stat3
-        connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] $m_stat3
-        assign_bd_address -offset 0x8000C000 -range 4K \
-            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
-            [get_bd_addr_segs M_AXI_LINK3STAT/Reg]
-        puts "INFO: M_AXI_LINK3STAT = 0x8000C000 (4K) on [format "M%02d" $mi]"
-        incr mi
-
         set_property CONFIG.ASSOCIATED_BUSIF \
-            "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXI_LINK3STAT:M_AXIS_LINK3_MM2S:S_AXIS_LINK3_S2MM" \
+            "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:M_AXIS_LINK3_MM2S:S_AXIS_LINK3_S2MM" \
             [get_bd_ports ctrl_aclk]
 
         # Its DMA masters see DDR through HPC0, like #1 and #2.
@@ -707,6 +702,52 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
 [get_property NAME $seg] [get_property OFFSET $seg] [get_property RANGE $seg]"
             }
         }
+    }
+
+    # ----- Phase 15: a second control SmartConnect (decision CS10) -----
+    # ctrl_smc had used all 16 masters (phase9). Its last master now feeds
+    # ctrl_smc2, cascaded, on the same clock and reset; ctrl_smc2 carries the
+    # two patch windows (patch_regs_axil u_inpatch_regs / u_outpatch_regs at
+    # 0x8000_D000 / 0x8000_E000, every PS build) and, in phase9, link #3's
+    # status window (moved from M15, same address and port). New windows
+    # (Phase 7 DSP) go here next. Plain RTL bindings in fpgamixer_top, as
+    # before; still no PS8 setting changes.
+    set smc2 [create_bd_cell -type ip \
+        -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc2]
+    set_property -dict [list CONFIG.NUM_SI {1} \
+        CONFIG.NUM_MI [expr {2 + ($include_link3 ? 1 : 0)}]] $smc2
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc2/aclk]
+    connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $smc2/aresetn]
+    connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] \
+                        [get_bd_intf_pins $smc2/S00_AXI]
+    puts "INFO: ctrl_smc2 on ctrl_smc [format "M%02d" $mi]"
+    incr mi
+
+    set ports2 {M_AXI_INPATCH 0x8000D000 M_AXI_OUTPATCH 0x8000E000}
+    if {$include_link3} { lappend ports2 M_AXI_LINK3STAT 0x8000C000 }
+    set mi2 0
+    foreach {port offset} $ports2 {
+        set p [create_bd_intf_port -mode Master \
+            -vlnv xilinx.com:interface:aximm_rtl:1.0 $port]
+        set_property -dict [list \
+            CONFIG.PROTOCOL   {AXI4LITE} \
+            CONFIG.DATA_WIDTH {32} \
+            CONFIG.ADDR_WIDTH {32} \
+            CONFIG.FREQ_HZ    $pl_clk0_hz \
+        ] $p
+        connect_bd_intf_net [get_bd_intf_pins $smc2/[format "M%02d_AXI" $mi2]] $p
+        assign_bd_address -offset $offset -range 4K \
+            -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
+            [get_bd_addr_segs $port/Reg]
+        puts "INFO: $port = [get_property OFFSET [get_bd_addr_segs \
+zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on ctrl_smc2 [format "M%02d" $mi2]"
+        set_property CONFIG.ASSOCIATED_BUSIF \
+            "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:$port" \
+            [get_bd_ports ctrl_aclk]
+        incr mi2
+    }
+    if {$mi != [get_property CONFIG.NUM_MI $smc]} {
+        error "ctrl_smc: $mi masters used, NUM_MI = [get_property CONFIG.NUM_MI $smc]"
     }
 
     puts "INFO: PS Ethernet     = ENET0/GEM0 [get_property CONFIG.PSU__ENET0__PERIPHERAL__IO $ps]"

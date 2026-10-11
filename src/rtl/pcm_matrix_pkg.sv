@@ -16,14 +16,16 @@
 //                                         front and pcm_stream2pack (+1) behind
 //
 // matrix_lanes() picks the smallest lane count (= DSP48E2s) with D <= D_MAX.
-// D_MAX = 250 came from i2s_port (it sampled its pair on edge 254); since the
-// Pmods went (Phase 11 H.3) only the pcm_links consume the output, at the
-// next strobe, so up to 255 would do. Kept until something needs the room
-// (docs/architecture_modules.md 2.1).
+// D_MAX = 255 since Phase 15 (decision CS11): the only consumers of the
+// core's output are the pcm_links, which capture tx_flat on the next strobe
+// edge (edge 256 of the frame), so an output that updates on edge 255 or
+// earlier is taken with its own frame. (It was 250 while i2s_port, the Pmods'
+// front door, sampled its pair on edge 254; they went in Phase 11 H.3.)
+// docs/architecture_modules.md 2.1.
 // -----------------------------------------------------------------------------
 package pcm_matrix_pkg;
 
-    localparam int D_MAX    = 250;
+    localparam int D_MAX    = 255;
     localparam int PIPE     = 5;     // sample/coef read, A/B, M, P, saturate
     localparam int MAX_N_IN = 127;   // the exact sum fits the DSP's 48-bit P
 

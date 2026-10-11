@@ -380,6 +380,67 @@ class BusLayer(unittest.TestCase):
         self.assertIn("'level' is one module", str(cm.exception))
 
 
+class Patch(BusLayer):
+    """Phase 15: the patch windows (PatchHW) and the server's patch over fake
+    20-channel, 20-port windows."""
+
+    PATCH_ID = 0x50545001
+
+    def setUp(self):
+        super().setUp()
+        self.paths["inpatch"] = make_window_file(self.PATCH_ID, 0x14140005)
+        self.paths["outpatch"] = make_window_file(self.PATCH_ID, 0x14140105)
+
+    def test_patch_header_dir_and_entries(self):
+        p = mixer_hw.OutputPatchHW(0, dev=self.paths["outpatch"])
+        self.assertEqual((p.n, p.ports, p.dir, p.width), (20, 20, 1, 5))
+        self.assertEqual(p.describe(), "output patch, 20 channels, 20 ports")
+        self.assertEqual(p.set_entries({3: 20, 4: 21}), {3: 20, 4: 0})      # past the ports: None
+        self.assertEqual(reg(self.paths["outpatch"], 0x100 + 4 * 3), 20)
+        self.assertEqual(p.read_entry(3), 20)                                # unsigned
+        self.assertEqual(reg(self.paths["outpatch"], mixer_hw.REG_CTRL) & 1, 1)
+        with self.assertRaises(RuntimeError) as cm:
+            mixer_hw.InputPatchHW(0, dev=self.paths["outpatch"])
+        self.assertIn("DIR 1, expected 0", str(cm.exception))
+        with self.assertRaises(IndexError):
+            p.set_entries({20: 1})
+
+    def test_io_ports_match_the_port_map(self):
+        self.assertEqual(len(mixer_hw.IO_PORTS), 20)
+        self.assertEqual((mixer_hw.IO_PORTS[0], mixer_hw.IO_PORTS[4], mixer_hw.IO_PORTS[12],
+                          mixer_hw.IO_PORTS[19]), ("Analog 1", "USB 1", "AVB 1", "AVB 8"))
+
+    def test_patch_seeds_nothing_and_pushes_the_stored_table(self):
+        from mixer_state import MixerState
+        b = self.build(self.paths)
+        self.assertEqual(b["inputChannel"].describe()[0].modules, ("level", "source", "vgroup", "name"))
+        state = MixerState("mixer", None)
+        state.set("outputChannel/2/destination", 7.0)
+        for backend in b.values():
+            backend.seed_and_push(state)
+        self.assertEqual([reg(self.paths["inpatch"], 0x100 + 4 * c) for c in range(20)], [0] * 20)
+        self.assertEqual(reg(self.paths["outpatch"], 0x100 + 4 * 2), 7)
+        self.assertIsNone(state.get("inputChannel/0/source", default=None))   # nothing seeded
+        b["inputChannel"].apply("5", "source", 13.0)
+        self.assertEqual(reg(self.paths["inpatch"], 0x100 + 4 * 5), 13)
+
+    def test_without_patch_windows_no_patch(self):
+        paths = {k: v for k, v in self.paths.items() if k not in mixer_hw.PATCH}
+        self.assertIsNone(self.build(paths)["inputChannel"].patch)
+
+    def test_partial_patch_or_other_ports_refused(self):
+        paths = dict(self.paths)
+        del paths["outpatch"]
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(paths)
+        self.assertIn("patch incomplete: no window outpatch", str(cm.exception))
+        os.unlink(self.paths["inpatch"])
+        self.paths["inpatch"] = make_window_file(self.PATCH_ID, 0x14180005)  # 24 ports
+        with self.assertRaises(RuntimeError) as cm:
+            self.build(self.paths)
+        self.assertIn("24 I/O ports", str(cm.exception))
+
+
 @unittest.skipIf(os.name == "nt", "mmap with Linux flags")
 class Meters(unittest.TestCase):
     """Phase 13: the peak-meter windows (PeakHW) and the server's meter source

@@ -26,6 +26,8 @@ MeterHub; this module samples a MeterSource and sends UDP datagrams.
                           zones, and with a new port moves the stream (its
                           sequences continue). Empty zones = unsubscribe.
     drop(key)             the TCP connection closed.
+    set_visible(counts)   Phase 15: blobs carry each zone's first counts[zone]
+                          channels (the runtime channel counts).
     tick()                one sampler step (the sampler thread calls it at the
                           highest subscribed rate): expired leases dropped;
                           ONE source sample folded into every subscriber's
@@ -143,8 +145,16 @@ class MeterHub:
         self.clock = clock
         self.log = log
         self.available = source.zones()
+        self.visible = dict(self.available)     # channels per zone the config shows (Phase 15)
         self._subs = {}
         self._cond = threading.Condition()
+
+    def set_visible(self, counts):
+        """Phase 15 (channel counts): from now on each zone's blob carries its
+        first counts[zone] channels (the config's count); the source keeps
+        sampling all of them."""
+        with self._cond:
+            self.visible = {z: min(n, counts.get(z, n)) for z, n in self.available.items()}
 
     # ----- subscriptions (called from the TCP handlers) -----
     def subscribe(self, key, ip, port, rate, zones):
@@ -213,7 +223,7 @@ class MeterHub:
                 if now >= sub.next_due:
                     for z in sub.zones:
                         peaks = sub.peaks[z] or [0] * self.available[z]
-                        out.append(((sub.ip, sub.port), z, sub.seq[z], peaks))
+                        out.append(((sub.ip, sub.port), z, sub.seq[z], peaks[:self.visible[z]]))
                         sub.seq[z] = (sub.seq[z] + 1) & 0xFFFF_FFFF
                         sub.peaks[z] = None
                     sub.next_due += 1.0 / sub.rate
