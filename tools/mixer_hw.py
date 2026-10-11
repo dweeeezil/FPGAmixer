@@ -49,6 +49,9 @@ As a bring-up CLI, on the board:
     python3 mixer_hw.py meter <window>        # peaks since the last snapshot (Phase 13:
                                               # inmeter, busmeter, outmeter); steals one
                                               # window from the OSC server's meters
+    python3 mixer_hw.py health                # every PL counter worth watching, one line
+                                              # per window (hardening T4; fpgamixer-health
+                                              # adds the services)
     python3 mixer_hw.py patch                 # both patch tables with port labels
                                               # (Phase 15; read only)
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
@@ -598,6 +601,48 @@ def open_window(name, dev="/dev/mem"):
     return cls(base, dev)
 
 
+def health_lines(open_fn=None):
+    """The PL side of the health summary (hardening T4): the three links'
+    counters (free-running: compare two summaries), mclk against gPTP, the
+    steering, the patch. A window the bitstream lacks says so."""
+    open_fn = open_fn or open_window
+    out = []
+    for name, label in (("linkstat3", "link3 (USB host)"), ("linkstat", "link1 (USB device)"),
+                        ("linkstat2", "link2 (AVB)")):
+        try:
+            v = open_fn(name).read_all()
+        except (RuntimeError, OSError) as e:
+            out.append(f"{label}: absent ({e.__class__.__name__})")
+            continue
+        out.append(f"{label}: rx {v['frames_rx']} tx {v['frames_tx']} underruns {v['underruns']} "
+                   f"starved {v['starved']} overruns {v['overruns']} tid_errors {v['tid_errors']} "
+                   f"fill {v['rx_fill_low']}..{v['rx_fill_high']} "
+                   f"{'running' if v['rx_running'] else 'NOT RUNNING'}")
+    try:
+        mc = open_fn("mclk")
+        v = mc.read_all()
+        alive = mc.ref_alive(v)
+        ppm = mclk_ppm(mc.interval(v), 1, mc.nominal) if alive else float("nan")
+        out.append(f"mclk: {ppm:+.3f} ppm vs gPTP (last second), reference "
+                   f"{'alive' if alive else 'MISSING'}, pps {v['pps_count']} implausible {v['implausible']}")
+    except (RuntimeError, OSError) as e:
+        out.append(f"mclk: absent ({e.__class__.__name__})")
+    try:
+        s = open_fn("mclkctl").status()
+        out.append(f"steer: {s['ppm']:+.4f} ppm, {'locked' if s['locked'] else 'MMCM NOT LOCKED'}, "
+                   f"dropped {s['dropped']}")
+    except (RuntimeError, OSError) as e:
+        out.append(f"steer: absent ({e.__class__.__name__})")
+    for name in PATCH:
+        try:
+            p = open_fn(name)
+            used = sum(1 for c in range(p.n) if p.read_entry(c))
+            out.append(f"{name}: {used} of {p.n} channels patched")
+        except (RuntimeError, OSError) as e:
+            out.append(f"{name}: absent ({e.__class__.__name__})")
+    return out
+
+
 def _main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -702,6 +747,13 @@ def _main(argv):
         for c, p in enumerate(mt.snapshot()):
             db = 20.0 * math.log10(p / (1 << 23)) if p else float("-inf")
             print(f"{c:>6} {p:#08x} {'silence' if not p else f'{db:7.2f} dBFS'}")
+        return 0
+
+    if cmd == "health":
+        # Hardening T4: every PL counter worth watching, one line per window,
+        # for a before/after comparison (fpgamixer-health adds the services).
+        for line in health_lines():
+            print(line)
         return 0
 
     if cmd == "patch":

@@ -380,6 +380,54 @@ class BusLayer(unittest.TestCase):
         self.assertIn("'level' is one module", str(cm.exception))
 
 
+class Health(unittest.TestCase):
+    """Hardening T4: health_lines over fake windows (no /dev/mem)."""
+
+    class Link:
+        def read_all(self):
+            return {"frames_rx": 10, "frames_tx": 11, "underruns": 0, "starved": 2, "overruns": 0,
+                    "tid_errors": 0, "rx_fill_low": 3, "rx_fill_high": 9, "rx_running": True}
+
+    class Clock:
+        nominal = 12_288_000
+
+        def read_all(self):
+            return {"pps_count": 5, "implausible": 0, "cyc_at_pps": 12_288_123, "cyc_at_prev": 0,
+                    "cyc_now": 12_288_200}
+
+        def interval(self, v):
+            return v["cyc_at_pps"] - v["cyc_at_prev"]
+
+        def ref_alive(self, v):
+            return True
+
+    class Steer:
+        def status(self):
+            return {"ppm": 1.25, "locked": True, "dropped": 0}
+
+    class Patch:
+        n = 4
+
+        def read_entry(self, c):
+            return [0, 13, 0, 7][c]
+
+    def test_lines_and_absent_windows(self):
+        windows = {"linkstat": self.Link(), "linkstat2": self.Link(), "mclk": self.Clock(),
+                   "mclkctl": self.Steer(), "inpatch": self.Patch()}
+
+        def open_fn(name):
+            if name not in windows:
+                raise mixer_hw.WindowAbsent(name)
+            return windows[name]
+        lines = mixer_hw.health_lines(open_fn)
+        self.assertEqual(lines[0], "link3 (USB host): absent (WindowAbsent)")
+        self.assertEqual(lines[1], "link1 (USB device): rx 10 tx 11 underruns 0 starved 2 overruns 0 "
+                                   "tid_errors 0 fill 3..9 running")
+        self.assertTrue(lines[3].startswith("mclk: +10.010 ppm vs gPTP"), lines[3])
+        self.assertEqual(lines[4], "steer: +1.2500 ppm, locked, dropped 0")
+        self.assertEqual(lines[5:], ["inpatch: 2 of 4 channels patched", "outpatch: absent (WindowAbsent)"])
+
+
 class Patch(BusLayer):
     """Phase 15: the patch windows (PatchHW) and the server's patch over fake
     20-channel, 20-port windows."""
