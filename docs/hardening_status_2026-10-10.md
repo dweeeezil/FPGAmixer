@@ -57,6 +57,9 @@ No AVB switch on the bench: the multi-hop soak stays open.
 
 - **Mutants** (baseline clean first): **17/17** killed in the end. The first run killed 14; the three survivors each exposed a gap, now closed: *zeros in the sequence* (a zero is a one-in-1.7-million event at −20 dBFS: tested at 1 LSB amplitude instead), *Analog ports assigned* (invisible to the run test: a direct test of 4000 draws, both ways), *counts may hide a protected channel* (the tool didn't count that as a protected change: it does now, `hidden_protected`, plus a test of 20 count changes).
 
+- **Linux** (VM, synced tree `63475b3`): 263 tests OK; `sh -n fpgamixer_health.sh` OK.
+- **Image `p15b-health-20261010`** (layer `63475b3`, bitstream `p15a` unchanged, no `gen-machine-conf`): all tasks succeeded, 4 min 17 s, the usual 23 warnings. Checked: bitstream MD5 `3feb511b…`; rootfs `VERSION` `63475b3`, `/usr/bin/fpgamixer-health`, `/usr/bin/awk`, `mixer_hw.py` has `health_lines`. **`build/sd/p15b-health-20261010.wic.xz`** (MD5 `b9a2d41d…`, same on both ends).
+
 ## 6. How to run the tests
 
 **On the Mac, once:** `pip3 install sounddevice`; copy `tools/loopback_null_test.py`, `tools/osc_stress.py`, `tools/osc_codec.py` into one folder. In Audio MIDI Setup: the FPGAmixer USB device and the AVB device at **48 kHz**, their output volume at **full**.
