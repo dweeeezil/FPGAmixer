@@ -24,16 +24,21 @@ for u in fpgamixer-osc fpgamixer-ptp4l fpgamixer-phc2sys fpgamixer-mediaclock \
     echo
 done
 
-echo "== gPTP (last 60 ptp4l offsets, ns)"
+echo "== gPTP (ptp4l, ns)"
+# ptp4l logs a one-second summary as a slave ("rms R max M freq ..."; per-sync
+# "master offset" lines only with summary_interval below the sync interval).
 journalctl -u fpgamixer-ptp4l -b -n 400 --no-pager -o cat 2>/dev/null |
-    awk '/master offset/ { for (i = 1; i <= NF; i++) if ($i == "offset") v = $(i + 1);
-                           a[n++ % 60] = v < 0 ? -v : v; last = v; s = $0 }
-         END { if (!n) { print "  no offsets logged"; exit }
+    awk '/ rms / { for (i = 1; i <= NF; i++) { if ($i == "rms") r = $(i + 1); if ($i == "max") x = $(i + 1) }
+                   a[n++ % 60] = x; last = r }
+         /master offset/ { for (i = 1; i <= NF; i++) if ($i == "offset") v = $(i + 1)
+                           a[n++ % 60] = v < 0 ? -v : v; last = v }
+         END { if (!n) { print "  no offset summaries logged (a grandmaster logs none)"; exit }
                m = 0; k = n < 60 ? n : 60
                for (i = 0; i < k; i++) if (a[i] > m) m = a[i]
-               print "  last " last ", max |offset| " m " over " k " samples" }'
+               print "  last rms " last ", worst max " m " over the last " k " summaries" }'
 journalctl -u fpgamixer-ptp4l -b --no-pager -o cat 2>/dev/null |
-    grep -ciE 'timed out|fault|UNCALIBRATED' | sed 's/^/  faults\/timeouts\/uncalibrated since boot: /'
+    awk '/FAULT|timed out/ { f++ } / to SLAVE / { s++ } / to MASTER / { g++ }
+         END { print "  since boot: faults/timeouts " f + 0 ", became slave " s + 0 " time(s), master " g + 0 }'
 
 echo "== bridges (latest status line: cumulative since the process started)"
 for u in fpgamixer-usb-bridge fpgamixer-usbhost-bridge fpgamixer-avb-bridge; do

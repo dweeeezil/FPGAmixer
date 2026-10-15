@@ -62,19 +62,30 @@ No AVB switch on the bench: the multi-hop soak stays open.
 
 ## 6. How to run the tests
 
-**On the Mac, once:** `pip3 install sounddevice`; copy `tools/loopback_null_test.py`, `tools/osc_stress.py`, `tools/osc_codec.py` into one folder. In Audio MIDI Setup: the FPGAmixer USB device and the AVB device at **48 kHz**, their output volume at **full**.
+**What T1 is.** No DAW and no phase inversion: the script on the Mac is the generator, the recorder and the comparison. It plays a known pseudo-random signal out of one channel of a Mac audio device, the board routes that channel straight back (the channel-20 path), the script records the returning channel and compares every sample with what it sent. The comparison is digital and exact, so it is a null test without inverting anything; it also finds single wrong, dropped or repeated samples, which a waveform view can't show.
 
-**A null-test path** (in the app; pick channels and ports your studio isn't using, e.g. input 20 → bus 20 → output 20):
-1. input 20 `source` = the port the Mac plays into (e.g. USB 8);
+**Where things run.** The scripts run **on the Mac, in Terminal** (not on the board, not in Ableton). The board only routes. Ableton may stay open, but must not use the test channels.
+
+**The Mac's devices.** The board's USB device is **"StudioRunner USB"** (`fpgamixer-usb-gadget.sh`); its channel k is the board's port **USB k**, both ways. The AVB device is whatever the Mac's AVB setup names it; its channel k is the board's port **AVB k**.
+
+**Once, on the Mac:**
+1. Put `loopback_null_test.py`, `osc_stress.py` and `osc_codec.py` in one folder (e.g. Downloads).
+2. Terminal: `cd ~/Downloads` (that folder), then `pip3 install sounddevice`.
+3. Audio MIDI Setup: StudioRunner USB and the AVB device at **48 kHz**, their output volume at **full** (0 dB).
+4. `python3 loopback_null_test.py --list`: prints the Mac's audio devices with their numbers and names; note the names of StudioRunner USB and the AVB device (a unique part of a name is enough).
+
+**The channel-20 path** (in the app; ports the studio isn't using):
+1. input 20 `source` = **USB 8** (the Mac's output 8 on StudioRunner USB comes in here);
 2. input 20 level 0 dB; `inputMatrix` 20 → bus 20 at 0 dB and **nothing else into bus 20**; bus 20 level 0 dB;
 3. `busMatrix` bus 20 → output 20 at 0 dB and **nothing else into output 20**; output 20 level 0 dB;
-4. output 20 `destination` = the port the Mac records from (e.g. USB 8).
+4. output 20 `destination` = **USB 8** (goes back to the Mac's input 8 on StudioRunner USB).
 
-**T1, short first (5 min), then long:**
-- USB → USB: `python3 loopback_null_test.py --device <USB name> --out 8 --in 8 --minutes 5`
-- AVB → AVB: the same with the AVB device and AVB ports.
-- USB → AVB: patch the source to a USB port and the destination to an AVB port; `--out-device <USB name> --in-device <AVB name>`.
-(`--list` shows the device names; a part of the name is enough.) Healthy: `locked`, the `samples ok` count growing, errors/slips/losses 0, the same latency at every report, `PASS` at the end.
+**T1, 5 minutes per path** (the numbers after `--out`/`--in` are the Mac device's channel numbers = the USB / AVB port numbers used in the patch):
+- USB → USB (path as above): `python3 loopback_null_test.py --device "StudioRunner" --out 8 --in 8 --minutes 5`
+- AVB → AVB (source AVB 8, destination AVB 8): `python3 loopback_null_test.py --device "<AVB name>" --out 8 --in 8 --minutes 5`
+- USB → AVB (source USB 8, destination AVB 8): `python3 loopback_null_test.py --out-device "StudioRunner" --in-device "<AVB name>" --out 8 --in 8 --minutes 5`
+If `--list` shows StudioRunner USB as two devices (one input, one output), use the `--out-device` / `--in-device` form for USB → USB too (then without latency).
+Healthy: `locked`, the `samples ok` count growing, `errors 0, slips 0, losses 0`, the same latency every report (one-device runs), `PASS` at the end.
 
 **T2 (24 h):** `sudo fpgamixer-health` on the board, start T1 USB → AVB with `--minutes 1440 --log t1.log`, leave the studio running normally, `sudo fpgamixer-health` again at the end; paste both and the end of the log.
 
@@ -83,3 +94,11 @@ No AVB switch on the bench: the multi-hop soak stays open.
 ## 7. Log
 
 - **2026-10-10:** Phases 14–15 merged to `main`, tag `phase15-baseline`; branch `hardening`. Decisions HD1–HD7. Roadmap updated.
+- **2026-10-15:** `p15b` flashed; first `fpgamixer-health` (102 s after boot) read and judged:
+  - services all up, 0 restarts; mediaclock LOCKED, mclk +0.000 ppm vs gPTP, steering locked at −29.19 ppm (the crystal's offset), 0 dropped steps;
+  - **health script fixed** (ships with the next image): ptp4l logs one-second summaries (`rms … max …`), not per-sync offsets, so "no offsets logged" was the script; the "4 faults" were the normal start-up transitions through UNCALIBRATED. Now: last rms, worst max, faults/timeouts, slave/master transitions;
+  - link counters since power-up include the boot (overruns 2452 on every link = the PL running before Linux reads; large `starved` = frames before each stream started): only differences between two readouts count. `fill 0..0` is normal: the formatter delivers each frame just in time; the queue lives in ALSA's buffer on the PS side;
+  - **finding H-F1:** the USB bridge's "coarse fixes" count every period dropped while the Mac isn't recording from the board (20,002 in ~100 s here: `B pl->mac: 0 frames/s`, link #1 NOT RUNNING). Harmless (a documented start-up case), but it buries real corrections. To fix: count idle drops apart from real coarse fixes;
+  - the board's clock read 1970 (no time source at that point of the boot): log times on the board are uptime-relative only;
+  - the patch was blank: reflashing replaces the card, state and on-board snapshots included (as every reflash).
+- **2026-10-15:** §6 rewritten after the user's feedback that the steps were vague: where each thing runs, the Mac device names ("StudioRunner USB"), what the null test does without phase inversion.
