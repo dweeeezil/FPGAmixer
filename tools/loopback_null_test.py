@@ -4,7 +4,9 @@ Bit-exact loopback null test (hardening T1, docs/hardening_status_2026-10-10.md)
 
 Plays a deterministic pseudo-random 24-bit sequence on one or more output
 channels of an audio device, records one or more input channels, and checks
-EVERY received sample against the sequence. Route the board so the signal
+EVERY received sample against the sequence, at 24 bits (what the board and
+every USB/AVB path carry; the Mac's float path may move the low bits of a
+32-bit word, which is not under test). Route the board so the signal
 comes back at unity (patch, levels 0 dB, one crosspoint 0 dB, nothing else
 into that bus): the mixer's arithmetic is exact at unity, so every sample
 must match. Anything else is reported with its time:
@@ -71,11 +73,22 @@ def make_sequence(level_db=-20.0, period=PERIOD, seed=SEED):
     return out
 
 
+def to24(block):
+    """Received int32 words -> 24-bit samples, rounded. The board carries
+    24 bits; below that, the Mac's float path may move a word by a few
+    32-bit LSBs (PortAudio's float -> int32 scale, dither if enabled):
+    1/256 of a 24-bit step, not part of the path under test (found on the
+    bench 2026-10-15: exact 32-bit compares failed everywhere)."""
+    return array("i", [(x + 128) >> 8 for x in block])
+
+
 class Locator:
     """Where KEY_LEN consecutive received samples sit in the sequence.
-    Keys that occur twice are dropped: they never lock."""
+    Keys that occur twice are dropped: they never lock. Works on 24-bit
+    samples (seq is the sent int32 sequence)."""
 
     def __init__(self, seq):
+        seq = array("i", [v >> 8 for v in seq])
         n = len(seq)
         self.index, dup = {}, set()
         for i in range(n):
@@ -101,7 +114,8 @@ class ChannelChecker:
     (frame, kind, detail), kind in lock, error, slip, lost."""
 
     def __init__(self, seq, locator):
-        self.seq, self.loc, self.n = seq, locator, len(seq)
+        self.seq = array("i", [v >> 8 for v in seq])   # compared at 24 bits (to24)
+        self.loc, self.n = locator, len(seq)
         self.locked = False
         self.expect = 0            # sequence index of the next sample
         self.offset = None         # (frame - index) mod n of the current lock
@@ -133,6 +147,7 @@ class ChannelChecker:
         self.offset, self.expect, self.locked = new, i, True
 
     def feed(self, block, frame):
+        block = to24(block)
         if self.pending:
             a, frame0 = self.pending + block, self.pending_frame
         else:
@@ -166,8 +181,8 @@ class ChannelChecker:
                 break                       # decide when more samples arrive
             if a[k + 1:k + 1 + KEY_LEN] == self._expected((self.expect + 1) % self.n, KEY_LEN):
                 self.errors += 1
-                self.events.append((frame0 + k, "error", f"got {a[k] >> 8}, "
-                                    f"expected {self.seq[self.expect] >> 8}"))
+                self.events.append((frame0 + k, "error", f"got {a[k]}, "
+                                    f"expected {self.seq[self.expect]} (24-bit)"))
                 self.expect = (self.expect + 1) % self.n
                 j = k + 1
                 continue
@@ -227,8 +242,13 @@ def main(argv=None):
     p.add_argument("--minutes", type=float, default=0, help="stop after this long (default: Ctrl-C)")
     p.add_argument("--report", type=float, default=10.0, help="seconds between reports (default 10)")
     p.add_argument("--block", type=int, default=512, help="frames per audio callback (default 512)")
+    p.add_argument("--latency", default="low", help="PortAudio latency: low (default), high, or seconds")
     p.add_argument("--log", help="also append every report and event to this file")
     args = p.parse_args(argv)
+    try:
+        args.latency = float(args.latency)
+    except ValueError:
+        pass
 
     try:
         import sounddevice as sd
@@ -288,13 +308,16 @@ def main(argv=None):
         blocks.put((state["in_frame"], bytes(indata)))
         state["in_frame"] += frames
 
+    # No dither (PortAudio dithers float -> int by default), small buffers
+    # (the default 'high' latency adds ~0.1 s each way to the measurement).
+    opts = {"dither_off": True, "latency": args.latency}
     if duplex:
         def cb(indata, outdata, frames, t, status):
             note(status)
             fill(outdata, frames)
             take(indata, frames)
         streams = [sd.RawStream(device=(in_dev, out_dev), channels=(n_in, n_out), dtype="int32",
-                                samplerate=RATE, blocksize=args.block, callback=cb)]
+                                samplerate=RATE, blocksize=args.block, callback=cb, **opts)]
     else:
         def ocb(outdata, frames, t, status):
             note(status)
@@ -304,9 +327,9 @@ def main(argv=None):
             note(status)
             take(indata, frames)
         streams = [sd.RawOutputStream(device=out_dev, channels=n_out, dtype="int32",
-                                      samplerate=RATE, blocksize=args.block, callback=ocb),
+                                      samplerate=RATE, blocksize=args.block, callback=ocb, **opts),
                    sd.RawInputStream(device=in_dev, channels=n_in, dtype="int32",
-                                     samplerate=RATE, blocksize=args.block, callback=icb)]
+                                     samplerate=RATE, blocksize=args.block, callback=icb, **opts)]
 
     say(f"null test: out {[c + 1 for c in args.out]} on {out_dev!r}, in "
         f"{[c + 1 for c in args.inp]} on {in_dev!r}, {args.level_db} dBFS, "

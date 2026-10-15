@@ -93,6 +93,21 @@ class Checker(unittest.TestCase):
         self.assertEqual(ck.events[-1][:2], (4242, "error"))
         self.assertEqual(ck.checked, len(data) - 1)
 
+    def test_noise_below_24_bits_is_not_an_error(self):
+        """Bench 2026-10-15: the Mac's float path moved the low bits of the
+        32-bit words (PortAudio dither); compared exactly, nearly every
+        sample "failed". Up to +-127 (half a 24-bit step) is the same sample;
+        one 24-bit LSB is an error."""
+        rng = random.Random(12)
+        data = self.stream(500, 30_000)
+        for j in range(len(data)):
+            data[j] += rng.randint(-127, 127)
+        ck = self.run_blocks(data, seed=7)
+        self.assertEqual((ck.checked, ck.errors, ck.slips, ck.losses), (30_000, 0, 0, 0))
+        data[777] = (((data[777] + 128) >> 8) + 1) << 8   # a real 1-LSB change at 24 bits
+        ck = self.run_blocks(data, seed=7)
+        self.assertEqual((ck.errors, ck.slips, ck.losses), (1, 0, 0))
+
     def test_a_dropout_is_lost_then_locks_again_at_the_same_place(self):
         data = self.stream(500, 20_000)
         data[5000:6000] = array("i", [0] * 1000)          # muted for 1000 samples
