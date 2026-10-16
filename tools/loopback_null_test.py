@@ -42,6 +42,7 @@ Exit code 0 only if samples were checked and every one matched.
 """
 
 import argparse
+import math
 import queue
 import sys
 import threading
@@ -54,6 +55,7 @@ STRIDE = PERIOD // MAX_OUT    # 16384 samples (341 ms) between their copies
 KEY_LEN = 3                   # received samples that locate a position
 SEED = 0x5EED_F00D
 RATE = 48000
+MAX_EVENTS_PER_REPORT = 20    # more are counted, not printed
 
 
 def make_sequence(level_db=-20.0, period=PERIOD, seed=SEED):
@@ -104,6 +106,71 @@ class Locator:
         if j + KEY_LEN > len(a):
             return None
         return self.index.get((a[j], a[j + 1], a[j + 2]))
+
+
+class Diagnosis:
+    """What arrives on one input channel, for a channel that doesn't lock
+    (bench 2026-10-15: a run that never locked said nothing about why).
+    feed() takes 24-bit samples (to24); summary() over the samples since the
+    last summary: the peak (dBFS), the share of exact zeros, and which form
+    of the sequence the recent samples match, if any: 'exact' (should have
+    locked: look at the channel numbers), 'inverted' (polarity), '16-bit'
+    (the low 8 bits lost on the way), '16-bit inverted'."""
+
+    KEEP = 4096
+
+    def __init__(self, seq, locator, sent_db=-20.0):
+        self.loc = locator
+        self.seq24 = [v >> 8 for v in seq]
+        self.idx16 = None
+        self.sent_db = sent_db
+        self.reset()
+
+    def reset(self):
+        self.peak, self.zeros, self.count = 0, 0, 0
+        self.recent = array("i")
+
+    def feed(self, block24):
+        if block24:
+            self.peak = max(self.peak, max(abs(x) for x in block24))
+            self.zeros += block24.count(0)
+            self.count += len(block24)
+            self.recent = (self.recent + block24)[-self.KEEP:]
+
+    def _index16(self):
+        if self.idx16 is None:
+            s, n = [v >> 8 for v in self.seq24], len(self.seq24)
+            self.idx16 = {(s[i], s[(i + 1) % n], s[(i + 2) % n]): i for i in range(n)}
+        return self.idx16
+
+    def matches(self):
+        r = self.recent
+        found = set()
+        for j in range(0, max(0, len(r) - KEY_LEN), 7):
+            a, b, c = r[j], r[j + 1], r[j + 2]
+            if not (a or b or c):
+                continue
+            if (a, b, c) in self.loc.index:
+                found.add("exact")
+            if (-a, -b, -c) in self.loc.index:
+                found.add("inverted")
+            idx16 = self._index16()
+            if (a >> 8, b >> 8, c >> 8) in idx16:
+                found.add("16-bit")
+            if ((-a) >> 8, (-b) >> 8, (-c) >> 8) in idx16:
+                found.add("16-bit inverted")
+        return sorted(found)
+
+    def summary(self):
+        """(text, matches); resets the window."""
+        if not self.count:
+            return "nothing received", []
+        peak = 20 * math.log10(self.peak / (1 << 23)) if self.peak else float("-inf")
+        m = self.matches()
+        text = (f"peak {peak:.1f} dBFS (sent: {self.sent_db:.1f}), zeros "
+                f"{100.0 * self.zeros / self.count:.0f}%, sequence found: {', '.join(m) or 'no'}")
+        self.reset()
+        return text, m
 
 
 class ChannelChecker:
@@ -275,13 +342,27 @@ def main(argv=None):
             log_file.write(line + "\n")
             log_file.flush()
 
+    # The devices actually opened (a name is matched as a substring; say which)
+    try:
+        out_info = sd.query_devices(out_dev, "output")
+        in_info = sd.query_devices(in_dev, "input")
+    except (ValueError, sd.PortAudioError) as e:
+        print(f"device: {e}\n(run with --list to see the names)", file=sys.stderr)
+        return 2
+    if max(args.out) >= out_info["max_output_channels"] or max(args.inp) >= in_info["max_input_channels"]:
+        print(f"channels: {out_info['name']!r} has {out_info['max_output_channels']} outputs, "
+              f"{in_info['name']!r} has {in_info['max_input_channels']} inputs", file=sys.stderr)
+        return 2
+
     seq = make_sequence(args.level_db)
     loc = Locator(seq)
-    n_out, n_in = max(args.out) + 1, max(args.inp) + 1
+    n_out = max(args.out) + 1
+    n_in = in_info["max_input_channels"]          # all of them: the diagnosis looks at each
     tape = output_tape(seq, args.out, n_out)
     frame_bytes = 4 * n_out
     tape_len = len(tape)
     checkers = {c: ChannelChecker(seq, loc) for c in args.inp}
+    diags = {c: Diagnosis(seq, loc, args.level_db) for c in range(n_in)}
     blocks = queue.Queue()
     mac = {"input overflow": 0, "output underflow": 0, "other": 0}
     state = {"out_pos": 0, "in_frame": 0}
@@ -331,10 +412,12 @@ def main(argv=None):
                    sd.RawInputStream(device=in_dev, channels=n_in, dtype="int32",
                                      samplerate=RATE, blocksize=args.block, callback=icb, **opts)]
 
-    say(f"null test: out {[c + 1 for c in args.out]} on {out_dev!r}, in "
-        f"{[c + 1 for c in args.inp]} on {in_dev!r}, {args.level_db} dBFS, "
+    say(f"null test: out {[c + 1 for c in args.out]} on {out_info['name']!r}, in "
+        f"{[c + 1 for c in args.inp]} on {in_info['name']!r} ({n_in} inputs recorded), "
+        f"{args.level_db} dBFS, "
         f"{'duplex (latency + source)' if duplex else 'two devices (continuity only)'}")
     shown = {c: 0 for c in checkers}
+    printed = {"n": 0}
     stop = threading.Event()
     start = time.monotonic()
     next_report = start + args.report
@@ -349,6 +432,16 @@ def main(argv=None):
             say(f"{'FINAL ' if final else ''}in {c + 1}: {'locked' if ck.locked else 'NOT LOCKED'}, "
                 f"{ck.checked} samples ok ({ck.checked / RATE / 60:.1f} min), "
                 f"errors {ck.errors}, slips {ck.slips}, losses {ck.losses}{extra}")
+        # Diagnosis: when a test channel isn't locked, what every input received
+        summaries = {c: d.summary() for c, d in diags.items()}
+        if any(not ck.locked for ck in checkers.values()):
+            for c, (text, _m) in summaries.items():
+                silent = text == "nothing received" or text.startswith("peak -inf")
+                if c in checkers or not silent:          # the test channels, and any with signal
+                    say(f"  input {c + 1}{' (test)' if c in checkers else ''}: {text}")
+            elsewhere = [c + 1 for c, (_t, m) in summaries.items() if "exact" in m and c not in checkers]
+            if elsewhere:
+                say(f"  the sequence arrives intact on input(s) {elsewhere}: a channel-number mix-up")
         say(f"{'FINAL ' if final else ''}Mac side: {mac}  ({secs / 60:.1f} min)")
 
     try:
@@ -366,10 +459,18 @@ def main(argv=None):
                     ck.feed(inter[c::n_in], frame)
                     while shown[c] < len(ck.events):
                         f, kind, detail = ck.events[shown[c]]
-                        say(f"in {c + 1}: {kind.upper()} at {f / RATE:.3f} s: {detail}")
+                        if printed["n"] < MAX_EVENTS_PER_REPORT:
+                            say(f"in {c + 1}: {kind.upper()} at {f / RATE:.3f} s: {detail}")
+                        printed["n"] += 1
                         shown[c] += 1
+                if not all(ck.locked for ck in checkers.values()):
+                    for c, d in diags.items():   # a slice of each block is enough to tell
+                        d.feed(to24(inter[c::n_in][:256]))
             now = time.monotonic()
             if now >= next_report:
+                if printed["n"] > MAX_EVENTS_PER_REPORT:
+                    say(f"  ... {printed['n'] - MAX_EVENTS_PER_REPORT} more events not shown")
+                printed["n"] = 0
                 report()
                 next_report = now + args.report
             if args.minutes and now - start >= args.minutes * 60:

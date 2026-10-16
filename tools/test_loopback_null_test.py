@@ -146,6 +146,29 @@ class Checker(unittest.TestCase):
             ck.feed(data, 0)
             self.assertEqual(ck.source_and_latency(), (c, lat), (c, lat))
 
+    def test_diagnosis_tells_why_nothing_locks(self):
+        """Bench 2026-10-15 (AVB): a run that never locked said nothing;
+        the diagnosis tells silence, the sequence intact, inverted or cut to
+        16 bits apart, and reports the level."""
+        d = nt.Diagnosis(self.seq, self.loc, -20.0)
+        d.feed(nt.to24(array("i", [0] * 5000)))
+        text, m = d.summary()
+        self.assertIn("zeros 100%", text)
+        self.assertIn("peak -inf", text)
+        self.assertEqual(m, [])
+        good = nt.to24(self.stream(900, 5000))
+        d.feed(good)
+        text, m = d.summary()
+        self.assertIn("exact", m)
+        self.assertIn("peak -20.0 dBFS", text)
+        d.feed(array("i", [-x for x in good]))
+        self.assertIn("inverted", d.summary()[1])
+        d.feed(array("i", [x & ~0xFF for x in good]))          # the low 8 bits lost
+        m = d.summary()[1]
+        self.assertIn("16-bit", m)
+        self.assertNotIn("exact", m)
+        self.assertEqual(d.summary(), ("nothing received", []))   # each summary is a new window
+
     def test_output_tape(self):
         tape = array("i")
         tape.frombytes(nt.output_tape(self.seq, [0, 2], 3))
@@ -153,6 +176,101 @@ class Checker(unittest.TestCase):
         self.assertEqual(tape[0::3][:10], self.seq[:10])
         self.assertEqual(tape[2::3][:10], self.seq[2 * nt.STRIDE:2 * nt.STRIDE + 10])
         self.assertEqual(set(tape[1::3]), {0})
+
+
+class FakeSoundDevice:
+    """Enough of sounddevice for main(): one duplex device whose output
+    channels come back on the same input channels `delay` frames later,
+    optionally transformed, at about real time."""
+
+    PortAudioError = RuntimeError
+
+    def __init__(self, delay=700, transform=lambda x: x, inputs=10):
+        self.delay, self.transform, self.inputs = delay, transform, inputs
+
+    def query_devices(self, device=None, kind=None):
+        if device is None:
+            return "0 Fake USB, 10 in, 10 out"
+        if "Fake" not in device:
+            raise ValueError(f"No {kind} device matching {device!r}")
+        return {"name": "Fake USB", "max_input_channels": self.inputs, "max_output_channels": 10}
+
+    def RawStream(self, device, channels, dtype, samplerate, blocksize, callback, **opts):
+        fake = self
+        assert opts.get("dither_off") is True and dtype == "int32"
+
+        class Stream:
+            def __init__(self):
+                self.run = False
+
+            def start(self):
+                import threading
+                self.run = True
+                self.t = threading.Thread(target=self.loop, daemon=True)
+                self.t.start()
+
+            def loop(self):
+                import time as _t
+                n_in, n_out = channels
+                assert fake.delay >= blocksize, "a loop shorter than a block isn't causal"
+                line = array("i", [0] * (fake.delay * n_out))     # frames in flight
+                while self.run:
+                    back, line = line[:blocksize * n_out], line[blocksize * n_out:]
+                    inp = array("i", [0] * (blocksize * n_in))      # what comes back now
+                    for f in range(blocksize):
+                        for c in range(min(n_in, n_out)):
+                            inp[f * n_in + c] = fake.transform(back[f * n_out + c])
+                    out = bytearray(4 * blocksize * n_out)
+                    callback(inp.tobytes(), out, blocksize, None, None)
+                    sent = array("i")
+                    sent.frombytes(bytes(out))
+                    line += sent                                     # goes out now
+                    _t.sleep(blocksize / samplerate / 4)
+
+            def stop(self):
+                self.run = False
+                self.t.join()
+
+            def close(self):
+                pass
+
+        return Stream()
+
+
+class MainLoop(unittest.TestCase):
+    """main() end to end over FakeSoundDevice (no audio hardware)."""
+
+    def run_main(self, fake, *args):
+        import io
+        import contextlib
+        import sys
+        sys.modules["sounddevice"] = fake
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = nt.main(list(args))
+        finally:
+            del sys.modules["sounddevice"]
+        return code, out.getvalue()
+
+    def test_a_clean_loop_passes_with_its_latency_and_source(self):
+        code, text = self.run_main(FakeSoundDevice(delay=700), "--device", "Fake", "--out", "8",
+                                   "--in", "8", "--minutes", "0.03", "--report", "0.5")
+        self.assertEqual(code, 0, text)
+        self.assertIn("on 'Fake USB'", text)
+        self.assertIn("from out 8, latency 700 samples", text)
+        self.assertIn("PASS", text)
+
+    def test_an_inverted_loop_fails_and_says_so(self):
+        code, text = self.run_main(FakeSoundDevice(transform=lambda x: -x), "--device", "Fake",
+                                   "--out", "8", "--in", "8", "--minutes", "0.02", "--report", "0.4")
+        self.assertEqual(code, 1, text)
+        self.assertIn("input 8 (test):", text)
+        self.assertIn("inverted", text)
+
+    def test_an_unknown_device_is_named(self):
+        code, _text = self.run_main(FakeSoundDevice(), "--device", "Nope", "--out", "1", "--in", "1")
+        self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":
