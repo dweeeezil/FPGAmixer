@@ -40,10 +40,13 @@ journalctl -u fpgamixer-ptp4l -b --no-pager -o cat 2>/dev/null |
     awk '/FAULT|timed out/ { f++ } / to SLAVE / { s++ } / to MASTER / { g++ }
          END { print "  since boot: faults/timeouts " f + 0 ", became slave " s + 0 " time(s), master " g + 0 }'
 
-echo "== bridges (latest status line: cumulative since the process started)"
+echo "== bridges (latest status line per direction: cumulative since the process started)"
 for u in fpgamixer-usb-bridge fpgamixer-usbhost-bridge fpgamixer-avb-bridge; do
-    l=$(journalctl -u "$u" -b -n 200 --no-pager -o cat 2>/dev/null | grep 'xruns' | tail -1)
-    echo "  $u: ${l:-no status line}"
+    l=$(journalctl -u "$u" -b -n 400 --no-pager -o cat 2>/dev/null | grep 'xruns' |
+        awk '{ d = $1 " " $2; last[d] = $0; if (!(d in seen)) { seen[d] = 1; order[n++] = d } }
+             END { for (i = 0; i < n; i++) print "    " last[order[i]] }')
+    echo "  $u:"
+    echo "${l:-    no status line}"
 done
 l=$(journalctl -u fpgamixer-mediaclock -b -n 50 --no-pager -o cat 2>/dev/null | tail -1)
 echo "  fpgamixer-mediaclock: ${l:-nothing logged}"
