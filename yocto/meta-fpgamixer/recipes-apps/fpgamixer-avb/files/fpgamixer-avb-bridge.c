@@ -19,6 +19,13 @@
  * plugin's listener overruns when no PDUs arrive), and around a gPTP
  * reference step (phc2sys steps CLOCK_REALTIME, mclk only slews).
  *
+ * A CLOCK_REALTIME step restarts the AAF side of both directions (the
+ * listener's capture, the talker's playback): stepped back, the plugin's
+ * absolute timers would stay silent for as long as the step, with no error
+ * (hardening H-F4: 29 min after a link drop; possibly also at boot, when the
+ * first lock steps the clock from where it booted to the Mac's gPTP time).
+ * B's playback also has the stall watchdog. bridge_watch.h has the details.
+ *
  * Latency is constant, not aligned to the AVTP presentation time (decision
  * V4: the plugin doesn't expose presentation times to the application).
  *
@@ -47,6 +54,7 @@
 #define CHANNELS 8
 #define RATE     48000
 #define HOLD_S   1.0
+#define STALL_S  0.5       /* the talker sends a period every 2 ms */
 
 int main(int argc, char **argv)
 {
@@ -91,6 +99,7 @@ int main(int argc, char **argv)
 		.channels = CHANNELS, .rate = RATE, .period = period, .periods = periods,
 		.target = period * queue, .coarse = period, .hold_s = HOLD_S,
 		.update_s = 1.0, .servo = NULL,
+		.realtime = BRIDGE_RT_CAP,          /* the AAF listener's timer */
 	};
 	struct bridge_dir b = {
 		.name = "B core->net", .cap_dev = link, .play_dev = tx,
@@ -98,6 +107,8 @@ int main(int argc, char **argv)
 		.channels = CHANNELS, .rate = RATE, .period = period, .periods = periods,
 		.target = period * queue, .coarse = period, .hold_s = HOLD_S,
 		.update_s = 1.0, .servo = NULL,
+		.realtime = BRIDGE_RT_PLAY,         /* the AAF talker's timer */
+		.stall_s = STALL_S,                 /* a talker always consumes once started */
 	};
 
 	bridge_log("fpgamixer-avb-bridge: %s (%s) -> %s and %s -> %s (%s), period %lu "

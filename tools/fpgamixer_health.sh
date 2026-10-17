@@ -41,13 +41,23 @@ journalctl -u fpgamixer-ptp4l -b --no-pager -o cat 2>/dev/null |
          END { print "  since boot: faults/timeouts " f + 0 ", became slave " s + 0 " time(s), master " g + 0 }'
 
 echo "== bridges (latest status line per direction: cumulative since the process started)"
+# A direction that moved nothing in its last 10 s is flagged (H-F5: the AVB
+# talker's stall showed only as climbing "coarse fixes").
+stopped=
 for u in fpgamixer-usb-bridge fpgamixer-usbhost-bridge fpgamixer-avb-bridge; do
     l=$(journalctl -u "$u" -b -n 400 --no-pager -o cat 2>/dev/null | grep 'xruns' |
         awk '{ d = $1 " " $2; last[d] = $0; if (!(d in seen)) { seen[d] = 1; order[n++] = d } }
-             END { for (i = 0; i < n; i++) print "    " last[order[i]] }')
+             END { for (i = 0; i < n; i++) { s = last[order[i]]
+                                             print "    " s (s ~ /: 0 frames\/s/ ? "   <== NOT MOVING" : "") } }')
     echo "  $u:"
     echo "${l:-    no status line}"
+    case "$l" in *"NOT MOVING"*) stopped=1 ;; esac
 done
+if [ -n "$stopped" ]; then
+    echo "  NOT MOVING = no frames in the last 10 s. Normal only while that direction's far side is off"
+    echo "  (usb-bridge 'B pl->mac' while the Mac records nothing from the board: its idle drops climb);"
+    echo "  otherwise a fault: note it and the time."
+fi
 l=$(journalctl -u fpgamixer-mediaclock -b -n 50 --no-pager -o cat 2>/dev/null | tail -1)
 echo "  fpgamixer-mediaclock: ${l:-nothing logged}"
 

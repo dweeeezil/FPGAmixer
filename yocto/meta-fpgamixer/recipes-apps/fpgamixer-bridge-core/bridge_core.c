@@ -3,11 +3,15 @@
  * bridge_core.c: see bridge_core.h. The logic (prefill, coarse fix, hold,
  * filtered queue error, 10 s log line) is the Phase 8 USB bridge's, moved
  * here unchanged except for the wait: one poll over both PCMs instead of a
- * blocking read on the capture side (the reason is in bridge_core.h).
+ * blocking read on the capture side (the reason is in bridge_core.h). The
+ * hardening added the clock-step restart and the stall watchdog, both
+ * opt-in per direction, and the idle drops counted apart from the coarse
+ * fixes (bridge_watch.h).
  */
 #define _GNU_SOURCE
 #include "bridge_core.h"
 #include "bridge_convert.h"
+#include "bridge_watch.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -175,28 +179,45 @@ static int open_pcm(snd_pcm_t **h, const struct bridge_dir *d, const char *dev,
 	return 0;
 }
 
-static void write_silence(snd_pcm_t *play, const struct bridge_dir *d,
+/* The frames written (0 if none could be). */
+static long write_silence(snd_pcm_t *play, const struct bridge_dir *d,
 			  snd_pcm_uframes_t frames)
 {
 	size_t bytes = frames * play_ch(d) *
 		       snd_pcm_format_physical_width(d->play_fmt) / 8;
 	void *z = calloc(1, bytes);
-	snd_pcm_writei(play, z, frames);
+	snd_pcm_sframes_t w = z ? snd_pcm_writei(play, z, frames) : 0;
 	free(z);
+	return w > 0 ? w : 0;
 }
 
-static void prefill(snd_pcm_t *play, const struct bridge_dir *d)
+/* Both return the frames queued by the (re)start: the stall watchdog counts
+ * consumption from there. */
+static long prefill(snd_pcm_t *play, const struct bridge_dir *d)
 {
-	write_silence(play, d, d->target);
+	long w = write_silence(play, d, d->target);
 	snd_pcm_start(play);
+	return w;
 }
 
-static void restart_play(snd_pcm_t *play, const struct bridge_dir *d, int err)
+/* What the bridge tracks of the playback's consumption (bridge_watch.h). */
+struct play_watch {
+	struct bridge_stall stall;
+	struct bridge_drop drop;
+};
+
+static long restart_play(snd_pcm_t *play, const struct bridge_dir *d, int err,
+			 struct play_watch *pwt)
 {
+	long w;
+
 	snd_pcm_recover(play, err, 1);
 	snd_pcm_drop(play);
 	snd_pcm_prepare(play);
-	prefill(play, d);
+	w = prefill(play, d);
+	bridge_stall_reset(&pwt->stall, 0, bridge_now());
+	bridge_drop_reset(&pwt->drop);
+	return w;
 }
 
 static void restart_cap(snd_pcm_t *cap, int err)
@@ -220,7 +241,12 @@ void *bridge_run(void *arg)
 	snd_pcm_uframes_t cp = d->period, cb = d->period * d->periods;
 	snd_pcm_uframes_t pp = d->period, pb = d->period * d->periods;
 	double err_avg = 0, t_last, t_log, t_hold = 0;
-	long frames_moved = 0, xruns_cap = 0, xruns_play = 0, coarse = 0;
+	long frames_moved = 0, xruns_cap = 0, xruns_play = 0, coarse = 0, idle = 0;
+	long steps = 0, stalls = 0;
+	long pw = 0;                        /* frames written since playback's (re)start */
+	struct play_watch pwt = { .stall = { .stall_s = d->stall_s } };
+	struct bridge_stall *const stall = &pwt.stall;
+	int step_fd = -1;
 	void *inbuf = NULL, *outbuf = NULL;
 	int32_t *mid = NULL, *narrow = NULL, *rated = NULL, *wide = NULL;
 	long max_out;
@@ -259,14 +285,23 @@ void *bridge_run(void *arg)
 		goto fail;
 	}
 
-	prefill(play, d);
+	if (d->realtime) {
+		step_fd = bridge_clockstep_open();
+		if (step_fd < 0) {
+			bridge_log("%s: clock-step detector: %s", d->name, strerror(-step_fd));
+			goto fail;
+		}
+	}
+
+	pw = prefill(play, d);
 	snd_pcm_start(cap);
 	t_last = t_log = bridge_now();
+	bridge_stall_reset(stall, 0, t_last);
 
 	while (!bridge_stop) {
 		struct pollfd pfd[MAX_PFD];
 		unsigned short crev = 0, prev = 0;
-		int nc, np, err;
+		int nc, np, ns, err;
 		snd_pcm_sframes_t av, delay;
 
 		/*
@@ -285,7 +320,7 @@ void *bridge_run(void *arg)
 		int cc = snd_pcm_poll_descriptors_count(cap);
 		int pc = snd_pcm_state(play) == SND_PCM_STATE_RUNNING ?
 			 snd_pcm_poll_descriptors_count(play) : 0;
-		if (cc <= 0 || pc < 0 || cc + pc > MAX_PFD) {
+		if (cc <= 0 || pc < 0 || cc + pc + 1 > MAX_PFD) {
 			bridge_log("%s: poll descriptor counts %d + %d", d->name, cc, pc);
 			goto fail;
 		}
@@ -296,11 +331,69 @@ void *bridge_run(void *arg)
 				   snd_strerror(nc < 0 ? nc : np));
 			goto fail;
 		}
-		err = poll(pfd, nc + np, IDLE_MS);
+		ns = 0;
+		if (step_fd >= 0) {
+			pfd[nc + np] = (struct pollfd){ .fd = step_fd, .events = POLLIN };
+			ns = 1;
+		}
+		err = poll(pfd, nc + np + ns, IDLE_MS);
 		if (err < 0 && errno != EINTR) {
 			bridge_log("%s: poll: %s", d->name, strerror(errno));
 			goto fail;
 		}
+
+		/*
+		 * A CLOCK_REALTIME step (H-F4, bridge_watch.h): the AAF timers
+		 * would stay armed at the old time (stepped back: silent for as
+		 * long as the step). Restart the PCMs on that clock, which re-arms
+		 * them from the new time. Before anything is read or written.
+		 */
+		if (ns && err > 0 && (pfd[nc + np].revents & POLLIN)) {
+			int s = bridge_clockstep_check(step_fd);
+			if (s < 0) {
+				bridge_log("%s: clock-step detector: %s", d->name, strerror(-s));
+				goto fail;
+			}
+			if (s > 0) {
+				steps++;
+				bridge_log("%s: the system clock was stepped; restarting the %s",
+					   d->name,
+					   d->realtime == (BRIDGE_RT_CAP | BRIDGE_RT_PLAY) ?
+					   "capture and the playback" :
+					   d->realtime & BRIDGE_RT_PLAY ? "playback" : "capture");
+				if (d->realtime & BRIDGE_RT_PLAY)
+					pw = restart_play(play, d, 0, &pwt);
+				if (d->realtime & BRIDGE_RT_CAP)
+					restart_cap(cap, 0);
+				t_hold = bridge_now() + d->hold_s;
+				err_avg = 0;
+				continue;
+			}
+		}
+
+		/*
+		 * The stall watchdog (playback started, nothing consumed for
+		 * stall_s): checked on every pass, idle ones included.
+		 */
+		if (stall->stall_s > 0) {
+			snd_pcm_state_t ps = snd_pcm_state(play);
+			int active = ps == SND_PCM_STATE_RUNNING || ps == SND_PCM_STATE_PREPARED;
+			long consumed = 0;
+			if (active && snd_pcm_delay(play, &delay) == 0)
+				consumed = pw - (long)delay;
+			else
+				active = 0;
+			if (bridge_stall_check(stall, active, consumed, bridge_now())) {
+				stalls++;
+				bridge_log("%s: playback %s started but consumed nothing for %.1f s; "
+					   "restarting it", d->name, d->play_dev, d->stall_s);
+				pw = restart_play(play, d, 0, &pwt);
+				t_hold = bridge_now() + d->hold_s;
+				err_avg = 0;
+				continue;
+			}
+		}
+
 		if (err <= 0)
 			continue;                        /* idle, or a signal */
 
@@ -312,7 +405,7 @@ void *bridge_run(void *arg)
 			xruns_play++;
 			if (bridge_verbose)
 				bridge_log("%s: playback %s", d->name, snd_strerror(err));
-			restart_play(play, d, err);
+			pw = restart_play(play, d, err, &pwt);
 			t_hold = bridge_now() + d->hold_s;
 			err_avg = 0;
 			continue;
@@ -346,10 +439,15 @@ void *bridge_run(void *arg)
 			 * silence below. (The USB bridge's start-up case: the
 			 * gadget's IN stream only runs once the Mac opens its
 			 * inputs; Phase 8, 2026-09-26.) A servo keeps its state.
+			 * A drop while the playback consumes nothing is counted as
+			 * idle, apart from the coarse fixes (H-F1, bridge_watch.h).
 			 */
 			if (snd_pcm_delay(play, &delay) == 0 &&
 			    delay > (snd_pcm_sframes_t)(d->target + d->coarse)) {
-				coarse++;
+				if (bridge_drop_idle(&pwt.drop, pw - (long)delay))
+					idle++;
+				else
+					coarse++;
 				t_hold = bridge_now() + d->hold_s;
 				err_avg = 0;
 				continue;
@@ -373,7 +471,11 @@ void *bridge_run(void *arg)
 				continue;              /* the converter is still filling */
 			w = snd_pcm_writei(play, outbuf, m);
 			if (w == -EAGAIN) {              /* no room: treat as too full */
-				coarse++;
+				if (snd_pcm_delay(play, &delay) == 0 &&
+				    bridge_drop_idle(&pwt.drop, pw - (long)delay))
+					idle++;
+				else
+					coarse++;
 				t_hold = bridge_now() + d->hold_s;
 				err_avg = 0;
 				continue;
@@ -382,16 +484,17 @@ void *bridge_run(void *arg)
 				xruns_play++;
 				if (bridge_verbose)
 					bridge_log("%s: playback %s", d->name, snd_strerror(w));
-				restart_play(play, d, w);
+				pw = restart_play(play, d, w, &pwt);
 				t_hold = bridge_now() + d->hold_s;
 				err_avg = 0;
 				continue;
 			}
 			frames_moved += w;
+			pw += w;
 
 			if (snd_pcm_delay(play, &delay) == 0 &&
 			    delay < (snd_pcm_sframes_t)d->target - (snd_pcm_sframes_t)d->coarse) {
-				write_silence(play, d, d->target - delay);
+				pw += write_silence(play, d, d->target - delay);
 				coarse++;
 				t_hold = bridge_now() + d->hold_s;
 				err_avg = 0;
@@ -423,10 +526,16 @@ void *bridge_run(void *arg)
 				}
 				rs->describe(rs->ctx, extra + used, sizeof extra - used);
 			}
+			char watch[64] = "";
+			if (d->realtime || d->stall_s > 0)
+				snprintf(watch, sizeof watch, ", clock steps %ld, stalls %ld",
+					 steps, stalls);
 			bridge_log("%s: %.0f frames/s, queue %+.1f frames from target%s%s, "
-				   "xruns %ld/%ld (capture/playback), coarse fixes %ld",
+				   "xruns %ld/%ld (capture/playback), coarse fixes %ld, "
+				   "idle drops %ld%s",
 				   d->name, frames_moved / (t - t_log), err_avg,
-				   extra[0] ? ", " : "", extra, xruns_cap, xruns_play, coarse);
+				   extra[0] ? ", " : "", extra, xruns_cap, xruns_play, coarse,
+				   idle, watch);
 			frames_moved = 0;
 			t_log = t;
 		}
@@ -452,6 +561,7 @@ out:
 		rs->stop(rs->ctx);
 	if (cap) snd_pcm_close(cap);
 	if (play) snd_pcm_close(play);
+	if (step_fd >= 0) close(step_fd);
 	free(inbuf);
 	free(outbuf);
 	free(mid);

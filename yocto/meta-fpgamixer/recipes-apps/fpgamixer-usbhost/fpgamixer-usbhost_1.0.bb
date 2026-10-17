@@ -16,6 +16,7 @@ SRC_URI = " \
     file://bridge_core.c \
     file://bridge_core.h \
     file://bridge_convert.h \
+    file://bridge_watch.h \
     file://bridge_rate_src.c \
     file://bridge_rate_src.h \
     file://test_bridge_rate.c \

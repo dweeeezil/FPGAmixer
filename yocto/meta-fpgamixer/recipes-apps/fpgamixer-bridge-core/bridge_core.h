@@ -22,6 +22,13 @@
  * two sides and an optional rate stage (struct bridge_rate) for two PCMs on
  * unrelated clocks.
  *
+ * Since the hardening (H-F4): a PCM that stops without an error is
+ * restarted, on a CLOCK_REALTIME step (`realtime`) or after `stall_s`
+ * without consuming (playback); see bridge_watch.h. Both counted in the 10 s
+ * line ("clock steps", "stalls") of the directions that use them. And in
+ * every direction, a period dropped while the playback consumes nothing (the
+ * far side isn't reading) is an "idle drop", not a "coarse fix" (H-F1).
+ *
  * Users: fpgamixer-usb-bridge (Phase 8), fpgamixer-avb-bridge (Phase 9),
  * fpgamixer-usbhost-bridge (Phase 11, with a rate stage).
  */
@@ -95,7 +102,16 @@ struct bridge_dir {
 	double update_s;                   /* servo update interval */
 	const struct bridge_servo *servo;  /* NULL: none */
 	const struct bridge_rate *resampler;   /* NULL: 1:1 (USB and AVB bridges) */
+	/* Hardening (H-F4, bridge_watch.h): 0 / NULL keep the old behaviour. */
+	unsigned int realtime;             /* BRIDGE_RT_*: the PCMs whose clock is
+					    * CLOCK_REALTIME (the AAF plugin's timer);
+					    * restarted when that clock is stepped */
+	double stall_s;                    /* restart the playback after this long
+					    * started but consuming nothing; 0: off */
 };
+
+#define BRIDGE_RT_CAP  1u
+#define BRIDGE_RT_PLAY 2u
 
 /* Thread body: runs one direction until bridge_stop. */
 void *bridge_run(void *dir);
