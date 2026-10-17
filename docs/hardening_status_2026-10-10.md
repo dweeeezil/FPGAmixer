@@ -66,25 +66,25 @@ No AVB switch on the bench: the multi-hop soak stays open.
 
 **Where things run.** The scripts run **on the Mac, in Terminal** (not on the board, not in Ableton). The board only routes. Ableton may stay open, but must not use the test channels.
 
-**The Mac's devices.** The board's USB device is **"StudioRunner USB"** (`fpgamixer-usb-gadget.sh`); its channel k is the board's port **USB k**, both ways. The AVB device is whatever the Mac's AVB setup names it; its channel k is the board's port **AVB k**.
+**The Mac's devices.** The board's USB device is **"Topology Control"** (corrected by the user 2026-10-17: the f_uac2 gadget's default control-interface string, which macOS shows as the name; the gadget script's "StudioRunner USB" product string isn't what macOS displays; the user used "Topology Control" in every run); its channel k is the board's port **USB k**, both ways. The AVB device is **"StudioRunner AVB:StudioRunner AVB"** (entity:stream); its channel k is the board's port **AVB k**.
 
 **Once, on the Mac:**
 1. Put `loopback_null_test.py`, `osc_stress.py` and `osc_codec.py` in one folder (e.g. Downloads).
 2. Terminal: `cd ~/Downloads` (that folder), then `pip3 install sounddevice`.
-3. Audio MIDI Setup: StudioRunner USB and the AVB device at **48 kHz**, their output volume at **full** (0 dB).
-4. `python3 loopback_null_test.py --list`: prints the Mac's audio devices with their numbers and names; note the names of StudioRunner USB and the AVB device (a unique part of a name is enough).
+3. Audio MIDI Setup: Topology Control (USB) and StudioRunner AVB at **48 kHz**, their output volume at **full** (0 dB).
+4. `python3 loopback_null_test.py --list`: prints the Mac's audio devices with their numbers and names; check the names of the USB device (Topology Control) and the AVB device (a unique part of a name is enough).
 
 **The channel-20 path** (in the app; ports the studio isn't using):
-1. input 20 `source` = **USB 8** (the Mac's output 8 on StudioRunner USB comes in here);
+1. input 20 `source` = **USB 8** (the Mac's output 8 on Topology Control comes in here);
 2. input 20 level 0 dB; `inputMatrix` 20 → bus 20 at 0 dB and **nothing else into bus 20**; bus 20 level 0 dB;
 3. `busMatrix` bus 20 → output 20 at 0 dB and **nothing else into output 20**; output 20 level 0 dB;
-4. output 20 `destination` = **USB 8** (goes back to the Mac's input 8 on StudioRunner USB).
+4. output 20 `destination` = **USB 8** (goes back to the Mac's input 8 on Topology Control).
 
 **T1, 5 minutes per path** (the numbers after `--out`/`--in` are the Mac device's channel numbers = the USB / AVB port numbers used in the patch):
-- USB → USB (path as above): `python3 loopback_null_test.py --device "StudioRunner" --out 8 --in 8 --minutes 5`
-- AVB → AVB (source AVB 8, destination AVB 8): `python3 loopback_null_test.py --device "<AVB name>" --out 8 --in 8 --minutes 5`
-- USB → AVB (source USB 8, destination AVB 8): `python3 loopback_null_test.py --out-device "StudioRunner" --in-device "<AVB name>" --out 8 --in 8 --minutes 5`
-If `--list` shows StudioRunner USB as two devices (one input, one output), use the `--out-device` / `--in-device` form for USB → USB too (then without latency).
+- USB → USB (path as above): `python3 loopback_null_test.py --device "Topology Control" --out 8 --in 8 --minutes 5`
+- AVB → AVB (source AVB 8, destination AVB 8): `python3 loopback_null_test.py --device "StudioRunner AVB:StudioRunner AVB" --out 8 --in 8 --minutes 5`
+- USB → AVB (source USB 8, destination AVB 8): `python3 loopback_null_test.py --out-device "Topology Control" --in-device "StudioRunner AVB:StudioRunner AVB" --out 8 --in 8 --minutes 5`
+If `--list` shows Topology Control as two devices (one input, one output), use the `--out-device` / `--in-device` form for USB → USB too (then without latency).
 Healthy: `locked`, the `samples ok` count growing, `errors 0, slips 0, losses 0`, the same latency every report (one-device runs), `PASS` at the end.
 
 **T2 (24 h):** `sudo fpgamixer-health` on the board, start T1 USB → AVB with `--minutes 1440 --log t1.log`, leave the studio running normally, `sudo fpgamixer-health` again at the end; paste both and the end of the log.
@@ -119,4 +119,5 @@ On the Mac, `caffeinate -i` in front of the null test keeps the Mac awake for th
   - **AVB → board → USB (`in 7`, 1,059 min): 1,388,351,262 samples bit-exact (482 min), 0 errors, 7 slips, 6 losses**; the slips again with the AirPods, and the long unlocked time when the user disconnected the Mac and slept without stopping the test (the user is sure of it).
   - **Verdict (the user's, 2026-10-17): passed, "cautiously overriding the FAILs"**: 2.4 billion samples with no corrupted sample in either direction, the slips explained by the Mac (AirPods, sleep), weeks of daily use as the studio router. Recorded as such; a deliberate AirPods repro would make the explanation evidence, and stays optional.
   - The user: **a better clocking situation eventually** ("we're still not at a perfect 12.288 MHz"). Today mclk is steered onto gPTP (+0.000 ppm against the grandmaster, the Mac) from a fractional MMCM on the 25 MHz reference (~−30 ppm of correction); a review of the options is on the next list.
+- **2026-10-17 (user's corrections):** **H-F6 dropped** ("not too concerned with it at the moment"); kept from it: a short T1 on both AVB directions before any new image replaces `p15a`, and `p15b` stays withdrawn. **The Mac's USB device is "Topology Control"**, not "StudioRunner USB" (my instructions had it wrong; the user substituted it in every run, so all the USB results stand, the 58 ms round trip included). Optional: give the gadget's control interface a proper name in `fpgamixer-usb-gadget.sh`.
 - **2026-10-17: session ends.** Next session's prompt: `docs/prompt_after_hardening_2026-10-17.md`.
