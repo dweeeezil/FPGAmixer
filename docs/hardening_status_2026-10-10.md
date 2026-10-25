@@ -203,3 +203,22 @@ The user's choice: fix these before building, so one image and one bench session
 6. H-F1, in passing: with nothing on the Mac recording from Topology Control, `fpgamixer-health`'s `B pl->mac` line is flagged NOT MOVING with idle drops climbing and coarse fixes at most a few.
 
 **H-F3 (open):** no Sync from the Mac for 48 min after the link drop. That is the Mac's side; the board now survives it (it waits, then steps and restarts), but why the Mac stopped is unexplained. The cable test shows whether it repeats. The saved evidence (`/home/amd-edf/avbfail-*.log`) was from the `p15b` card; the reflash to `p15a` most likely removed it.
+
+### 8.4 Image `p15d-hardening-20261025`: PAUSE off, the journal kept, the health output (2026-10-25)
+
+The user chose to build this after falling back to `p15a` (§7, 2026-10-17). `p15c`'s fixes (§8.1–8.2) stay in.
+
+- **PAUSE off (H-F7):** `avb_net.py` runs `ethtool -A end0 autoneg off rx off tx off` before it brings the link up (one renegotiation at boot, before ptp4l starts; `check=False`, since a rerun finds nothing to change and ethtool then exits nonzero). `ethtool` is now also in `fpgamixer-avb`'s RDEPENDS. Tests: the exact command; `main --dry-run` runs it before `ip link set … up` and the VLAN.
+- **The journal across reboots (`recipes-core/fpgamixer-journal`, new, in the image):** `var-volatile-log-journal.mount` binds `/var/lib/fpgamixer/journal` (on the SD card) over `/var/volatile/log/journal` (in the tmpfs that `/var/log` points to), before `systemd-journal-flush`; `journald.conf.d/50-fpgamixer.conf`: `Storage=persistent`, `SystemMaxUse=64M`. The rest of `/var/log` stays in RAM. Chosen over `VOLATILE_LOG_DIR = "no"`, which changes every recipe's packaging and would rebuild the whole image's packages.
+- **`fpgamixer-health`:** `active exited` gets "(a one-time setup: done)"; a bridge with no status line shows its last line (e.g. "interface 'M2' not present; waiting for it"); ptp4l's worst max leaves out summaries of 1 s or more (clock steps: the first lock at boot printed 1,747,949,603,511,445,248) and says how many.
+- **The bridges:** an idle pass (nothing for `IDLE_MS`) still reaches the 10 s line, so an idle direction logs `0 frames/s` (and is flagged NOT MOVING) instead of nothing; the servo treats an idle pass like a hold (before, it skipped the pass and the first update after idling saw the whole idle time as `dt`).
+- **Checked (VM):** 391 Python tests OK (1 skipped); `test_bridge_watch` PASS as root; **9/9 new mutants killed** (the health script: the done label, the step threshold `>` and ×10, steps counted in the max, first line instead of last, no last line; `avb_net`: autoneg on, PAUSE after the link up, PAUSE never run). Not tested off the board: the mount unit and the drop-in (the boot is the test), the bridges' idle line (no ALSA on the VM).
+- **Built:** layer `52e9007`, bitstream `p15a` unchanged (MD5 `3feb511b…`), no `gen-machine-conf`; 15,107 tasks, all succeeded, 4 min 12 s, no warning beyond `p15b`'s. **In the finished `.wic`:** `VERSION` `52e9007`; `avb_net.py` has the ethtool line; the mount unit enabled (`local-fs.target.wants`); the drop-in; `/var/lib/fpgamixer/journal`; the new health script; the bridges with idle drops; `ethtool`. **`build/sd/p15d-hardening-20261025.wic.xz`** (`xz -t` OK, MD5 `b21e30c1…`, same on both ends). **Not flashed.**
+
+**Bench check (nothing disruptive; the board at `ssh amd-edf@10.0.0.2`; reflashing wipes the board's state: save the mix first):**
+1. Flash `p15d`, boot, restore the mix and the channel-20 path (§6).
+2. **The gate:** T1 AVB → AVB and USB → AVB, 5 min each. Both PASS, or reflash `p15a`.
+3. **PAUSE:** `dmesg | grep "Link is"; sudo ethtool end0 | grep -i pause`: the last `Link is Up` says `flow control off`, and `Advertised pause frame use: No`.
+4. **Health:** `sudo fpgamixer-health`: the two setup services read "one-time setup: done"; the USB host bridge shows its last line; the USB bridge shows **both** directions (`A mac->pl` too, `0 frames/s` while the Mac plays nothing to the board); ptp4l's worst max is in nanoseconds, with "1 with a clock step left out" after a boot.
+5. **The journal:** after the next normal reboot, `journalctl --list-boots --no-pager | tail -3` lists more than one boot.
+No cable or clock-step tests (the user, 2026-10-17); H-F7 itself is only confirmed fixed if a relink ever comes up `rx/tx` again, which PAUSE off now prevents by construction.
