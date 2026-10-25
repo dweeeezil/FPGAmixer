@@ -6,9 +6,11 @@ Linux host without a board.
 
     python3 -m unittest -v test_fpgamixer_health          (from tools/)
 
-Checks the bridge section: the latest status line per direction, a direction
-at 0 frames/s flagged NOT MOVING with the explanation once, and no flag for a
-direction that moves (48000 frames/s holds "0 frames/s" too).
+Checks: the bridge section (the latest status line per direction, a direction
+at 0 frames/s flagged NOT MOVING with the explanation once, no flag for a
+direction that moves (48000 frames/s holds "0 frames/s" too), a bridge with no
+status line showing its last line); a finished one-time setup read as done;
+ptp4l's worst max with clock steps (1 s or more) left out.
 """
 
 import os
@@ -28,7 +30,9 @@ while [ $# -gt 0 ]; do
 done
 """
 SYSTEMCTL = """#!/bin/sh
-printf 'ActiveState=active\\nSubState=running\\nNRestarts=0\\n'
+# show <unit> ...: $STUB/<unit>.state if there is one, else active running
+if [ -f "$STUB/$2.state" ]; then cat "$STUB/$2.state"
+else printf 'ActiveState=active\\nSubState=running\\nNRestarts=0\\n'; fi
 """
 PYTHON3 = """#!/bin/sh
 echo "pl stub"
@@ -41,7 +45,8 @@ def line(name, fps, coarse=0, idle=0):
 
 
 @unittest.skipIf(os.name == "nt" or not shutil.which("sh"), "needs a POSIX sh")
-class Bridges(unittest.TestCase):
+class HealthCase(unittest.TestCase):
+    """The stubs and helpers; no tests of its own."""
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="health-")
         self.bin = os.path.join(self.dir, "bin")
@@ -77,6 +82,8 @@ class Bridges(unittest.TestCase):
             rest.append(l)
         return rest
 
+
+class Bridges(HealthCase):
     def test_moving_directions_are_not_flagged(self):
         self.journal("fpgamixer-avb-bridge", [
             line("A net->core", 48000), line("B core->net", 48000),
@@ -112,6 +119,63 @@ class Bridges(unittest.TestCase):
         out = self.run_health()
         self.assertIn("    no status line", out)
         self.assertFalse(any("NOT MOVING" in l for l in out), out)
+
+    def test_no_status_line_shows_the_last_line(self):
+        self.journal("fpgamixer-usbhost-bridge", [
+            "Started FPGAmixer USB host bridge.",
+            "interface 'M2' not present; waiting for it"])
+        out = self.run_health()
+        got = self.bridge_lines(out, "fpgamixer-usbhost-bridge")
+        self.assertEqual(got, ["    no status line; its last line: "
+                               "interface 'M2' not present; waiting for it"])
+
+
+class Services(HealthCase):
+    def state(self, unit, active, sub, restarts=0):
+        with open(os.path.join(self.dir, unit + ".state"), "w", newline="\n") as f:
+            f.write(f"ActiveState={active}\nSubState={sub}\nNRestarts={restarts}\n")
+
+    def service(self, out, unit):
+        return [l for l in out if l.startswith(f"  {unit}: ")]
+
+    def test_a_finished_setup_reads_as_done(self):
+        self.state("fpgamixer-avb-net", "active", "exited")
+        out = self.run_health()
+        line, = self.service(out, "fpgamixer-avb-net")
+        self.assertIn("active exited", line)
+        self.assertIn("(a one-time setup: done)", line)
+        osc, = self.service(out, "fpgamixer-osc")
+        self.assertNotIn("one-time", osc)
+
+    def test_a_failed_unit_is_not_called_done(self):
+        self.state("fpgamixer-avb-net", "failed", "failed", 3)
+        line, = self.service(self.run_health(), "fpgamixer-avb-net")
+        self.assertIn("failed", line)
+        self.assertIn("restarts 3", line)
+        self.assertNotIn("done", line)
+
+
+class Gptp(HealthCase):
+    def summary(self, rms, mx):
+        return f"[100.000] rms {rms} max {mx} freq -30 +/- 2 delay 1300 +/- 0"
+
+    def gptp_line(self, out):
+        i = out.index("== gPTP (ptp4l, ns)")
+        return out[i + 1]
+
+    def test_a_clock_step_is_left_out_of_the_worst_max(self):
+        self.journal("fpgamixer-ptp4l", [
+            self.summary(900000, 1747949603511445248),        # the boot step
+            self.summary(12, 40), self.summary(7, 25)])
+        line = self.gptp_line(self.run_health())
+        self.assertIn("last rms 7, worst max 40 over the last 3 summaries", line)
+        self.assertIn("(1 with a clock step left out)", line)
+
+    def test_just_under_a_second_still_counts(self):
+        self.journal("fpgamixer-ptp4l", [self.summary(5, 999999999), self.summary(7, 25)])
+        line = self.gptp_line(self.run_health())
+        self.assertIn("worst max 999999999", line)
+        self.assertNotIn("left out", line)
 
 
 if __name__ == "__main__":

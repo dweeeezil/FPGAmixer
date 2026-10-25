@@ -301,7 +301,7 @@ void *bridge_run(void *arg)
 	while (!bridge_stop) {
 		struct pollfd pfd[MAX_PFD];
 		unsigned short crev = 0, prev = 0;
-		int nc, np, ns, err;
+		int nc, np, ns, err, idle_pass;
 		snd_pcm_sframes_t av, delay;
 
 		/*
@@ -394,8 +394,16 @@ void *bridge_run(void *arg)
 			}
 		}
 
-		if (err <= 0)
-			continue;                        /* idle, or a signal */
+		/*
+		 * Idle (nothing in IDLE_MS: the source is off) or a signal: no PCM
+		 * work, but still the 10 s line below, so an idle direction says
+		 * "0 frames/s" instead of nothing (hardening: the USB A mac->pl
+		 * line was missing from fpgamixer-health while the Mac played
+		 * nothing). The servo treats it like a hold.
+		 */
+		idle_pass = err <= 0;
+		if (idle_pass)
+			goto tick;
 
 		/* Let both PCMs handle their events: for the AAF plugin this is
 		 * where a timer tick transmits a period (playback) or presents
@@ -504,11 +512,12 @@ void *bridge_run(void *arg)
 				err_avg += 0.2 * ((double)(delay - (snd_pcm_sframes_t)d->target) - err_avg);
 		}
 
+tick:;
 		double t = bridge_now();
 		/* After an xrun or a coarse fix the queue restarts near the
 		 * setpoint and the filter restarts; a servo sits out hold_s so
 		 * the transient isn't integrated. */
-		if (t < t_hold) {
+		if (t < t_hold || idle_pass) {
 			t_last = t;
 		} else if (sv && t - t_last >= d->update_s) {
 			sv->update(sv->ctx, err_avg, t - t_last);

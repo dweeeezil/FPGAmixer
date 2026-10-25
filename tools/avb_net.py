@@ -13,6 +13,9 @@ From ONE config file (/etc/fpgamixer/avb.conf) it:
      offset left at 0 the plugin would arm its timer 37 s in the past.
      phc2sys still overrides this value if a grandmaster ever announces a
      different, traceable one (a leap second).
+  1b. turns Ethernet PAUSE off on end0 (hardening H-F7: AVB forbids it, and a
+     relink that negotiated it left the board transmitting nothing; see
+     net_commands). One renegotiation, before ptp4l starts.
   2. creates the stream VLAN interface (end0.2, VLAN 2), mapping socket
      priority PCP -> VLAN PCP (egress-qos-map), decision A6. gPTP stays
      untagged on end0.
@@ -267,6 +270,14 @@ def net_commands(cfg):
     dev, vl = cfg["parent"], vlan_name(cfg)
     idle, send, hi, lo = cbs_params(cfg)
     return {
+        # No Ethernet PAUSE, ever (hardening H-F7): AVB links must not use it
+        # (IEEE 802.1BA), and a relink that negotiated it left the board
+        # transmitting nothing until a reboot (2026-10-17). "autoneg off"
+        # both drops PAUSE from the advertisement and makes the MAC ignore
+        # PAUSE frames; "autoneg on rx off tx off" would be skipped by ethtool
+        # as "no change" (phylink already reports rx/tx off while advertising
+        # it). It renegotiates the link once, at boot.
+        "pause_off": ["ethtool", "-A", dev, "autoneg", "off", "rx", "off", "tx", "off"],
         "qdisc_del": ["tc", "qdisc", "del", "dev", dev, "root"],
         "link_up": ["ip", "link", "set", "dev", dev, "up"],
         "vlan_add": ["ip", "link", "add", "link", dev, "name", vl, "type", "vlan",
@@ -410,8 +421,11 @@ def main(argv=None):
         if after != cfg["tai_offset"]:
             raise SystemExit("avb_net: the kernel didn't take the TAI offset")
 
-    # 2. VLAN, 3. qdiscs
+    # 1b. no PAUSE (H-F7), 2. VLAN, 3. qdiscs
     cmds = net_commands(cfg)
+    # check=False: when it is already off (a rerun), ethtool says "no pause
+    # parameters changed" and exits nonzero
+    _run(cmds["pause_off"], dry, check=False)
     _run(cmds["link_up"], dry)
     if os.path.exists(f"/sys/class/net/{vlan_name(cfg)}") and not dry:
         print(f"  ({vlan_name(cfg)} exists)")
