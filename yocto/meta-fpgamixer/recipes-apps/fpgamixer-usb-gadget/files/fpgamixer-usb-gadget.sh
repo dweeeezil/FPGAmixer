@@ -31,6 +31,7 @@ BCD_DEVICE=0x0101  # bump on any descriptor change (see above)
 CHANNELS_MASK=0xff # 8 channels each way
 RATE=48000
 SSIZE=3            # 24-bit samples in 3 bytes (S24_3LE)
+REQ_NUMBER=8       # USB requests queued per direction (see req_number below)
 
 # ----- Type-C role (Genesys ZU board specific) -----
 # The Type-C port's TI TUSB322I comes up dual-role with Try.SRC preferred
@@ -113,6 +114,14 @@ start() {
     echo $RATE          > $F/p_srate
     echo $SSIZE         > $F/p_ssize
     echo "StudioRunner USB" > $F/function_name
+    # Requests queued per direction (hardening, docs/hardening_status_2026-10-10.md
+    # sec. 8.4). The default 2, at the 500 us interval f_uac2 picks for 8 ch of
+    # 24-bit (1 ms doesn't fit 1,024 bytes), is ~1 ms of slack: an SD-card write
+    # or the USB host front door's load delayed the gadget's completions past it,
+    # and the Mac's OUT packets were lost (a -72-sample slip = 3 packets). 8 is
+    # ~4 ms. Costs up to ~3 ms board -> Mac (IN packets queued ahead); none Mac ->
+    # board. No descriptor change, so BCD_DEVICE stays.
+    echo $REQ_NUMBER    > $F/req_number
 
     # One clock source for both directions, so the Mac shows ONE 8x8 device.
     # True here: both directions run on the PL's mclk (the bridge steers the
