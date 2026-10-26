@@ -28,6 +28,7 @@ SRC_URI = " \
     file://bridge_core.c \
     file://bridge_core.h \
     file://bridge_convert.h \
+    file://bridge_watch.h \
     file://fpgamixer-avb-bridge.service \
 "
 
@@ -48,9 +49,9 @@ do_compile() {
 
 # libasound-module-pcm-aaf: the AAF plugin (alsa-plugins with PACKAGECONFIG aaf,
 # see recipes-multimedia/alsa); iproute2-tc for tc (the image had only ip);
-# python3-ctypes for adjtimex (the TAI offset).
+# python3-ctypes for adjtimex (the TAI offset); ethtool for PAUSE off (H-F7).
 RDEPENDS:${PN} = "python3-core python3-ctypes python3-io python3-json python3-math \
-    python3-threading iproute2-ip iproute2-tc libasound-module-pcm-aaf linuxptp"
+    python3-threading iproute2-ip iproute2-tc libasound-module-pcm-aaf linuxptp ethtool"
 
 APPDIR = "${libdir}/fpgamixer"
 

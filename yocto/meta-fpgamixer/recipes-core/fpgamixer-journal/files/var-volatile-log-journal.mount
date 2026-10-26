@@ -1,0 +1,23 @@
+[Unit]
+Description=FPGAmixer: the journal on the SD card, kept across reboots
+# Hardening (H-F7, docs/hardening_status_2026-10-10.md sec. 8.3): /var/log is
+# a link to /var/volatile/log, a tmpfs (Yocto's VOLATILE_LOG_DIR), so a hang
+# that needed a reboot left no evidence. This binds a directory on the root
+# filesystem over the journal's place in that tmpfs; journald (Storage=
+# persistent, 50-fpgamixer.conf) moves its boot-time journal from /run there
+# in systemd-journal-flush. The rest of /var/log stays in RAM.
+DefaultDependencies=no
+Requires=var-volatile.mount
+After=var-volatile.mount
+Before=systemd-journal-flush.service local-fs.target
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=/var/lib/fpgamixer/journal
+Where=/var/volatile/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

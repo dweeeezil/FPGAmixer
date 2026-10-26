@@ -25,9 +25,11 @@
 #   fpgamixer-usbhost        the USB-host front door's Linux half (Phase 11):
 #                            an interface on the Type-A port <-> a link card,
 #                            resampled (libsamplerate); one line to trim it
+#   fpgamixer-journal        the journal kept across reboots on the SD card,
+#                            capped at 64 MB (hardening H-F7)
 IMAGE_INSTALL:append = " fpgamixer-osc fpgamixer-usb-gadget fpgamixer-usb-bridge \
     kernel-module-fpgamixer-link-card fpgamixer-gptp linuxptp-configs ethtool \
-    fpgamixer-mediaclock fpgamixer-avb tcpdump fpgamixer-usbhost \
+    fpgamixer-mediaclock fpgamixer-avb tcpdump fpgamixer-usbhost fpgamixer-journal \
     alsa-utils-alsaloop alsa-utils-aplay alsa-utils-amixer alsa-utils-speakertest \
     ${@'fpgamixer-bench-network' if d.getVar('FPGAMIXER_BENCH') == '1' else ''}"
 

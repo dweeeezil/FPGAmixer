@@ -145,6 +145,26 @@ class Commands(unittest.TestCase):
         self.assertEqual(v[v.index("id") + 1], "2")
         self.assertEqual(v[v.index("egress-qos-map") + 1], "3:3")
 
+    def test_pause_off(self):
+        # H-F7: autoneg off (on + rx/tx off would be skipped by ethtool as "no change")
+        self.assertEqual(self.cmds["pause_off"],
+                         ["ethtool", "-A", "end0", "autoneg", "off", "rx", "off", "tx", "off"])
+
+    def test_main_turns_pause_off_before_the_link_is_used(self):
+        import contextlib
+        import io
+        d, p = write_conf(repo_conf_text())
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                avb_net.main(["--config", p, "--dry-run"])
+        finally:
+            shutil.rmtree(d)
+        lines = [l.strip() for l in out.getvalue().splitlines()]
+        pause = lines.index(" ".join(self.cmds["pause_off"]))
+        self.assertLess(pause, lines.index(" ".join(self.cmds["link_up"])))
+        self.assertLess(pause, lines.index(" ".join(self.cmds["vlan_add"])))
+
     def test_qdisc_chain(self):
         self.assertEqual(self.cmds["qdisc_del"], ["tc", "qdisc", "del", "dev", "end0", "root"])
         mq, cbs = self.cmds["qdiscs"]       # no ETF (Phase 10, status doc sec. 14)

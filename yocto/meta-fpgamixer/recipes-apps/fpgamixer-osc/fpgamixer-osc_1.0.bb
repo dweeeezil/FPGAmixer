@@ -19,6 +19,7 @@ SRC_URI = " \
     file://mixer_hw.py \
     file://mixer_meters.py \
     file://mixer_snapshots.py \
+    file://fpgamixer_health.sh \
     file://fpgamixer-osc.service \
     file://fpgamixer-mdns.conf \
 "
@@ -50,6 +51,10 @@ do_install() {
         ${S}/mixer_params.py ${S}/mixer_state.py ${S}/mixer_hw.py ${S}/mixer_meters.py \
         ${S}/mixer_snapshots.py ${D}${APPDIR}/
 
+    # Hardening T4: the health summary (shell; mixer_hw.py health for the PL)
+    install -d ${D}${bindir}
+    install -m 0755 ${S}/fpgamixer_health.sh ${D}${bindir}/fpgamixer-health
+
     # Discovery: resolved's mDNS on (drop-in); the server writes its
     # _studiorunner._tcp service into /etc/systemd/dnssd/ at runtime.
     install -d ${D}${sysconfdir}/systemd/resolved.conf.d ${D}${sysconfdir}/systemd/dnssd
@@ -66,4 +71,4 @@ do_install() {
     install -m 0644 ${S}/fpgamixer-osc.service ${D}${systemd_system_unitdir}/
 }
 
-FILES:${PN} += "${APPDIR} ${sysconfdir}/systemd/resolved.conf.d ${sysconfdir}/systemd/dnssd"
+FILES:${PN} += "${APPDIR} ${bindir}/fpgamixer-health ${sysconfdir}/systemd/resolved.conf.d ${sysconfdir}/systemd/dnssd"
