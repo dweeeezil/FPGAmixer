@@ -10,7 +10,7 @@ You're working on FPGAmixer: a digital matrix mixer on a Genesys ZU-3EG, control
 
 ## Where things stand
 
-- **`main`** = Phases 1–15, tag **`phase15-baseline`** (merged 2026-10-10). **Branch `hardening`** (pushed, not merged): the test tools, their tests, the docs below. Merge it when the findings below are fixed (or earlier as docs/tools only: ask).
+- **`main`** = Phases 1–15, tag **`phase15-baseline`** (merged 2026-10-10). **Update 2026-10-26: `hardening` merged too, tag `p15e-baseline`, studio image `p15e-hardening-20261026`** (status doc §8). **Branch `hardening`** (pushed, not merged): the test tools, their tests, the docs below. Merge it when the findings below are fixed (or earlier as docs/tools only: ask).
 - **Board: image `p15a-sources-20261008`** (bitstream `p15a`, `build/sd/p15a-sources-20261008.wic.xz`, MD5 `1179c83d…`). **`p15b-health-20261010` is WITHDRAWN: it broke the board → Mac AVB direction** (H-F6; the cause is not being investigated, the user's choice). Never flash it.
 - **Status doc:** `docs/hardening_status_2026-10-10.md` (decisions HD1–HD7, tests T1–T7, the bench log in §7, findings H-F1…H-F6). **Library proposal:** `docs/library_foundation_proposal_2026-10-10.md` (decisions LF1–LF8, not yet decided by the user).
 - **Results:** T1 bit-exact null test, USB → AVB and AVB → USB 6 h each on `p15a`: 2.4 billion samples, **0 corrupted**, a few slips explained by the Mac (AirPods connecting, the Mac sleeping); **the user accepted T1/T2 as passed**. Also USB → USB, 5 min: PASS, 14.4 M samples, round trip 58 ms. Boot/recovery, the M2 analog loopback and meter calibration the user had already done by hand.
