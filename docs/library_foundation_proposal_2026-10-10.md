@@ -84,3 +84,23 @@ The spatial processor / binauralizer is a **section** (HD7): its own zone(s), it
 2. LF2/LF3: `coef_smooth` + its TB; on the level stages and matrices; bench by ear (fader moves, recalls).
 3. The library repo: the primitives moved (LF5), the template block, its harness; FPGAmixer takes it as a submodule; regression green on both.
 4. The first library block (mute is free with LF2; then EQ or dynamics, the user's pick), end to end with its zone in the server and the standard.
+
+## 10. Step 1 plan: LF1, the core spans frames (2026-10-26, for the user's go-ahead)
+
+**Found in the RTL** (`mixer_core.sv`, `coef_bank_ram.sv`, `pcm_matrix.sv`, `pcm_gain.sv`, `pcm_stream2patch.sv`, `pcm_peak.sv`, `pcm_stream_monitor.sv`, `fpgamixer_top.sv`): the blocks already start on their input's beats, not on the strobe. Four things still lean on the global strobe: every coefficient bank swaps on it (7 banks, `fpgamixer_top`); the meters close their windows on it; `pcm_stream2patch` flags "strobe while a frame is incomplete"; the TB monitor checks "every beat between two strobes". The input converter (`pcm_patch2stream`) captures on the strobe and stays so: it *is* the chain's start.
+
+**The rule, made concrete:** a block's bank swaps on **its input's last beat of a frame** (`valid && ch == N-1`). The read issued in that cycle still sees the old bank, every later one the new (`coef_bank_ram`'s existing semantics). That works for both kinds of block: `pcm_gain` reads per input beat, so the next read is the next frame's channel 0; `pcm_matrix` starts a frame's reads on that same edge (its input's last beat), so all of the frame's reads see the new bank, provided the previous frame's reads are done by then (**occupancy ≤ 256 cycles**, the new per-block rule). The pulse is computed from the stream, so no block changes: the core exports one swap pulse per coefficient port.
+
+**Changes:**
+1. `mixer_core`: 7 outputs `*_swap` (the input patch = the strobe; the others = the last beat of the stream into that block). Its `D ≤ D_MAX` check becomes "each matrix's occupancy ≤ 256" plus a sanity cap (D ≤ 8 frames).
+2. `mixer_core_pkg` / `pcm_matrix_pkg`: occupancy functions; the lane chooser (see the question below).
+3. `fpgamixer_top`: each bank's (`coef_bank_ram` or `coef_flat_reader`) `frame_i` from its swap pulse; the meters' from their tap's last beat (`pcm_peak` itself unchanged: a beat sampled on its pulse edge already belongs to the closing window).
+4. `pcm_stream2patch`: the strobe-based "incomplete frame" check goes (the channel-order check already catches a broken frame); its `frame_i` port goes.
+5. `pcm_stream_monitor` (sim): frames are marked by channel 0, consecutive frames exactly 256 cycles apart, all N beats ascending before the next channel 0; FIRST_BEAT/LAST_BEAT may exceed 256 (measured from the frame's own strobe).
+6. **A new TB case: a chain longer than a frame.** 12 / 12 / 12 forced to 1 + 1 lanes (each matrix 144 cycles, D ≈ 350 > 256), audio and **random commits to every bank while it runs**; each output frame must equal the model with *one whole bank per block* (old or new, never a mix: a "torn" frame fails). Plus every existing TB re-run (17), and mutants (e.g. one bank left on the global strobe; the monitor's spacing check; the occupancy bound).
+
+**What changes on the board:** nothing audible. 20 / 20 / 20 keeps D = 251 (if the chooser stays as it is), the banks swap a few cycles later than the strobe, the meters close on their tap's frame. Effort: RTL small, the TB work larger; a few hours.
+
+**Questions for the user:**
+- **Q1, the lane chooser.** With frames no longer a limit, each matrix only needs occupancy ≤ 256: 20 / 20 / 20 could run on 2 + 2 DSPs instead of 4 + 4, at D ≈ 450 (one frame more: +20.8 µs). Recommended: **keep latency first** (fewest DSPs that still fit one frame, as today; fall back to the occupancy rule only when nothing fits). DSPs aren't scarce (the ZU3EG has 360; the core uses ~11).
+- **Q2, the bitstream.** Step 1 changes nothing audible. Recommended: **no bitstream for step 1 alone**; build one after step 2 (the smoothing, which you will hear), so one Vivado build and one bench session cover both.
