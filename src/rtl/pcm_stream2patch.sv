@@ -18,8 +18,9 @@
 // The destination table arrives through a coefficient READ PORT (coef_addr ->
 // coef_data one cycle later; coef_bank_ram or coef_flat_reader with
 // ROW_LEN 1, N_ROWS = N, LANES 1, W = $clog2(P+1)): word c is destination[c].
-// The address is the beat's channel, as in pcm_gain, so all of a frame's
-// reads fall between its two strobes and each frame uses one table.
+// The address is the beat's channel, as in pcm_gain, so with the table's bank
+// swapping on the stream's last beat (mixer_core, LF1) each frame uses one
+// table.
 //
 // ----- Timing (cycle b = an input beat's cycle) -----
 //   b+1  the beat is registered; its table entry arrives
@@ -30,10 +31,14 @@
 // beat (pcm_stream2pack: 1). The cycle at which the core's outputs update is
 // the core's latency D (mixer_core_pkg).
 //
-// Checking (as pcm_stream2pack, on the input beats): err_o pulses for one
-// cycle when a beat arrives with a channel other than the expected next one,
-// or a strobe arrives while a frame is incomplete. A frame with an error is
-// still delivered if its last beat arrives; err_o never blocks audio.
+// Checking (on the input beats): err_o pulses for one cycle when a beat
+// arrives with a channel other than the expected next one, which includes a
+// frame that never completed (the next frame's channel 0 then comes early).
+// A frame with an error is still delivered if its last beat arrives; err_o
+// never blocks audio. There is no frame strobe here since LF1 (2026-10-26):
+// a frame may cross strobes when the chain spans frames, so the old check "a
+// strobe arrives while a frame is incomplete" is gone; an incomplete frame is
+// now flagged at the next frame's first beat instead.
 // -----------------------------------------------------------------------------
 module pcm_stream2patch #(
     parameter int N  = 20,    // channels (stream input)
@@ -44,7 +49,6 @@ module pcm_stream2patch #(
 ) (
     input  logic            mclk,
     input  logic            rst_n,
-    input  logic            frame_i,
     input  logic            s_valid,
     input  logic [CW-1:0]   s_ch,
     input  logic [SW-1:0]   s_data,
@@ -98,7 +102,7 @@ module pcm_stream2patch #(
         end
     end
 
-    // ----- stream check (the same rules as pcm_stream2pack) -----
+    // ----- stream check: channel order only (see the header) -----
     logic [CW:0] expect_ch;     // next channel expected; 0 = frame not started
     wire last_beat = s_valid && (s_ch == CW'(N - 1));
 
@@ -115,12 +119,6 @@ module pcm_stream2patch #(
             end
             if (last_beat)
                 expect_ch <= '0;
-            if (frame_i) begin
-                if (expect_ch != '0 && !last_beat)
-                    err_o <= 1'b1;          // previous frame never completed
-                if (!s_valid)
-                    expect_ch <= '0;
-            end
         end
     end
 

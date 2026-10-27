@@ -1,0 +1,8 @@
+[
+ {
+  "name": "stream2patch: no channel-order check",
+  "file": "src/rtl/pcm_stream2patch.sv",
+  "old": "                if ((CW+1)'(s_ch) != expect_ch)\n                    err_o <= 1'b1;\n",
+  "new": ""
+ }
+]

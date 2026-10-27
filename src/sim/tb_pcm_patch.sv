@@ -25,7 +25,9 @@
 //   - gaps between beats: delivered 2 cycles after the last beat, the right
 //     ports, p1 silent, no error;
 //   - two channels swapped: err_o (as pcm_stream2pack);
-//   - the last beat missing: err_o at the next strobe, output unchanged.
+//   - the last beat missing: output unchanged, err_o on the next frame's
+//     channel 0 (since LF1: no strobe in pcm_stream2patch), which is then
+//     delivered clean.
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -80,7 +82,7 @@ module patch_chain #(
         .errors (mon_err), .frames (mon_frames));
 
     pcm_stream2patch #(.N (N), .P (P_OUT), .SW (SW)) u_out (
-        .mclk, .rst_n, .frame_i (frame), .s_valid, .s_ch, .s_data,
+        .mclk, .rst_n, .s_valid, .s_ch, .s_data,
         .coef_addr (out_addr), .coef_data (out_data),
         .out_flat, .valid_o, .err_o);
 
@@ -274,7 +276,7 @@ module tb_pcm_patch;
     int              part2_errors = 0;
 
     pcm_stream2patch #(.N (N5), .P (P4), .SW (SW)) u_s2p5 (
-        .mclk, .rst_n, .frame_i (t_frame),
+        .mclk, .rst_n,
         .s_valid (t_valid), .s_ch (t_ch), .s_data (t_data),
         .coef_addr (t_addr), .coef_data (t_dst),
         .out_flat (t_out), .valid_o (t_vo), .err_o (t_err));
@@ -340,17 +342,21 @@ module tb_pcm_patch;
         t_beat(3, pat(2, 3), 0); t_beat(4, pat(2, 4), 0);
         expect_part2("swapped", 3, 2);
         expect_ports("swapped", 2);
-        // C: last beat missing -> err_o at the next strobe, output unchanged
+        // C: last beat missing -> no output, nothing flagged yet: since LF1
+        // there is no strobe here, so the incomplete frame shows at the next
+        // frame's channel 0 (D)
         held = t_out;
         t_strobe();
         for (int c = 0; c < N5 - 1; c++) t_beat(c, pat(3, c), 0);
         t_strobe();
-        expect_part2("missing last", 4, 2);
+        expect_part2("missing last", 3, 2);
         if (t_out !== held) begin
             part2_errors++;
             $display("part 2, missing last: output changed");
         end
-        // D: the next whole frame is delivered clean (channel 0 clears the slots)
+        // D: the next whole frame: err_o once on its channel 0 (the previous
+        // frame never completed), then delivered clean (channel 0 clears the
+        // slots)
         for (int c = 0; c < N5; c++) t_beat(c, pat(4, c), 1);
         expect_part2("recovery", 4, 3);
         expect_ports("recovery", 4);

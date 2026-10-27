@@ -28,8 +28,9 @@
 // Coefficients arrive through a READ PORT (coef_addr -> coef_data one cycle
 // later), served by coef_bank_ram or coef_flat_reader with ROW_LEN = 1,
 // N_ROWS = N, LANES = 1: word c is channel c's gain. The address is the
-// beat's channel, so all of a frame's reads fall between its two strobes
-// (beats never sit in the strobe cycle) and each frame uses one bank.
+// beat's channel, so with the bank swapping on the input's last beat
+// (mixer_core, LF1: the read in that cycle still sees the old bank) each
+// frame uses one bank, wherever its beats fall relative to the strobe.
 //
 // ----- Pipeline (cycle c = the input beat's cycle) -----
 //   c+1  sample, channel, valid registered; coef_data(ch) arrives

@@ -13,29 +13,44 @@
 //    5 |  3 ->  5 ->  2 |  4   expand, then reduce
 //    7 |  7 ->  5 ->  3 |  3   lanes forced to 3 + 2: idle lanes in both matrices' last pass
 //    1 |  1 ->  1 ->  1 |  1   degenerate
+//   16 | 16 -> 16 -> 16 | 16   LF1: lanes forced to 2 + 2, D = 299 (> one frame): the bus
+//                              matrix, the output levels and the output patch cross a strobe
+//   16 | 16 -> 16 -> 16 | 16   LF1: lanes forced to 1 + 16, D = 328: the input matrix and
+//                              the bus levels cross a strobe
 //
-// Every frame gets new random samples and all seven banks, in one of three
-// modes: "extreme" (full-range gains with the extremes over-represented:
-// every saturation point is hit; patch entries random over their whole
-// field: None, ports, values past P, duplicates), "console" (levels and
-// sparse crosspoints in -1.0 .. +1.0: signals pass mostly unclipped, so the
-// arithmetic is visible; sources random, destinations one-to-one with some
-// None), and "reset" (identity patch, unity levels, identity matrices:
-// output port = input port). The packed output is compared bit-exact with a
-// 64-bit model of the chain (Phase 15: through the input patch, then onto
-// the ports by the destinations, the later channel winning a shared port)
-// that saturates to 24 bits after every block (decision L5); it must update
-// exactly at D = chain_latency and nowhere else; err_o must stay low; the
-// bus stream and the output-level stream obey the stream contract at their
-// stated first/last-beat cycles (pcm_stream_monitor).
+// ----- Coefficients (library foundation, LF1, 2026-10-26) -----
+// Every bank swaps on its block's own frame boundary (mixer_core's *_swap
+// pulses, wired to coef_flat_readers with LATCH = 1, as fpgamixer_top wires
+// them to its coef_bank_rams), so the blocks don't all change coefficients
+// on the same frame, and in a chain longer than a frame a block's reads of
+// one frame may fall after the next strobe. What the core guarantees is that
+// each frame sees ONE WHOLE BANK PER BLOCK (never a mix), and that a new bank
+// is in use within a frame or so. The TB checks exactly that:
+//   - coefficient SETS (all seven banks, in one of three modes: "extreme",
+//     full-range gains with the extremes over-represented and patch entries
+//     random over their whole field; "console", levels and sparse crosspoints
+//     in -1.0 .. +1.0, sources random, destinations one-to-one with some None;
+//     "reset", identity patch, unity levels, identity matrices) are presented
+//     in turn, each for HOLD frames, changing in cycle 0;
+//   - frame f may use, per block, any set presented in frames f-1 .. f+1
+//     (with HOLD = 3, at most two: the old and the new). Every tap stream's
+//     frame and every output frame must be explained by ONE choice per block
+//     for ALL its beats: a block that read a frame's coefficients from two
+//     banks (a torn frame) fails, beat values and all. Frames whose window
+//     holds one set are checked against it exactly;
+//   - the packed output, bit-exact against a 64-bit model of the chain
+//     (through the input patch, then onto the ports by the destinations, the
+//     later channel winning a shared port) that saturates to 24 bits after
+//     every block (decision L5); it must update exactly at cycle D mod FRAME
+//     after a strobe (D = chain_latency) and nowhere else; err_o must stay
+//     low; the bus stream, the three taps and the output-level stream obey
+//     the stream contract (pcm_stream_monitor, SPANS = 1: frames may cross
+//     strobes, start FRAME cycles apart, first/last beats at their stated
+//     cycles after the frame's own strobe, which may exceed FRAME).
 //
-// Phase 13: the three tap ports (input, bus, output levels' streams) obey the
-// stream contract at their stated last beats, and every tap beat equals the
-// model's value at that point of the chain for the current frame.
-//
-// The model also runs once WITHOUT the bus saturation; frames where that
-// changes the output are counted ("bus clips"), so the run shows that the
-// check can tell a saturating bus from a wide one.
+// The model also runs once WITHOUT the bus saturation on exactly-checked
+// frames; frames where that changes the output are counted ("bus clips"), so
+// the run shows that the check can tell a saturating bus from a wide one.
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -50,7 +65,8 @@ module core_harness
     parameter int P_OUT  = N_OUT,
     parameter int L1     = chain_l1(N_IN, N_BUS, N_OUT),
     parameter int L2     = chain_l2(N_IN, N_BUS, N_OUT),
-    parameter int FRAMES = 60
+    parameter int FRAMES = 90,
+    parameter int HOLD   = 3
 ) (
     input  logic mclk,
     input  logic rst_n,
@@ -84,6 +100,14 @@ module core_harness
     typedef logic [N_OUT*N_BUS*GW-1:0] gbm_t;
     typedef logic [N_OUT*GW-1:0]      gol_t;
 
+    // One coefficient set: all seven banks. Block numbers (bits of a choice):
+    // 0 input patch, 1 input levels, 2 input matrix, 3 bus levels,
+    // 4 bus matrix, 5 output levels, 6 output patch.
+    typedef struct {
+        src_t s;  gin_t gi;  gim_t gm;  gbl_t gb;  gbm_t gbm;  gol_t go;  dst_t d;
+        int   mode;
+    } set_t;
+
     pin_t                in_flat;
     pout_t               out_flat, out_prev;
     logic                valid_o, err_o;
@@ -97,6 +121,7 @@ module core_harness
     logic [CWB-1:0] bus_lvl_addr; logic [GW-1:0] bus_lvl_data;
     logic [AW2-1:0] bus_mx_addr;  logic [L2*GW-1:0] bus_mx_data;
     logic [CWO-1:0] out_lvl_addr; logic [GW-1:0] out_lvl_data;
+    logic sw_ip, sw_il, sw_im, sw_bl, sw_bm, sw_ol, sw_op;    // the bank swap pulses
 
     // tap ports (Phase 13)
     logic ti_v, tb_v, to_v;
@@ -107,6 +132,9 @@ module core_harness
                  .SW (SW), .GW (GW), .GF (GF), .L1 (L1), .L2 (L2)) dut (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
         .in_flat (in_flat), .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o),
+        .in_patch_swap (sw_ip), .in_lvl_swap (sw_il), .in_mx_swap (sw_im),
+        .bus_lvl_swap (sw_bl), .bus_mx_swap (sw_bm), .out_lvl_swap (sw_ol),
+        .out_patch_swap (sw_op),
         .in_patch_addr (in_patch_addr),   .in_patch_data (in_patch_data),
         .out_patch_addr (out_patch_addr), .out_patch_data (out_patch_data),
         .in_lvl_addr (in_lvl_addr),   .in_lvl_data (in_lvl_data),
@@ -118,27 +146,28 @@ module core_harness
         .tap_bus_valid (tb_v), .tap_bus_ch (tb_c), .tap_bus_data (tb_d),
         .tap_out_valid (to_v), .tap_out_ch (to_c), .tap_out_data (to_d));
 
-    coef_flat_reader #(.W (GW), .N_ROWS (N_IN),  .ROW_LEN (1),     .LANES (1))  u_c0 (
-        .mclk, .frame_i (frame), .coefs_flat (g_in), .rd_addr (in_lvl_addr),  .rd_data (in_lvl_data));
-    coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N_IN),  .LANES (L1)) u_c1 (
-        .mclk, .frame_i (frame), .coefs_flat (g_im), .rd_addr (in_mx_addr),   .rd_data (in_mx_data));
-    coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1),     .LANES (1))  u_c2 (
-        .mclk, .frame_i (frame), .coefs_flat (g_bl), .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data));
-    coef_flat_reader #(.W (GW), .N_ROWS (N_OUT), .ROW_LEN (N_BUS), .LANES (L2)) u_c3 (
-        .mclk, .frame_i (frame), .coefs_flat (g_bm), .rd_addr (bus_mx_addr),  .rd_data (bus_mx_data));
-    coef_flat_reader #(.W (GW), .N_ROWS (N_OUT), .ROW_LEN (1),     .LANES (1))  u_c4 (
-        .mclk, .frame_i (frame), .coefs_flat (g_ol), .rd_addr (out_lvl_addr), .rd_data (out_lvl_data));
-    coef_flat_reader #(.W (PWI), .N_ROWS (N_IN),  .ROW_LEN (1),    .LANES (1))  u_c5 (
-        .mclk, .frame_i (frame), .coefs_flat (t_src), .rd_addr (in_patch_addr),  .rd_data (in_patch_data));
-    coef_flat_reader #(.W (PWO), .N_ROWS (N_OUT), .ROW_LEN (1),    .LANES (1))  u_c6 (
-        .mclk, .frame_i (frame), .coefs_flat (t_dst), .rd_addr (out_patch_addr), .rd_data (out_patch_data));
+    // The banks: latched on their block's swap pulse, as coef_bank_ram is.
+    coef_flat_reader #(.W (GW), .N_ROWS (N_IN),  .ROW_LEN (1),     .LANES (1),  .LATCH (1)) u_c0 (
+        .mclk, .frame_i (sw_il), .coefs_flat (g_in), .rd_addr (in_lvl_addr),  .rd_data (in_lvl_data));
+    coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N_IN),  .LANES (L1), .LATCH (1)) u_c1 (
+        .mclk, .frame_i (sw_im), .coefs_flat (g_im), .rd_addr (in_mx_addr),   .rd_data (in_mx_data));
+    coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1),     .LANES (1),  .LATCH (1)) u_c2 (
+        .mclk, .frame_i (sw_bl), .coefs_flat (g_bl), .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data));
+    coef_flat_reader #(.W (GW), .N_ROWS (N_OUT), .ROW_LEN (N_BUS), .LANES (L2), .LATCH (1)) u_c3 (
+        .mclk, .frame_i (sw_bm), .coefs_flat (g_bm), .rd_addr (bus_mx_addr),  .rd_data (bus_mx_data));
+    coef_flat_reader #(.W (GW), .N_ROWS (N_OUT), .ROW_LEN (1),     .LANES (1),  .LATCH (1)) u_c4 (
+        .mclk, .frame_i (sw_ol), .coefs_flat (g_ol), .rd_addr (out_lvl_addr), .rd_data (out_lvl_data));
+    coef_flat_reader #(.W (PWI), .N_ROWS (N_IN),  .ROW_LEN (1),    .LANES (1),  .LATCH (1)) u_c5 (
+        .mclk, .frame_i (sw_ip), .coefs_flat (t_src), .rd_addr (in_patch_addr),  .rd_data (in_patch_data));
+    coef_flat_reader #(.W (PWO), .N_ROWS (N_OUT), .ROW_LEN (1),    .LANES (1),  .LATCH (1)) u_c6 (
+        .mclk, .frame_i (sw_op), .coefs_flat (t_dst), .rd_addr (out_patch_addr), .rd_data (out_patch_data));
 
-    // ----- stream checks: the buses (input matrix out) and the output levels -----
+    // ----- stream checks: frames may cross strobes (SPANS) -----
     int mon_err_b, mon_frames_b, mon_err_o, mon_frames_o;
     localparam int BUS_LAST = chain_bus_last(N_IN, N_BUS, L1);
     pcm_stream_monitor #(.N (N_BUS),
                          .FIRST_BEAT (chain_in_last(N_IN) + GAIN_LAT + matrix_lat_first(N_IN)),
-                         .LAST_BEAT  (BUS_LAST),
+                         .LAST_BEAT  (BUS_LAST), .SPANS (1'b1), .FRAME (FRAME),
                          .NAME ("buses")) u_mon_b (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame),
         .s_valid (dut.c_valid), .s_ch (dut.c_ch),
@@ -146,7 +175,7 @@ module core_harness
     pcm_stream_monitor #(.N (N_OUT),
                          .FIRST_BEAT (BUS_LAST + GAIN_LAT + matrix_lat_first(N_BUS) + GAIN_LAT),
                          .LAST_BEAT  (chain_out_last(N_IN, N_BUS, N_OUT, L1, L2) + GAIN_LAT),
-                         .NAME ("outputs")) u_mon_o (
+                         .SPANS (1'b1), .FRAME (FRAME), .NAME ("outputs")) u_mon_o (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame),
         .s_valid (to_v), .s_ch (to_c),                    // the output tap = the output levels' stream
         .errors (mon_err_o), .frames (mon_frames_o));
@@ -155,10 +184,11 @@ module core_harness
     int mon_err_ti, mon_frames_ti, mon_err_tb, mon_frames_tb;
     pcm_stream_monitor #(.N (N_IN), .FIRST_BEAT (1 + IN_PATCH_LAT + GAIN_LAT),
                          .LAST_BEAT (chain_in_last(N_IN) + GAIN_LAT),
-                         .CONTIGUOUS (1'b1), .NAME ("tap in")) u_mon_ti (
+                         .CONTIGUOUS (1'b1), .SPANS (1'b1), .FRAME (FRAME), .NAME ("tap in")) u_mon_ti (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (ti_v), .s_ch (ti_c),
         .errors (mon_err_ti), .frames (mon_frames_ti));
-    pcm_stream_monitor #(.N (N_BUS), .LAST_BEAT (BUS_LAST + GAIN_LAT), .NAME ("tap bus")) u_mon_tb (
+    pcm_stream_monitor #(.N (N_BUS), .LAST_BEAT (BUS_LAST + GAIN_LAT), .SPANS (1'b1), .FRAME (FRAME),
+                         .NAME ("tap bus")) u_mon_tb (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (tb_v), .s_ch (tb_c),
         .errors (mon_err_tb), .frames (mon_frames_tb));
 
@@ -171,8 +201,7 @@ module core_harness
     function automatic longint sx(input logic [SW-1:0] v);  return longint'($signed(v)); endfunction
     function automatic longint gx(input logic [GW-1:0] v);  return longint'($signed(v)); endfunction
 
-    // The chain's intermediate points, for the tap ports: input i after its
-    // level, and bus b after its level.
+    // Input i after its level, and bus b after its level.
     function automatic logic [SW-1:0] model_in(input logic [N_IN*SW-1:0] x, input gin_t gi, input int i);
         longint v;
         v = sat((sx(x[i*SW +: SW]) * gx(gi[i*GW +: GW])) >>> GF);
@@ -273,71 +302,187 @@ module core_harness
                             : (mode == 1) ? ((c < P_OUT && $urandom % 4 != 0) ? PWO'(perm[c] + 1) : '0)
                             : ((c < P_OUT) ? PWO'(c + 1) : '0);
     endtask
+    task automatic make_set(input int mode, output set_t z);
+        z.mode = mode;
+        make_patch(mode, z.s, z.d);
+        for (int k = 0; k < N_IN; k++)        z.gi[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
+        for (int k = 0; k < N_BUS; k++)       z.gb[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
+        for (int k = 0; k < N_OUT; k++)       z.go[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
+        for (int k = 0; k < N_BUS*N_IN; k++)  z.gm[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_sparse()
+                                                                 : ((k / N_IN == k % N_IN) ? 18'h10000 : 18'h0);
+        for (int k = 0; k < N_OUT*N_BUS; k++) z.gbm[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_sparse()
+                                                                 : ((k / N_BUS == k % N_BUS) ? 18'h10000 : 18'h0);
+    endtask
 
-    // What each frame used, in frame order: the ports recorded at the strobe
-    // that captures them, gains, patch (and the mode) when they are set, in cycle 0.
-    pin_t x_q [$];
-    gin_t gi_q [$];  gim_t gm_q [$];  gbl_t gb_q [$];  gbm_t gbm_q [$];  gol_t go_q [$];
-    src_t s_q [$];   dst_t d_q [$];
-    int   mode_q [$];
+    // The sets, by id; frame f is presented set f / HOLD (frames counted from
+    // the first strobe after reset; before it, set 0).
+    set_t sets [$];
+    function automatic int set_of(input int f);
+        return (f < 0) ? 0 : f / HOLD;
+    endfunction
+    task automatic need_set(input int id);
+        set_t z;
+        while (sets.size() <= id) begin
+            make_set($urandom % 3, z);
+            sets.push_back(z);
+        end
+    endtask
 
-    // mode picks the gains of the frame whose cycle 0 this is; samples are set
-    // a frame ahead of their capture, so they follow the previous mode
-    // (harmless: the mode only shapes the stimulus, the model checks all).
-    int mode = 0;
+    // The ids frame f may use per block: the distinct sets of frames f-1 .. f+1.
+    task automatic cands(input int f, output int ids [2], output int n);
+        int a, b, c;
+        a = set_of(f - 1); b = set_of(f); c = set_of(f + 1);
+        need_set(c);
+        ids[0] = a; n = 1;
+        if (b != a) begin ids[n] = b; n++; end
+        if (c != ids[n-1] && c != ids[0]) begin
+            if (n < 2) begin ids[n] = c; n++; end
+            else begin
+                ids[1] = c;      // HOLD < 3 would need three; can't happen with HOLD >= 3
+                $error("tb_mixer_core: three sets in one frame's window (HOLD = %0d)", HOLD);
+            end
+        end
+        if (n == 1) ids[1] = ids[0];
+    endtask
+    function automatic int pick(input int ids [2], input int combo, input int blk);
+        return ids[(combo >> blk) & 1];
+    endfunction
+
+    // ----- per-frame tables of what each choice gives -----
+    // in_tab[c][i]: input i after its level, choices of blocks 0..1 (c < 4);
+    // bus_tab[c][b]: bus b after its level, blocks 0..3 (c < 16);
+    // out_tab[c][o]: output channel o after its level, blocks 0..5 (c < 64).
+    typedef logic [SW-1:0] in_tab_t  [4][N_IN];
+    typedef logic [SW-1:0] bus_tab_t [16][N_BUS];
+    typedef logic [SW-1:0] out_tab_t [64][N_OUT];
+    pin_t     x_rec   [int];      // frame -> the ports captured at its strobe
+    in_tab_t  in_tab  [int];
+    bus_tab_t bus_tab [int];
+    out_tab_t out_tab [int];
+    int       n_ids   [int];      // frame -> 1 (exact) or 2 (a set changes nearby)
+    int       ids_of  [int][2];
+
+    task automatic build(input int f);
+        int ids [2];
+        int n, nc;
+        chin_t x;
+        in_tab_t ti; bus_tab_t tb; out_tab_t to;
+        longint acc;
+        if (in_tab.exists(f)) return;
+        cands(f, ids, n);
+        n_ids[f] = n; ids_of[f] = ids;
+        for (int c = 0; c < 64; c++) begin
+            if (n == 1 && c != 0) continue;
+            x = chans(x_rec[f], sets[pick(ids, c, 0)].s);
+            if (c < 4)
+                for (int i = 0; i < N_IN; i++) ti[c][i] = model_in(x, sets[pick(ids, c, 1)].gi, i);
+            if (c < 16)
+                for (int b = 0; b < N_BUS; b++)
+                    tb[c][b] = model_bus(x, sets[pick(ids, c, 1)].gi, sets[pick(ids, c, 2)].gm,
+                                         sets[pick(ids, c, 3)].gb, b);
+        end
+        for (int c = 0; c < 64; c++) begin
+            if (n == 1 && c != 0) continue;
+            for (int o = 0; o < N_OUT; o++) begin
+                acc = 0;
+                for (int b = 0; b < N_BUS; b++)
+                    acc += sx(tb[c & 15][b]) * gx(sets[pick(ids, c, 4)].gbm[(o*N_BUS + b)*GW +: GW]);
+                acc = sat(acc >>> GF);
+                acc = sat((acc * gx(sets[pick(ids, c, 5)].go[o*GW +: GW])) >>> GF);
+                to[c][o] = acc[SW-1:0];
+            end
+        end
+        in_tab[f] = ti; bus_tab[f] = tb; out_tab[f] = to;
+    endtask
+
+    // ----- presenting the sets and the samples -----
+    int fr = -1;                  // the current frame: strobes seen - 1
     always @(negedge mclk) begin
-        if (cyc < 0 || cyc == 0)
-            for (int i = 0; i < P_IN; i++) in_flat[i*SW +: SW] = rsamp(mode);
-        if (cyc == 0) begin
-            make_patch(mode, t_src, t_dst);
-            s_q.push_back(t_src); d_q.push_back(t_dst);
-            for (int k = 0; k < N_IN; k++)        g_in[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
-            for (int k = 0; k < N_BUS; k++)       g_bl[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
-            for (int k = 0; k < N_OUT; k++)       g_ol[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_c() : 18'h10000;
-            for (int k = 0; k < N_BUS*N_IN; k++)  g_im[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_sparse()
-                                                                     : ((k / N_IN == k % N_IN) ? 18'h10000 : 18'h0);
-            for (int k = 0; k < N_OUT*N_BUS; k++) g_bm[k*GW +: GW] = (mode == 0) ? rgain_x() : (mode == 1) ? rgain_sparse()
-                                                                     : ((k / N_BUS == k % N_BUS) ? 18'h10000 : 18'h0);
-            gi_q.push_back(g_in); gm_q.push_back(g_im); gb_q.push_back(g_bl);
-            gbm_q.push_back(g_bm); go_q.push_back(g_ol); mode_q.push_back(mode);
-            mode = $urandom % 3;
+        int id;
+        if (cyc < 0 || cyc == 0) begin
+            id = set_of(fr);
+            need_set(id);
+            t_src = sets[id].s;  t_dst = sets[id].d;
+            g_in = sets[id].gi;  g_im = sets[id].gm;  g_bl = sets[id].gb;
+            g_bm = sets[id].gbm; g_ol = sets[id].go;
+            // samples are set a frame ahead of their capture, so they follow
+            // the previous set's mode (harmless: the mode only shapes the
+            // stimulus, the model checks all)
+            for (int i = 0; i < P_IN; i++) in_flat[i*SW +: SW] = rsamp(sets[id].mode);
         end
     end
 
     // ----- check -----
     int err = 0;
+    int f_ti = 0, f_tb = 0, f_to = 0, f_out = 0;     // each stream's current frame
+    bit [3:0]  m_ti;  bit [15:0] m_tb;  bit [63:0] m_to; // choices still consistent with the frame
+
+    function automatic bit [63:0] all_choices(input int f, input int width);
+        return (n_ids[f] == 1) ? 64'd1 : ((width >= 64) ? '1 : ((64'd1 << width) - 1));
+    endfunction
+
+    // The table value of choice c (c < the table's size: the masks never
+    // hold more), one branch per table: XSim crashed (kernel FATAL) on a
+    // nested conditional over the three tables in the error path.
+    function automatic logic [SW-1:0] tab(input int f, input int which, input int c, input int ch);
+        if (which == 0) return in_tab[f][c & 3][ch];
+        if (which == 1) return bus_tab[f][c & 15][ch];
+        return out_tab[f][c & 63][ch];
+    endfunction
+
+    task automatic tap_beat(input string name, input int f, input int ch, input logic [SW-1:0] v,
+                            input int which, inout bit [63:0] mask);
+        bit [63:0] keep;
+        string why;
+        keep = '0;
+        for (int c = 0; c < 64; c++)
+            if (mask[c] && tab(f, which, c, ch) === v)
+                keep[c] = 1'b1;
+        if (keep == '0) begin
+            err++;
+            if (err < 10) begin
+                if (n_ids[f] == 1) why = $sformatf("exact: %06h", tab(f, which, 0, ch));
+                else               why = "two sets: torn?";
+                $display("[%0t] %0d/%0d/%0d: %s frame %0d ch%0d = %06h: no single bank per block gives it (%s)",
+                         $time, N_IN, N_BUS, N_OUT, name, f, ch, v, why);
+            end
+        end
+        mask = keep;
+    endtask
 
     always @(posedge mclk) begin
-        pin_t  xp;
-        chin_t x, xc;
-        dst_t  d;
-        gin_t gi; gim_t gm; gbl_t gb; gbm_t gbm; gol_t go;
-        int m;
-        bit clipped;
+        bit [63:0] mk;
         if (rst_n) begin
-            if (frame) x_q.push_back(in_flat);
-            // Taps (Phase 13): during frame k the queues' fronts are frame k's
-            // samples, gains and patch (frame k-1 was popped at its D).
-            if ((ti_v || tb_v || to_v) && (x_q.size() == 0 || gi_q.size() == 0 || s_q.size() == 0)) begin
-                err++;
-                if (err < 10) $display("[%0t] %0d/%0d/%0d: tap beat outside a frame", $time, N_IN, N_BUS, N_OUT);
-            end else if (ti_v || tb_v || to_v) begin
-                xc = chans(x_q[0], s_q[0]);
-                if (ti_v && ti_d !== model_in(xc, gi_q[0], int'(ti_c))) begin
+            if (frame) begin
+                fr++;
+                x_rec[fr] = in_flat;
+            end
+            if (ti_v || tb_v || to_v || valid_o) begin
+                // every stream's frame f was captured at strobe f, which is
+                // before any of its beats
+                if (ti_v && !x_rec.exists(f_ti) || tb_v && !x_rec.exists(f_tb) || to_v && !x_rec.exists(f_to)) begin
                     err++;
-                    if (err < 10) $display("[%0t] %0d/%0d/%0d: tap in ch%0d = %06h, model %06h", $time,
-                                           N_IN, N_BUS, N_OUT, ti_c, ti_d, model_in(xc, gi_q[0], int'(ti_c)));
-                end
-                if (tb_v && tb_d !== model_bus(xc, gi_q[0], gm_q[0], gb_q[0], int'(tb_c))) begin
-                    err++;
-                    if (err < 10) $display("[%0t] %0d/%0d/%0d: tap bus ch%0d = %06h, model %06h", $time,
-                                           N_IN, N_BUS, N_OUT, tb_c, tb_d,
-                                           model_bus(xc, gi_q[0], gm_q[0], gb_q[0], int'(tb_c)));
-                end
-                if (to_v && to_d !== model(xc, gi_q[0], gm_q[0], gb_q[0], gbm_q[0], go_q[0], int'(to_c), 1'b1)) begin
-                    err++;
-                    if (err < 10) $display("[%0t] %0d/%0d/%0d: tap out ch%0d = %06h", $time,
-                                           N_IN, N_BUS, N_OUT, to_c, to_d);
+                    if (err < 10) $display("[%0t] %0d/%0d/%0d: a tap beat before its frame's strobe", $time,
+                                           N_IN, N_BUS, N_OUT);
+                end else begin
+                    if (ti_v) begin
+                        build(f_ti);
+                        if (ti_c == '0) m_ti = 4'(all_choices(f_ti, 4));
+                        mk = 64'(m_ti); tap_beat("tap in", f_ti, int'(ti_c), ti_d, 0, mk); m_ti = mk[3:0];
+                        if (ti_c == CWI'(N_IN - 1)) f_ti++;
+                    end
+                    if (tb_v) begin
+                        build(f_tb);
+                        if (tb_c == '0) m_tb = 16'(all_choices(f_tb, 16));
+                        mk = 64'(m_tb); tap_beat("tap bus", f_tb, int'(tb_c), tb_d, 1, mk); m_tb = mk[15:0];
+                        if (tb_c == CWB'(N_BUS - 1)) f_tb++;
+                    end
+                    if (to_v) begin
+                        build(f_to);
+                        if (to_c == '0) m_to = all_choices(f_to, 64);
+                        tap_beat("tap out", f_to, int'(to_c), to_d, 2, m_to);
+                        if (to_c == CWO'(N_OUT - 1)) f_to++;
+                    end
                 end
             end
             if (err_o) begin
@@ -345,37 +490,69 @@ module core_harness
                 if (err < 10) $display("[%0t] %0d/%0d/%0d: err_o", $time, N_IN, N_BUS, N_OUT);
             end
             if (valid_o) begin
-                if (cyc != D) begin
+                int f, ids [2], nfound;
+                bit ok;
+                f = f_out;
+                if (cyc != D % FRAME) begin
                     err++;
-                    if (err < 10) $display("[%0t] %0d/%0d/%0d: output at cycle %0d, D = %0d",
-                                           $time, N_IN, N_BUS, N_OUT, cyc, D);
+                    if (err < 10) $display("[%0t] %0d/%0d/%0d: output at cycle %0d, D = %0d (cycle %0d of a frame)",
+                                           $time, N_IN, N_BUS, N_OUT, cyc, D, D % FRAME);
                 end
-                xp = x_q.pop_front();
-                x = chans(xp, s_q.pop_front()); d = d_q.pop_front();
-                gi = gi_q.pop_front(); gm = gm_q.pop_front(); gb = gb_q.pop_front();
-                gbm = gbm_q.pop_front(); go = go_q.pop_front(); m = mode_q.pop_front();
-                clipped = 0;
-                for (int o = 0; o < N_OUT; o++)
-                    if (model(x, gi, gm, gb, gbm, go, o, 1'b0) !== model(x, gi, gm, gb, gbm, go, o, 1'b1))
-                        clipped = 1;
-                for (int p = 0; p < P_OUT; p++) begin
-                    logic [SW-1:0] want;
-                    int o;
-                    o = port_owner(d, p);
-                    want = (o < 0) ? '0 : model(x, gi, gm, gb, gbm, go, o, 1'b1);
-                    if (out_flat[p*SW +: SW] !== want) begin
-                        err++;
-                        if (err < 10) $display("[%0t] %0d/%0d/%0d mode %0d: port %0d (ch %0d) = %06h, model %06h",
-                                               $time, N_IN, N_BUS, N_OUT, m, p, o, out_flat[p*SW +: SW], want);
+                if (!x_rec.exists(f)) begin
+                    err++;
+                    if (err < 10) $display("[%0t] %0d/%0d/%0d: output for frame %0d before its strobe", $time,
+                                           N_IN, N_BUS, N_OUT, f);
+                end else begin
+                    build(f);
+                    ids = ids_of[f];
+                    // some choice of one bank per block must give every port
+                    nfound = 0;
+                    for (int c = 0; c < 128; c++) begin
+                        if (n_ids[f] == 1 && c != 0) continue;
+                        ok = 1;
+                        for (int p = 0; p < P_OUT && ok; p++) begin
+                            int o;
+                            logic [SW-1:0] want;
+                            o = port_owner(sets[pick(ids, c, 6)].d, p);
+                            want = (o < 0) ? '0 : out_tab[f][c & 63][o];
+                            if (out_flat[p*SW +: SW] !== want) ok = 0;
+                        end
+                        if (ok) nfound++;
                     end
-                    if (m == 2 && p < N_IN && p < N_BUS && p < N_OUT && p < P_IN
-                        && out_flat[p*SW +: SW] !== xp[p*SW +: SW]) begin
+                    if (nfound == 0) begin
                         err++;
-                        if (err < 10) $display("[%0t] %0d/%0d/%0d reset routing: port %0d = %06h, in %06h",
-                                               $time, N_IN, N_BUS, N_OUT, p, out_flat[p*SW +: SW], xp[p*SW +: SW]);
+                        if (err < 10) $display("[%0t] %0d/%0d/%0d: output frame %0d (candidate sets: %0d): no single bank per block gives it",
+                                               $time, N_IN, N_BUS, N_OUT, f, n_ids[f]);
+                    end
+                    // exactly-checked frames: the bus-clip count and the reset routing
+                    if (n_ids[f] == 1) begin
+                        set_t z;
+                        chin_t x;
+                        bit clipped;
+                        z = sets[ids[0]];
+                        x = chans(x_rec[f], z.s);
+                        clipped = 0;
+                        for (int o = 0; o < N_OUT; o++)
+                            if (model(x, z.gi, z.gm, z.gb, z.gbm, z.go, o, 1'b0) !== model(x, z.gi, z.gm, z.gb, z.gbm, z.go, o, 1'b1))
+                                clipped = 1;
+                        if (clipped) bus_clips++;
+                        if (z.mode == 2)
+                            for (int p = 0; p < P_OUT; p++)
+                                if (p < N_IN && p < N_BUS && p < N_OUT && p < P_IN
+                                    && out_flat[p*SW +: SW] !== x_rec[f][p*SW +: SW]) begin
+                                    err++;
+                                    if (err < 10) $display("[%0t] %0d/%0d/%0d reset routing: port %0d = %06h, in %06h",
+                                                           $time, N_IN, N_BUS, N_OUT, p, out_flat[p*SW +: SW],
+                                                           x_rec[f][p*SW +: SW]);
+                                end
+                    end
+                    // frames before this one are done with (taps run ahead of it)
+                    if (in_tab.exists(f - 2)) begin
+                        in_tab.delete(f - 2); bus_tab.delete(f - 2); out_tab.delete(f - 2);
+                        x_rec.delete(f - 2); n_ids.delete(f - 2); ids_of.delete(f - 2);
                     end
                 end
-                if (clipped) bus_clips++;
+                f_out++;
                 checked++;
             end else if (out_flat !== out_prev) begin
                 err++;
@@ -416,7 +593,7 @@ module tb_mixer_core;
         end
     end
 
-    localparam int NH = 7;
+    localparam int NH = 9;
     int  e [NH], k [NH], c [NH];
     bit  d [NH];
 
@@ -431,6 +608,11 @@ module tb_mixer_core;
     core_harness #(.N_IN (7),  .N_BUS (5),  .N_OUT (3), .L1 (3), .L2 (2))
                                                          h5 (.mclk, .rst_n, .frame, .cyc, .errors (e[5]), .checked (k[5]), .bus_clips (c[5]), .done (d[5]));
     core_harness #(.N_IN (1),  .N_BUS (1),  .N_OUT (1))  h6 (.mclk, .rst_n, .frame, .cyc, .errors (e[6]), .checked (k[6]), .bus_clips (c[6]), .done (d[6]));
+    // LF1: chains longer than a frame (lanes forced below the chooser's pick)
+    core_harness #(.N_IN (16), .N_BUS (16), .N_OUT (16), .L1 (2), .L2 (2))
+                                                         h7 (.mclk, .rst_n, .frame, .cyc, .errors (e[7]), .checked (k[7]), .bus_clips (c[7]), .done (d[7]));
+    core_harness #(.N_IN (16), .N_BUS (16), .N_OUT (16), .L1 (1), .L2 (16))
+                                                         h8 (.mclk, .rst_n, .frame, .cyc, .errors (e[8]), .checked (k[8]), .bus_clips (c[8]), .done (d[8]));
 
     function automatic string row(input int ni, input int nb, input int no, input int l1, input int l2,
                                   input int ee, input int kk, input int cc);
@@ -442,9 +624,9 @@ module tb_mixer_core;
         int total, clips;
         repeat (5) @(posedge mclk);
         rst_n = 1;
-        wait (d[0] && d[1] && d[2] && d[3] && d[4] && d[5] && d[6]);
+        wait (d[0] && d[1] && d[2] && d[3] && d[4] && d[5] && d[6] && d[7] && d[8]);
         repeat (2) @(posedge mclk);
-        $display("  (I/O ports in/out, row by row: 20/20, 20/20, 20/20, 20/20, 5/4, 7/3, 1/1)");
+        $display("  (I/O ports in/out, row by row: 20/20, 20/20, 20/20, 20/20, 5/4, 7/3, 1/1, 16/16, 16/16)");
         $display(row(20, 20, 20, h0.L1, h0.L2, e[0], k[0], c[0]));
         $display(row(12, 12, 12, h1.L1, h1.L2, e[1], k[1], c[1]));
         $display(row(28, 28, 28, h2.L1, h2.L2, e[2], k[2], c[2]));
@@ -452,6 +634,8 @@ module tb_mixer_core;
         $display(row( 3,  5,  2, h4.L1, h4.L2, e[4], k[4], c[4]));
         $display(row( 7,  5,  3, h5.L1, h5.L2, e[5], k[5], c[5]));
         $display(row( 1,  1,  1, h6.L1, h6.L2, e[6], k[6], c[6]));
+        $display(row(16, 16, 16, h7.L1, h7.L2, e[7], k[7], c[7]));
+        $display(row(16, 16, 16, h8.L1, h8.L2, e[8], k[8], c[8]));
         total = 0; clips = 0;
         foreach (e[n]) begin total += e[n]; clips += c[n]; end
         if (clips == 0) begin
@@ -464,7 +648,7 @@ module tb_mixer_core;
     end
 
     initial begin
-        #20ms;
+        #40ms;
         $display("FAIL: tb_mixer_core TIMEOUT");
         $finish;
     end

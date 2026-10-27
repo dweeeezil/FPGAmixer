@@ -103,7 +103,7 @@ module tb_patch_regs;
         .coef_addr (in_addr), .coef_data (in_data),
         .s_valid (s_valid), .s_ch (s_ch), .s_data (s_data));
     pcm_stream2patch #(.N (N), .P (P), .SW (SW)) u_out (
-        .mclk (mclk), .rst_n (mrst_n), .frame_i (frame),
+        .mclk (mclk), .rst_n (mrst_n),
         .s_valid (s_valid), .s_ch (s_ch), .s_data (s_data),
         .coef_addr (out_addr), .coef_data (out_data),
         .out_flat (out_flat), .valid_o (sv_out), .err_o (s_err));

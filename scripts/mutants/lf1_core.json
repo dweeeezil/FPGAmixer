@@ -1,0 +1,68 @@
+[
+ {
+  "name": "in_mx swap on the global strobe",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign in_mx_swap     = b_valid && (b_ch == CWI'(N_IN  - 1));",
+  "new": "assign in_mx_swap     = frame_i;"
+ },
+ {
+  "name": "bus_lvl swap on the global strobe",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign bus_lvl_swap   = c_valid && (c_ch == CWB'(N_BUS - 1));",
+  "new": "assign bus_lvl_swap   = frame_i;"
+ },
+ {
+  "name": "bus_mx swap on the global strobe",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign bus_mx_swap    = d_valid && (d_ch == CWB'(N_BUS - 1));",
+  "new": "assign bus_mx_swap    = frame_i;"
+ },
+ {
+  "name": "out_lvl swap on the global strobe",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign out_lvl_swap   = e_valid && (e_ch == CWO'(N_OUT - 1));",
+  "new": "assign out_lvl_swap   = frame_i;"
+ },
+ {
+  "name": "out_patch swap on the global strobe",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign out_patch_swap = f_valid && (f_ch == CWO'(N_OUT - 1));",
+  "new": "assign out_patch_swap = frame_i;"
+ },
+ {
+  "name": "in_lvl swap on the first beat",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign in_lvl_swap    = a_valid && (a_ch == CWI'(N_IN  - 1));",
+  "new": "assign in_lvl_swap    = a_valid && (a_ch == '0);"
+ },
+ {
+  "name": "in_mx swap on the first input beat",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign in_mx_swap     = b_valid && (b_ch == CWI'(N_IN  - 1));",
+  "new": "assign in_mx_swap     = b_valid && (b_ch == '0);"
+ },
+ {
+  "name": "out_patch swap on the first beat",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign out_patch_swap = f_valid && (f_ch == CWO'(N_OUT - 1));",
+  "new": "assign out_patch_swap = f_valid && (f_ch == '0);"
+ },
+ {
+  "name": "in_patch swap late (first input-level beat)",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign in_patch_swap  = frame_i;",
+  "new": "assign in_patch_swap  = a_valid && (a_ch == '0);"
+ },
+ {
+  "name": "EXPECTED EQUIVALENT: in_lvl swap on the global strobe",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign in_lvl_swap    = a_valid && (a_ch == CWI'(N_IN  - 1));",
+  "new": "assign in_lvl_swap    = frame_i;"
+ },
+ {
+  "name": "flat reader LATCH follows the vector live",
+  "file": "src/rtl/coef_flat_reader.sv",
+  "old": "if (frame_i || !loaded) begin",
+  "new": "if (1'b1) begin"
+ }
+]

@@ -187,6 +187,12 @@ module fpgamixer_top (
     logic [L2*GW-1:0]  bus_mx_data;
     logic [CW-1:0]     in_patch_addr, out_patch_addr;   // Phase 15
     logic [PW-1:0]     in_patch_data, out_patch_data;
+    // LF1 (2026-10-26): each bank swaps on its block's own frame boundary,
+    // given by the core (mixer_core: the block's input's last beat), not on
+    // the global strobe, so a chain that spans frames still gives every
+    // frame one whole bank per block.
+    logic in_patch_swap, in_lvl_swap, in_mx_swap, bus_lvl_swap, bus_mx_swap,
+          out_lvl_swap, out_patch_swap;
 
     // the core's tap ports (Phase 13): the level stages' output streams,
     // metered in PS builds (unused without the PS)
@@ -194,6 +200,12 @@ module fpgamixer_top (
     logic [CW-1:0]        tap_in_ch, tap_out_ch;
     logic [$clog2(N_BUS)-1:0] tap_bus_ch;
     logic [SW-1:0]        tap_in_data, tap_bus_data, tap_out_data;
+    // LF1: a meter's window closes on its tap's own frame boundary (the
+    // stream's last beat), which stays between two of its frames when the
+    // chain spans frames; the global strobe might not.
+    wire tap_in_last  = tap_in_valid  && (tap_in_ch  == CW'(N - 1));
+    wire tap_bus_last = tap_bus_valid && (tap_bus_ch == $clog2(N_BUS)'(N_BUS - 1));
+    wire tap_out_last = tap_out_valid && (tap_out_ch == CW'(N - 1));
 
 `ifdef INCLUDE_PS
     // ps_sys_wrapper (the BD) exports M_AXI_CTRL (AXI4-Lite, through a
@@ -698,7 +710,7 @@ module fpgamixer_top (
         .s_axi_arready (ctrl_arready),
         .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (in_mx_swap),
         .coef_addr (in_mx_addr), .coef_data (in_mx_data)
     );
 
@@ -718,7 +730,7 @@ module fpgamixer_top (
         .s_axi_arready (bmx_arready),
         .s_axi_rdata   (bmx_rdata),  .s_axi_rresp  (bmx_rresp),
         .s_axi_rvalid  (bmx_rvalid), .s_axi_rready (bmx_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (bus_mx_swap),
         .coef_addr (bus_mx_addr), .coef_data (bus_mx_data)
     );
 
@@ -739,7 +751,7 @@ module fpgamixer_top (
         .s_axi_arready (ilv_arready),
         .s_axi_rdata   (ilv_rdata),  .s_axi_rresp  (ilv_rresp),
         .s_axi_rvalid  (ilv_rvalid), .s_axi_rready (ilv_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (in_lvl_swap),
         .coef_addr (in_lvl_addr), .coef_data (in_lvl_data)
     );
 
@@ -758,7 +770,7 @@ module fpgamixer_top (
         .s_axi_arready (blv_arready),
         .s_axi_rdata   (blv_rdata),  .s_axi_rresp  (blv_rresp),
         .s_axi_rvalid  (blv_rvalid), .s_axi_rready (blv_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (bus_lvl_swap),
         .coef_addr (bus_lvl_addr), .coef_data (bus_lvl_data)
     );
 
@@ -777,7 +789,7 @@ module fpgamixer_top (
         .s_axi_arready (olv_arready),
         .s_axi_rdata   (olv_rdata),  .s_axi_rresp  (olv_rresp),
         .s_axi_rvalid  (olv_rvalid), .s_axi_rready (olv_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (out_lvl_swap),
         .coef_addr (out_lvl_addr), .coef_data (out_lvl_data)
     );
 
@@ -795,7 +807,7 @@ module fpgamixer_top (
         .s_axi_arready (imt_arready),
         .s_axi_rdata   (imt_rdata),  .s_axi_rresp  (imt_rresp),
         .s_axi_rvalid  (imt_rvalid), .s_axi_rready (imt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (tap_in_last),
         .s_valid (tap_in_valid), .s_ch (tap_in_ch), .s_data (tap_in_data)
     );
 
@@ -811,7 +823,7 @@ module fpgamixer_top (
         .s_axi_arready (bmt_arready),
         .s_axi_rdata   (bmt_rdata),  .s_axi_rresp  (bmt_rresp),
         .s_axi_rvalid  (bmt_rvalid), .s_axi_rready (bmt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (tap_bus_last),
         .s_valid (tap_bus_valid), .s_ch (tap_bus_ch), .s_data (tap_bus_data)
     );
 
@@ -827,7 +839,7 @@ module fpgamixer_top (
         .s_axi_arready (omt_arready),
         .s_axi_rdata   (omt_rdata),  .s_axi_rresp  (omt_rresp),
         .s_axi_rvalid  (omt_rvalid), .s_axi_rready (omt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (tap_out_last),
         .s_valid (tap_out_valid), .s_ch (tap_out_ch), .s_data (tap_out_data)
     );
 
@@ -847,7 +859,7 @@ module fpgamixer_top (
         .s_axi_arready (ipt_arready),
         .s_axi_rdata   (ipt_rdata),  .s_axi_rresp  (ipt_rresp),
         .s_axi_rvalid  (ipt_rvalid), .s_axi_rready (ipt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (in_patch_swap),
         .coef_addr (in_patch_addr), .coef_data (in_patch_data)
     );
 
@@ -864,7 +876,7 @@ module fpgamixer_top (
         .s_axi_arready (opt_arready),
         .s_axi_rdata   (opt_rdata),  .s_axi_rresp  (opt_rresp),
         .s_axi_rvalid  (opt_rvalid), .s_axi_rready (opt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (out_patch_swap),
         .coef_addr (out_patch_addr), .coef_data (out_patch_data)
     );
 
@@ -1098,34 +1110,34 @@ module fpgamixer_top (
 `endif
 `else
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N), .LANES (L1)) u_in_mx_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (IN_MX_GAINS),
+        .mclk (mclk), .frame_i (in_mx_swap), .coefs_flat (IN_MX_GAINS),
         .rd_addr (in_mx_addr), .rd_data (in_mx_data)
     );
     // Without the PS the bus matrix and the three level stages also read
     // their reset banks (identity, unity).
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N_BUS), .LANES (L2)) u_bus_mx_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (BUS_MX_GAINS),
+        .mclk (mclk), .frame_i (bus_mx_swap), .coefs_flat (BUS_MX_GAINS),
         .rd_addr (bus_mx_addr), .rd_data (bus_mx_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_lvl_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
+        .mclk (mclk), .frame_i (in_lvl_swap), .coefs_flat (LEVEL_GAINS),
         .rd_addr (in_lvl_addr), .rd_data (in_lvl_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1), .LANES (1)) u_bus_lvl_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
+        .mclk (mclk), .frame_i (bus_lvl_swap), .coefs_flat (LEVEL_GAINS),
         .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_lvl_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
+        .mclk (mclk), .frame_i (out_lvl_swap), .coefs_flat (LEVEL_GAINS),
         .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
     );
     // ... and the identity patch (nothing could ever patch these builds)
     coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_patch (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (PATCH_IDENTITY),
+        .mclk (mclk), .frame_i (in_patch_swap), .coefs_flat (PATCH_IDENTITY),
         .rd_addr (in_patch_addr), .rd_data (in_patch_data)
     );
     coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_patch (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (PATCH_IDENTITY),
+        .mclk (mclk), .frame_i (out_patch_swap), .coefs_flat (PATCH_IDENTITY),
         .rd_addr (out_patch_addr), .rd_data (out_patch_data)
     );
     assign link_rx  = '0;
@@ -1140,7 +1152,9 @@ module fpgamixer_top (
     // the strobe (251 at 20 -> 20 -> 20 on 4 + 4 lanes; 249 before the patch,
     // the single matrix 227), before the links take their frame (the next
     // strobe, edge 256: D_MAX = 255): the same latency in frames as the
-    // parallel matrix had.
+    // parallel matrix had. Since LF1 the chain may span frames (only when
+    // nothing fits one: the lane chooser is latency first); the links then
+    // take io_out on the first strobe after it updates.
     mixer_core #(
         .N_IN (N), .N_BUS (N_BUS), .N_OUT (N), .P_IN (P), .P_OUT (P),
         .SW (SW), .GW (GW), .GF (GF), .L1 (L1), .L2 (L2)
@@ -1151,6 +1165,9 @@ module fpgamixer_top (
         .out_flat (io_out),
         .valid_o  (),
         .err_o    (),
+        .in_patch_swap (in_patch_swap), .in_lvl_swap  (in_lvl_swap),  .in_mx_swap   (in_mx_swap),
+        .bus_lvl_swap  (bus_lvl_swap),  .bus_mx_swap  (bus_mx_swap),  .out_lvl_swap (out_lvl_swap),
+        .out_patch_swap (out_patch_swap),
         .in_patch_addr  (in_patch_addr),  .in_patch_data  (in_patch_data),
         .out_patch_addr (out_patch_addr), .out_patch_data (out_patch_data),
         .in_lvl_addr  (in_lvl_addr),  .in_lvl_data  (in_lvl_data),

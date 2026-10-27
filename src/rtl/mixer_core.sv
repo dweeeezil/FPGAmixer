@@ -79,6 +79,16 @@ module mixer_core
     output logic                 valid_o,
     output logic                 err_o,
 
+    // bank swap pulses (LF1), one per coefficient port: wire each to its
+    // bank's frame_i (coef_bank_ram, or coef_flat_reader with LATCH)
+    output logic                 in_patch_swap,
+    output logic                 in_lvl_swap,
+    output logic                 in_mx_swap,
+    output logic                 bus_lvl_swap,
+    output logic                 bus_mx_swap,
+    output logic                 out_lvl_swap,
+    output logic                 out_patch_swap,
+
     // coefficient read ports (address -> data one cycle later)
     output logic [CWI-1:0]       in_patch_addr,
     input  logic [PWI-1:0]       in_patch_data,
@@ -114,9 +124,9 @@ module mixer_core
         if (L1 < 1 || L2 < 1)
             $error("mixer_core: %0d -> %0d -> %0d does not fit the frame budget",
                    N_IN, N_BUS, N_OUT);
-        else if (D > D_MAX)
-            $error("mixer_core: lanes %0d + %0d give D = %0d > D_MAX = %0d",
-                   L1, L2, D, D_MAX);
+        else if (!chain_fits(N_IN, N_BUS, N_OUT, L1, L2))
+            $error("mixer_core: lanes %0d + %0d don't keep up with the frame rate (D = %0d; mixer_core_pkg::chain_fits)",
+                   L1, L2, D);
     endgenerate
 
     // ----- streams between the blocks (a..f, in chain order) -----
@@ -167,6 +177,22 @@ module mixer_core
         .coef_addr (out_lvl_addr), .coef_data (out_lvl_data),
         .out_valid (f_valid), .out_ch (f_ch), .out_data (f_data));
 
+    // ----- bank swaps (LF1): each block's bank on its input's last beat -----
+    // The read issued in that cycle still sees the old bank (coef_bank_ram),
+    // every later one the new: a pcm_gain or the output patch reads per input
+    // beat, so the next frame gets the new bank; a pcm_matrix starts its
+    // frame's reads on that edge, so that frame does (chain_fits: the previous
+    // frame's reads are done by then). Each frame sees one whole bank per
+    // block, however far down a long chain it runs. The input patch reads
+    // after the strobe that captures its frame, so its bank swaps on the strobe.
+    assign in_patch_swap  = frame_i;
+    assign in_lvl_swap    = a_valid && (a_ch == CWI'(N_IN  - 1));
+    assign in_mx_swap     = b_valid && (b_ch == CWI'(N_IN  - 1));
+    assign bus_lvl_swap   = c_valid && (c_ch == CWB'(N_BUS - 1));
+    assign bus_mx_swap    = d_valid && (d_ch == CWB'(N_BUS - 1));
+    assign out_lvl_swap   = e_valid && (e_ch == CWO'(N_OUT - 1));
+    assign out_patch_swap = f_valid && (f_ch == CWO'(N_OUT - 1));
+
     // ----- taps: listen only; the chain doesn't know they exist -----
     assign tap_in_valid  = b_valid;
     assign tap_in_ch     = b_ch;
@@ -179,7 +205,7 @@ module mixer_core
     assign tap_out_data  = f_data;
 
     pcm_stream2patch #(.N (N_OUT), .P (P_OUT), .SW (SW)) u_out (
-        .mclk (mclk), .rst_n (rst_n), .frame_i (frame_i),
+        .mclk (mclk), .rst_n (rst_n),
         .s_valid (f_valid), .s_ch (f_ch), .s_data (f_data),
         .coef_addr (out_patch_addr), .coef_data (out_patch_data),
         .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o));

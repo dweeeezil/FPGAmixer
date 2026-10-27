@@ -26,8 +26,11 @@
 // later), served by coef_bank_ram or coef_flat_reader with ROW_LEN = N_IN,
 // N_ROWS = N_OUT, the same LANES: word t holds, for lane l, the gain of
 // output o = (t / N_IN)*LANES + l and input i = t % N_IN. The matrix reads
-// words 0 .. passes*N_IN-1 in order, all inside one frame, so each frame
-// uses one coefficient bank (the bank swaps only at a frame strobe).
+// words 0 .. passes*N_IN-1 in order, starting on the edge of its input's last
+// beat, which is where its bank swaps (mixer_core, LF1), so each frame uses
+// one coefficient bank. Keeping up with the frame rate (the reads and the
+// sample buffer done with a frame before the next needs them) is
+// mixer_core_pkg::matrix_fits.
 //
 // ----- The schedule (phase9_status_2026-09-26.md 5.1) -----
 // Lane l computes outputs l, l+LANES, l+2*LANES, ... (one per pass). For each
