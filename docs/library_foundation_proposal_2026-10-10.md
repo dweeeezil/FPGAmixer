@@ -127,3 +127,32 @@ The spatial processor / binauralizer is a **section** (HD7): its own zone(s), it
 - `patch`, **1 / 1**: `pcm_stream2patch` without its channel-order check.
 - `core`, **10 / 11**: each of in_mx, bus_lvl, bus_mx, out_lvl, out_patch swapping on the global strobe (27 … 393 errors: the frames that cross a strobe tear); in_lvl, in_mx and out_patch swapping on their input's first beat instead of the last; the input patch's swap late; `coef_flat_reader`'s `LATCH` following the vector live. **Survived, as predicted: in_lvl on the global strobe.** The input levels' stream (cycles 6 … N_IN + 5) never crosses a strobe, so that swap point can't tear a frame; it is still wired to the stream's last beat, the rule every block follows.
 - **A TB fix found on the way:** the first core run's kills mostly ended in an XSim kernel FATAL in `tap_beat`'s error message (a nested conditional over the three tables), not a FAIL line; the error path was reached (the unmutated design never reaches it), but a kill must be a verdict. Rewritten in plain steps; the rerun: every kill a clean FAIL with its error count.
+
+## 11. Step 2 plan: LF2 + LF3, click-free levels and matrices (2026-10-26, for the user's review)
+
+**What it does for you:** fader moves, crosspoint changes and snapshot recalls fade instead of jumping, so they stop clicking. At rest nothing changes: the smoother arrives at the exact target value, so the null tests stay bit-exact.
+
+**The block: `coef_smooth`** (new, generic, `src/rtl/`; moves to the library repo in step 3). It sits on a coefficient read port, between the bank (`coef_bank_ram` / `coef_flat_reader`) and the block, with the same port on both sides, so neither the bank nor the block knows it's there.
+- It keeps the **current** value of every coefficient (per lane) in a small RAM. When the block really reads coefficient *a*, it gets the bank's **target** and the current value in the same cycle and returns `cur + (target − cur) >>> K`, writing that back as the new current value. Each coefficient is read once per frame, so this is a one-pole lowpass per coefficient running at 48 kHz.
+- **Exactly the target in the end:** the current value carries K extra fractional bits (so small steps don't stall short of the target), and once it is within one output LSB it snaps to the target. Unity stays unity, bit for bit.
+- **Timing unchanged:** the arithmetic sits between the two RAM outputs and the block (combinational), so the read port's one-cycle latency stays. At `mclk` (12.288 MHz) the extra add is nothing for timing.
+- **Cost:** one small RAM per smoothed port (the bus matrix: 100 words × 4 lanes × 26 bits; a level stage: 20 × 26 bits) and an adder, a shifter and a compare per lane: 11 lanes in all.
+
+**One contract addition (needed, small): a read strobe.** Both blocks drive their coefficient address continuously, also when idle (`pcm_gain`: `coef_addr = in_ch` every cycle; `pcm_matrix`: its step counter, stale between frames). A smoother that updated on every cycle would smooth idle addresses many times per frame. So the read port gains **`coef_rd`**, high in the cycle a block issues a real read (`pcm_gain`: the beat's `in_valid`; `pcm_matrix`: `run`), with the rule *each coefficient is read exactly once per frame*. The banks ignore it; the smoother updates only on it; `mixer_core` passes it out per port. The library's template block gets it too (step 3).
+
+**Where it goes:** in `fpgamixer_top`, on the five gain and matrix ports (input levels, input matrix, bus levels, bus matrix, output levels), between each register window's bank and the core. **Not on the patches**: a routing change still switches at once (a crossfade there is a later option). `mixer_core` doesn't change beyond `coef_rd`, so `tb_mixer_core` keeps testing the core bit-exact against the banks directly.
+
+**Tests:**
+- `tb_coef_smooth` (new). **(A) unit:** a bit-exact model of the smoother. Random targets and bank swaps, random read sequences with idle cycles (no update without `coef_rd`), several lane counts; the output equals the model on every read; it approaches without overshoot; it reaches the exact target within the computed bound; lanes are independent. **(B) with real blocks:** `pcm_gain` and `pcm_matrix` through a smoother, with frames checked bit-exact against a model that smooths once per frame. That proves the `coef_rd` wiring and the once-per-frame rule.
+- Every existing TB re-run; `tb_top_windows` (the PS build's wiring) with the smoothers in. Mutants: no snap, K off by one, update without `coef_rd`, the current value without its extra bits, the matrix's `coef_rd` on the wrong signal, and others.
+
+**Then the bitstream (Q2 of step 1: one build for steps 1 + 2), an image, and a bench session:**
+- **By ear:** fader moves and a snapshot recall no longer click.
+- **The gate:** the AVB null tests.
+- **Exactness:** the USB → USB null test after the levels settle, which must stay bit-exact.
+- **T3 again**, 30 min: the protected path is still bit-exact under control changes elsewhere.
+- The OSC standard's note "a recall may click" is removed once that passes.
+
+**Questions for the user:**
+- **Q1, how fast a change fades.** K sets the time constant: **K = 6**: τ ≈ 1.3 ms, exact within ~17 ms (quick, but a full-scale step still has some low thump); **K = 7**: τ ≈ 2.7 ms, ~35 ms; **K = 8**: τ ≈ 5.3 ms, ~70 ms. Recommended **K = 8**: well inside what consoles and DAWs use against zipper noise, inaudible as a delay on a fader, and still settles in well under a tenth of a second. It is one parameter, easy to change later.
+- **Q2, power-on.** The smoother's state starts at 0, so at boot every level fades in from silence over a few τ (~70 ms with K = 8) when the server restores the mix. Recommended: **keep that** (a soft start, no logic). The alternative, starting from the banks' reset values, needs an init pass and only matters if a fade-in at boot is unwanted.
