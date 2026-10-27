@@ -89,6 +89,15 @@ module mixer_core
     output logic                 out_lvl_swap,
     output logic                 out_patch_swap,
 
+    // read strobes (LF2): high in the cycle a block issues a real read, each
+    // coefficient once per frame; for a coef_smooth on the port (the banks
+    // ignore them). The patch ports have none (not smoothed).
+    output logic                 in_lvl_rd,
+    output logic                 in_mx_rd,
+    output logic                 bus_lvl_rd,
+    output logic                 bus_mx_rd,
+    output logic                 out_lvl_rd,
+
     // coefficient read ports (address -> data one cycle later)
     output logic [CWI-1:0]       in_patch_addr,
     input  logic [PWI-1:0]       in_patch_data,
@@ -144,7 +153,7 @@ module mixer_core
     pcm_gain #(.N (N_IN), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_in_lvl (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (a_valid), .in_ch (a_ch), .in_data (a_data),
-        .coef_addr (in_lvl_addr), .coef_data (in_lvl_data),
+        .coef_addr (in_lvl_addr), .coef_rd (in_lvl_rd), .coef_data (in_lvl_data),
         .out_valid (b_valid), .out_ch (b_ch), .out_data (b_data));
 
     pcm_matrix #(
@@ -153,13 +162,13 @@ module mixer_core
     ) u_in_mx (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (b_valid), .in_ch (b_ch), .in_data (b_data),
-        .coef_addr (in_mx_addr), .coef_data (in_mx_data),
+        .coef_addr (in_mx_addr), .coef_rd (in_mx_rd), .coef_data (in_mx_data),
         .out_valid (c_valid), .out_ch (c_ch), .out_data (c_data));
 
     pcm_gain #(.N (N_BUS), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_bus_lvl (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (c_valid), .in_ch (c_ch), .in_data (c_data),
-        .coef_addr (bus_lvl_addr), .coef_data (bus_lvl_data),
+        .coef_addr (bus_lvl_addr), .coef_rd (bus_lvl_rd), .coef_data (bus_lvl_data),
         .out_valid (d_valid), .out_ch (d_ch), .out_data (d_data));
 
     pcm_matrix #(
@@ -168,13 +177,13 @@ module mixer_core
     ) u_bus_mx (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (d_valid), .in_ch (d_ch), .in_data (d_data),
-        .coef_addr (bus_mx_addr), .coef_data (bus_mx_data),
+        .coef_addr (bus_mx_addr), .coef_rd (bus_mx_rd), .coef_data (bus_mx_data),
         .out_valid (e_valid), .out_ch (e_ch), .out_data (e_data));
 
     pcm_gain #(.N (N_OUT), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_out_lvl (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (e_valid), .in_ch (e_ch), .in_data (e_data),
-        .coef_addr (out_lvl_addr), .coef_data (out_lvl_data),
+        .coef_addr (out_lvl_addr), .coef_rd (out_lvl_rd), .coef_data (out_lvl_data),
         .out_valid (f_valid), .out_ch (f_ch), .out_data (f_data));
 
     // ----- bank swaps (LF1): each block's bank on its input's last beat -----

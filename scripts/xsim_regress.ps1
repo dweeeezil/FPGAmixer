@@ -26,7 +26,7 @@ $mixcore = @("pcm_matrix_pkg","mixer_core_pkg","pcm_pack2stream","pcm_stream2pac
              "pcm_gain","mixer_core") |
            ForEach-Object { "$rtl\$_.sv" }
 $mxsim   = "$sim\matrix_packed_sim.sv"   # the single matrix between the converters (matrix TBs)
-$coreRtl = $mixcore + (@("coef_flat_reader",
+$coreRtl = $mixcore + (@("coef_flat_reader","coef_smooth",
                          "reset_sync","audio_clocking","fpgamixer_top") |
                        ForEach-Object { "$rtl\$_.sv" })
 
@@ -40,6 +40,7 @@ $targets = [ordered]@{
   stream      = @("tb_pcm_stream",      "", @("$rtl\pcm_pack2stream.sv","$rtl\pcm_stream2pack.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_stream.sv"))
   patch       = @("tb_pcm_patch",        "", @("$rtl\pcm_patch2stream.sv","$rtl\pcm_stream2patch.sv","$rtl\coef_flat_reader.sv","$sim\pcm_stream_monitor.sv","$sim\tb_pcm_patch.sv"))
   coefram     = @("tb_coef_bank_ram",    "", @("$rtl\coef_bank_ram.sv","$rtl\coef_flat_reader.sv","$sim\tb_coef_bank_ram.sv"))
+  smooth      = @("tb_coef_smooth",      "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$rtl\pcm_gain.sv","$rtl\pcm_matrix.sv","$rtl\coef_flat_reader.sv","$rtl\coef_smooth.sv","$sim\tb_coef_smooth.sv"))
   regs        = @("tb_matrix_regs",      "", ($mixcore + @($mxsim,"$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$sim\tb_matrix_regs.sv")))
   gainregs    = @("tb_gain_regs",        "", ($mixcore + @("$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\gain_regs_axil.sv","$sim\tb_gain_regs.sv")))
   patchregs   = @("tb_patch_regs",       "", @("$rtl\pcm_patch2stream.sv","$rtl\pcm_stream2patch.sv","$rtl\coef_bank_ram.sv","$rtl\axil_coef_window.sv","$rtl\patch_regs_axil.sv","$sim\tb_patch_regs.sv"))

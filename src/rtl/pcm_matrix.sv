@@ -30,7 +30,8 @@
 // beat, which is where its bank swaps (mixer_core, LF1), so each frame uses
 // one coefficient bank. Keeping up with the frame rate (the reads and the
 // sample buffer done with a frame before the next needs them) is
-// mixer_core_pkg::matrix_fits.
+// mixer_core_pkg::matrix_fits. coef_rd (LF2) marks the real reads (each word
+// once per frame, while the sequencer runs), for a coef_smooth on the port.
 //
 // ----- The schedule (phase9_status_2026-09-26.md 5.1) -----
 // Lane l computes outputs l, l+LANES, l+2*LANES, ... (one per pass). For each
@@ -83,6 +84,7 @@ module pcm_matrix
 
     // ----- coefficient read port -----
     output logic [AW-1:0]             coef_addr,
+    output logic                      coef_rd,     // LF2: a real read (each word once per frame)
     input  logic [LANES*GAIN_WIDTH-1:0] coef_data,
 
     // ----- output stream -----
@@ -156,6 +158,7 @@ module pcm_matrix
     end
 
     assign coef_addr = t;
+    assign coef_rd   = run;          // t is stale between frames; a step is the real read
 
     // Stage 1: the sample read and the coefficient read (coef_data arrives
     // on this same edge), plus the step's control.

@@ -58,7 +58,12 @@
 // warning at XDC parse time, and the build then fails in IO clock placement
 // (seen 2026-09-22).
 // -----------------------------------------------------------------------------
-module fpgamixer_top (
+module fpgamixer_top #(
+    // LF2/LF3: the coefficient smoothers' time constant, 2^SMOOTH_K frames.
+    // 8 in every build (the user, 2026-10-26: 5.3 ms); a parameter only so
+    // that a TB of the whole top can settle in a few frames.
+    parameter int SMOOTH_K = 8
+) (
     input  logic sysclk        // 25 MHz PL ref, pin E12 (LVCMOS18)
 );
 
@@ -193,6 +198,19 @@ module fpgamixer_top (
     // frame one whole bank per block.
     logic in_patch_swap, in_lvl_swap, in_mx_swap, bus_lvl_swap, bus_mx_swap,
           out_lvl_swap, out_patch_swap;
+    // LF2/LF3 (2026-10-26): click-free levels and matrices. A coef_smooth on
+    // each of the five gain/matrix ports, between its bank (the *_bk_* side)
+    // and the core; the core's read strobes (*_rd) tell it the real reads.
+    // tau = 2^SMOOTH_K frames (the module parameter; the user, Q1: K = 8,
+    // 5.3 ms, exact within ~70 ms). The patches aren't smoothed: a routing
+    // change switches at once.
+    logic [CW-1:0]     in_lvl_bk_addr, bus_lvl_bk_addr, out_lvl_bk_addr;
+    logic [GW-1:0]     in_lvl_bk_data, bus_lvl_bk_data, out_lvl_bk_data;
+    logic [IMX_AW-1:0] in_mx_bk_addr;
+    logic [L1*GW-1:0]  in_mx_bk_data;
+    logic [BMX_AW-1:0] bus_mx_bk_addr;
+    logic [L2*GW-1:0]  bus_mx_bk_data;
+    logic in_lvl_rd, in_mx_rd, bus_lvl_rd, bus_mx_rd, out_lvl_rd;
 
     // the core's tap ports (Phase 13): the level stages' output streams,
     // metered in PS builds (unused without the PS)
@@ -711,7 +729,7 @@ module fpgamixer_top (
         .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
         .mclk (mclk), .frame_i (in_mx_swap),
-        .coef_addr (in_mx_addr), .coef_data (in_mx_data)
+        .coef_addr (in_mx_bk_addr), .coef_data (in_mx_bk_data)
     );
 
     // Phase 12: the bus matrix (zone busMatrix, bus -> output) ...
@@ -731,7 +749,7 @@ module fpgamixer_top (
         .s_axi_rdata   (bmx_rdata),  .s_axi_rresp  (bmx_rresp),
         .s_axi_rvalid  (bmx_rvalid), .s_axi_rready (bmx_rready),
         .mclk (mclk), .frame_i (bus_mx_swap),
-        .coef_addr (bus_mx_addr), .coef_data (bus_mx_data)
+        .coef_addr (bus_mx_bk_addr), .coef_data (bus_mx_bk_data)
     );
 
     // ... and the three level stages (zones inputChannel, busChannel,
@@ -752,7 +770,7 @@ module fpgamixer_top (
         .s_axi_rdata   (ilv_rdata),  .s_axi_rresp  (ilv_rresp),
         .s_axi_rvalid  (ilv_rvalid), .s_axi_rready (ilv_rready),
         .mclk (mclk), .frame_i (in_lvl_swap),
-        .coef_addr (in_lvl_addr), .coef_data (in_lvl_data)
+        .coef_addr (in_lvl_bk_addr), .coef_data (in_lvl_bk_data)
     );
 
     gain_regs_axil #(
@@ -771,7 +789,7 @@ module fpgamixer_top (
         .s_axi_rdata   (blv_rdata),  .s_axi_rresp  (blv_rresp),
         .s_axi_rvalid  (blv_rvalid), .s_axi_rready (blv_rready),
         .mclk (mclk), .frame_i (bus_lvl_swap),
-        .coef_addr (bus_lvl_addr), .coef_data (bus_lvl_data)
+        .coef_addr (bus_lvl_bk_addr), .coef_data (bus_lvl_bk_data)
     );
 
     gain_regs_axil #(
@@ -790,7 +808,7 @@ module fpgamixer_top (
         .s_axi_rdata   (olv_rdata),  .s_axi_rresp  (olv_rresp),
         .s_axi_rvalid  (olv_rvalid), .s_axi_rready (olv_rready),
         .mclk (mclk), .frame_i (out_lvl_swap),
-        .coef_addr (out_lvl_addr), .coef_data (out_lvl_data)
+        .coef_addr (out_lvl_bk_addr), .coef_data (out_lvl_bk_data)
     );
 
     // Phase 13: a peak meter on each tap (zones inputChannel, busChannel,
@@ -1111,25 +1129,25 @@ module fpgamixer_top (
 `else
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N), .LANES (L1)) u_in_mx_gains (
         .mclk (mclk), .frame_i (in_mx_swap), .coefs_flat (IN_MX_GAINS),
-        .rd_addr (in_mx_addr), .rd_data (in_mx_data)
+        .rd_addr (in_mx_bk_addr), .rd_data (in_mx_bk_data)
     );
     // Without the PS the bus matrix and the three level stages also read
     // their reset banks (identity, unity).
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N_BUS), .LANES (L2)) u_bus_mx_gains (
         .mclk (mclk), .frame_i (bus_mx_swap), .coefs_flat (BUS_MX_GAINS),
-        .rd_addr (bus_mx_addr), .rd_data (bus_mx_data)
+        .rd_addr (bus_mx_bk_addr), .rd_data (bus_mx_bk_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_lvl_gains (
         .mclk (mclk), .frame_i (in_lvl_swap), .coefs_flat (LEVEL_GAINS),
-        .rd_addr (in_lvl_addr), .rd_data (in_lvl_data)
+        .rd_addr (in_lvl_bk_addr), .rd_data (in_lvl_bk_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1), .LANES (1)) u_bus_lvl_gains (
         .mclk (mclk), .frame_i (bus_lvl_swap), .coefs_flat (LEVEL_GAINS),
-        .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data)
+        .rd_addr (bus_lvl_bk_addr), .rd_data (bus_lvl_bk_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_lvl_gains (
         .mclk (mclk), .frame_i (out_lvl_swap), .coefs_flat (LEVEL_GAINS),
-        .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
+        .rd_addr (out_lvl_bk_addr), .rd_data (out_lvl_bk_data)
     );
     // ... and the identity patch (nothing could ever patch these builds)
     coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_patch (
@@ -1144,6 +1162,25 @@ module fpgamixer_top (
     assign link2_rx = '0;
     assign link3_rx = '0;
 `endif
+
+    // ----- click-free coefficients (LF2/LF3): bank -> coef_smooth -> core -----
+    coef_smooth #(.W (GW), .DEPTH (N), .LANES (1), .K (SMOOTH_K)) u_sm_in_lvl (
+        .mclk (mclk), .rd_addr (in_lvl_addr), .rd_en (in_lvl_rd), .rd_data (in_lvl_data),
+        .bk_addr (in_lvl_bk_addr), .bk_data (in_lvl_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (pcm_matrix_pkg::matrix_passes(N_BUS, L1) * N), .LANES (L1),
+                  .K (SMOOTH_K)) u_sm_in_mx (
+        .mclk (mclk), .rd_addr (in_mx_addr), .rd_en (in_mx_rd), .rd_data (in_mx_data),
+        .bk_addr (in_mx_bk_addr), .bk_data (in_mx_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (N_BUS), .LANES (1), .K (SMOOTH_K)) u_sm_bus_lvl (
+        .mclk (mclk), .rd_addr (bus_lvl_addr), .rd_en (bus_lvl_rd), .rd_data (bus_lvl_data),
+        .bk_addr (bus_lvl_bk_addr), .bk_data (bus_lvl_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (pcm_matrix_pkg::matrix_passes(N, L2) * N_BUS), .LANES (L2),
+                  .K (SMOOTH_K)) u_sm_bus_mx (
+        .mclk (mclk), .rd_addr (bus_mx_addr), .rd_en (bus_mx_rd), .rd_data (bus_mx_data),
+        .bk_addr (bus_mx_bk_addr), .bk_data (bus_mx_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (N), .LANES (1), .K (SMOOTH_K)) u_sm_out_lvl (
+        .mclk (mclk), .rd_addr (out_lvl_addr), .rd_en (out_lvl_rd), .rd_data (out_lvl_data),
+        .bk_addr (out_lvl_bk_addr), .bk_data (out_lvl_bk_data));
 
     // ----- PCM core -----
     // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->
@@ -1168,6 +1205,8 @@ module fpgamixer_top (
         .in_patch_swap (in_patch_swap), .in_lvl_swap  (in_lvl_swap),  .in_mx_swap   (in_mx_swap),
         .bus_lvl_swap  (bus_lvl_swap),  .bus_mx_swap  (bus_mx_swap),  .out_lvl_swap (out_lvl_swap),
         .out_patch_swap (out_patch_swap),
+        .in_lvl_rd (in_lvl_rd), .in_mx_rd (in_mx_rd), .bus_lvl_rd (bus_lvl_rd),
+        .bus_mx_rd (bus_mx_rd), .out_lvl_rd (out_lvl_rd),
         .in_patch_addr  (in_patch_addr),  .in_patch_data  (in_patch_data),
         .out_patch_addr (out_patch_addr), .out_patch_data (out_patch_data),
         .in_lvl_addr  (in_lvl_addr),  .in_lvl_data  (in_lvl_data),

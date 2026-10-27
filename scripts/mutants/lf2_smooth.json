@@ -1,0 +1,62 @@
+[
+ {
+  "name": "no snap: always step",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "                if (diff > -(XW+1)'(1 << K) && diff < (XW+1)'(1 << K))\n                    nxt = tgt;                                  // within one LSB: arrive\n                else\n                    nxt = cur_q + XW'(diff >>> K);              // one step toward it",
+  "new": "                nxt = cur_q + XW'(diff >>> K);"
+ },
+ {
+  "name": "step >>> (K-1)",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "nxt = cur_q + XW'(diff >>> K);",
+  "new": "nxt = cur_q + XW'(diff >>> (K - 1));"
+ },
+ {
+  "name": "current value without its fraction bits",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "if (en_q) cur[a_q] <= nxt;",
+  "new": "if (en_q) cur[a_q] <= (nxt >>> K) <<< K;"
+ },
+ {
+  "name": "updates without rd_en",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "if (en_q) cur[a_q] <= nxt;",
+  "new": "cur[a_q] <= nxt;"
+ },
+ {
+  "name": "write-back to the new address",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "if (en_q) cur[a_q] <= nxt;",
+  "new": "if (en_q) cur[rd_addr] <= nxt;"
+ },
+ {
+  "name": "target read unsigned",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "tgt  = XW'($signed(bk_data[gl*W +: W])) <<< K;",
+  "new": "tgt  = XW'(bk_data[gl*W +: W]) <<< K;"
+ },
+ {
+  "name": "snap boundary includes -2^K",
+  "file": "src/rtl/coef_smooth.sv",
+  "old": "if (diff > -(XW+1)'(1 << K) && diff",
+  "new": "if (diff >= -(XW+1)'(1 << K) && diff"
+ },
+ {
+  "name": "pcm_gain coef_rd always high",
+  "file": "src/rtl/pcm_gain.sv",
+  "old": "assign coef_rd   = in_valid;",
+  "new": "assign coef_rd   = 1'b1;"
+ },
+ {
+  "name": "pcm_matrix coef_rd always high",
+  "file": "src/rtl/pcm_matrix.sv",
+  "old": "assign coef_rd   = run;",
+  "new": "assign coef_rd   = 1'b1;"
+ },
+ {
+  "name": "pcm_matrix coef_rd on the input beat",
+  "file": "src/rtl/pcm_matrix.sv",
+  "old": "assign coef_rd   = run;",
+  "new": "assign coef_rd   = in_valid;"
+ }
+]

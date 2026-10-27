@@ -33,6 +33,9 @@
 //     channel B+3 -> port 2 (channel 2 -> None): port 2 carries port 13's
 //     signal, port B+3 goes silent; swapped patch windows give otherwise.
 // Phase 11: fpgamixer_top has no Pmod pins any more (decision P1).
+// LF2/LF3 (2026-10-26): the gain/matrix ports are smoothed; the top runs
+// with SMOOTH_K = 2, checks wait until a change has arrived exactly, and the
+// per-window changes are first seen mid-fade (the smoothers are wired in).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -43,10 +46,20 @@ module tb_top_windows;
     localparam int NH = 4;     // the USB-host channels 0..3: input matrix off at reset (H5)
     localparam int B  = 4;     // the first channel of the per-window test (an identity one)
 
+    // LF2/LF3: the five gain/matrix ports are smoothed (coef_smooth). With
+    // K = 2 here (8 in the builds) a change is exact after (18 + 1) * 4 = 76
+    // frames; the checks after a coefficient change wait SETTLE frames.
+    localparam int TB_K   = 2;
+    localparam int SETTLE = ((18 + 1) << TB_K) + 3;
+
     logic sysclk = 0;
     always #4 sysclk = ~sysclk;
 
-    fpgamixer_top u_dut (.sysclk (sysclk));     // Phase 11: no Pmod pins any more
+    fpgamixer_top #(.SMOOTH_K (TB_K)) u_dut (.sysclk (sysclk));   // Phase 11: no Pmod pins any more
+
+    task automatic settle();
+        repeat (SETTLE) @(posedge u_dut.u_core.valid_o);
+    endtask
 
     // ----- known core inputs: in[k] = (k + 1) * 0x010000 -----
     // Driven at the LINKS' wires, per the channel map (Phase 11): core 0..3 =
@@ -177,7 +190,7 @@ module tb_top_windows;
             wr(OUTPATCH, lv(c), 32'(c + 1));
         end
         commit(INPATCH); commit(OUTPATCH);
-        repeat (3) @(posedge u_dut.u_core.valid_o);
+        settle();                                       // the levels fade in from 0 at power-on (LF2, Q2)
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("identity port%0d", k), 32'(u_dut.io_out[k*SW +: SW]),
@@ -208,7 +221,15 @@ module tb_top_windows;
         exp_out[B+1] = SW'((32'h400000 / 4 + 32'h060000) / 2);  // (in B/2/2 + in B+1) / 2
         exp_out[B+2] = SW'(32'h070000 / 4);                     // in B+2 / 4
 
+        // LF2/LF3: 3 frames on, the changed outputs are mid-fade: neither the
+        // old value (= the input) nor the new one, so the smoothers are on
+        // these paths (input levels, both matrices, bus and output levels)
         repeat (3) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        for (int k = B; k <= B + 2; k++)
+            check($sformatf("out%0d mid-fade after 3 frames", k),
+                  32'(u_dut.io_out[k*SW +: SW] != exp_out[k] && u_dut.io_out[k*SW +: SW] != stim[k*SW +: SW]), 1);
+        settle();
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("out%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));

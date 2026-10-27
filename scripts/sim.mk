@@ -46,11 +46,11 @@ MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv \
             $(RTL)/pcm_matrix.sv $(RTL)/pcm_gain.sv $(RTL)/mixer_core.sv
 MXSIM    := $(SIM)/matrix_packed_sim.sv
 
-CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv \
+CORE_RTL := $(MIXCORE) $(RTL)/coef_flat_reader.sv $(RTL)/coef_smooth.sv \
             $(RTL)/reset_sync.sv $(RTL)/audio_clocking.sv
 
-.PHONY: all matrix matrix_rect corepkg gain core stream patch coefram mclk steer regs gainregs patchregs peak link linkstat topwin clean
-all: matrix matrix_rect corepkg gain core stream patch coefram mclk steer regs gainregs patchregs peak link linkstat topwin
+.PHONY: all matrix matrix_rect corepkg gain core stream patch coefram smooth mclk steer regs gainregs patchregs peak link linkstat topwin clean
+all: matrix matrix_rect corepkg gain core stream patch coefram smooth mclk steer regs gainregs patchregs peak link linkstat topwin
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -115,6 +115,14 @@ coefram: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -s tb_coef_bank_ram -o $(BUILD)/tb_coef_bank_ram.vvp \
 		$(RTL)/coef_bank_ram.sv $(RTL)/coef_flat_reader.sv $(SIM)/tb_coef_bank_ram.sv
 	@$(VVP) $(BUILD)/tb_coef_bank_ram.vvp
+
+# --- LF2/LF3: coef_smooth alone, and pcm_gain / pcm_matrix through it ---
+smooth: | $(BUILD)
+	@echo ">>> Building tb_coef_smooth"
+	@$(IVERILOG) $(FLAGS) -s tb_coef_smooth -o $(BUILD)/tb_coef_smooth.vvp \
+		$(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv $(RTL)/pcm_gain.sv $(RTL)/pcm_matrix.sv \
+		$(RTL)/coef_flat_reader.sv $(RTL)/coef_smooth.sv $(SIM)/tb_coef_smooth.sv
+	@$(VVP) $(BUILD)/tb_coef_smooth.vvp
 
 # --- Phase 9: media-clock meter (mclk vs a 1PPS from a TSU model), unrelated clocks ---
 mclk: | $(BUILD)
