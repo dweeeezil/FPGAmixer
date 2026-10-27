@@ -1,7 +1,7 @@
 # Proposal: the core's foundation for the DSP library (2026-10-10)
 
 **Context:** hardening before the DSP library (`hardening_status_2026-10-10.md`, step 5). The user decided (HD2–HD7): **the core may span more than one frame (A)**; **the library is its own repo**; **click-free coefficient changes**; **a template block**; **multi-input blocks (sidechains) pick their extra inputs like channel sources**; **spatial processing / binaural is its own section, not a plugin**.
-**State:** proposal; decisions LF1–LF8 below to the user. Nothing built.
+**State:** **decided 2026-10-26: LF1–LF8 all as recommended (§8).** Nothing built yet.
 **The library repo (the user, 2026-10-26):** `C:\Users\dodec\Documents\HDL-DSP-Library`, remote `https://github.com/dweeeezil/HDL-DSP-Library.git`. **Empty**: no commits, no files, and no `main` on the remote yet; so LF5's "move the primitives there" starts from a blank repo, and nothing there constrains the decisions.
 
 ---
@@ -64,6 +64,8 @@ The spatial processor / binauralizer is a **section** (HD7): its own zone(s), it
 - **FPGAmixer** keeps the core's composition (`mixer_core`, the converters, the packages), the platform, the server, and **consumes the library as a git submodule** (`src/lib/`), pinned to a commit, so a library change reaches the mixer only when updated here (and the regression runs here on every bump).
 
 ## 8. Decisions (recommended first)
+
+**Decided 2026-10-26 (the user): all eight as recommended** (the "Recommended" column). The user also asked to be more hands-on from here: each step's plan is shown before it's built, with check-ins at milestones.
 
 | # | Question | Recommended | Alternative |
 |---|---|---|---|
