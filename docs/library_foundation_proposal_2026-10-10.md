@@ -168,3 +168,18 @@ The spatial processor / binauralizer is a **section** (HD7): its own zone(s), it
 - **Mutants (`scripts/mutants/lf2_smooth.json`, target `smooth`): 9 / 10 killed:** no snap, the step `>>> (K − 1)`, the current value without its fraction bits, updating without `rd_en`, the write-back to the new address, the snap boundary including −2^K (3 errors: the edge case does occur), `pcm_gain`'s and `pcm_matrix`'s `coef_rd` stuck high, `pcm_matrix`'s `coef_rd` on the input beat. **Survived: "the target read unsigned": an equivalent mutant.** Shifting a W-bit value left by K into W + K bits puts its top bit exactly at the result's sign bit, so `$signed` makes no difference: there is no extension.
 
 **Next:** the bitstream for steps 1 + 2 (the user's Q2), an image, the bench session (§11: by ear, the gate, the null tests, T3).
+
+### 11.2 Bitstream and image `lf2-smooth-20261031` (steps 1 + 2; 2026-10-31)
+
+- **Vivado 2026.1** (`create_project.tcl`, `build.tcl lf2`): **WNS 4.315 ns** (p15a: 4.710), WHS 0.010 ns, 0 failing paths, 0 critical warnings, the methodology gate passed. Utilization vs `p15a`: LUTs 25,034 (35.5 %; was 23,433), of which LUT as memory 3,424 (was 2,864: the smoothers' current values), registers 37,284 (was 36,946), **BRAM 7.5 and DSPs 11, unchanged**. XSA `build/fpgamixer_lf2.xsa`.
+- **SDT** (`build/sdt`; `p15a`'s kept as `build/sdt.p15a`, on the VM `~/edf/sdt.p15a`): `psu_init.*`, `zynqmp*.dtsi`, `pcw.dtsi`, `system-top.dts` **identical**; `pl.dtsi` only `firmware-name` (`fpgamixer_lf2.bit.bin`). No PS setting and no window changed.
+- **Image** (`gen-machine-conf` from the new SDT, then bitbake; layer `7efa33a`, which carries everything of `p15e`): 15,107 tasks, all succeeded, 7 min 9 s, no warning beyond `p15a`'s. **Checked:** the deployed bitstream's MD5 `3b8426ad…` = the XSA's; rootfs `VERSION` `7efa33a`; the gadget's `REQ_NUMBER=8`, PAUSE off in `avb_net.py`, the journal mount (p15e's fixes). **`build/sd/lf2-smooth-20261031.wic.xz`** (`xz -t` OK, MD5 `30d0fe3b…`, same on both ends). **Not flashed.**
+
+**Bench session (the user; the board at `ssh amd-edf@10.0.0.2`; a reflash wipes the mix and the on-board snapshots, so save what's needed first):**
+1. Flash, boot. If the Ethernet LEDs go dark after a second: a full power-off for ~10 s (the PHY's first-boot flake). Restore the mix and the channel-20 path.
+2. **The gate:** T1 AVB → AVB and USB → AVB, 5 min each. Both PASS, or reflash `p15e`.
+3. **By ear (the point of step 2):** while listening, move a fader quickly, pull a level to −∞ and back, and recall a snapshot that changes many levels. **No clicks**; changes glide over a few ms.
+4. **Exact at rest:** T1 USB → USB, 5 min, with the channel-20 path at unity: **bit-exact** (the smoother arrives exactly).
+5. Optional: T3, 30 min (control changes under load; the protected path stays bit-exact).
+6. Expected and harmless: at power-on the mix fades in over ~70 ms (the user's Q2).
+After a pass: `lf2` replaces `p15e`, and the OSC standard's "a recall may click" note goes.
