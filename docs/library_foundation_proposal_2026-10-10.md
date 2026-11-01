@@ -235,3 +235,67 @@ After a pass: `lf2` replaces `p15e`, and the OSC standard's "a recall may click"
 **C, FPGAmixer takes the library as a submodule at `src/lib`** (URL `https://github.com/dweeeezil/HDL-DSP-Library.git`, pinned to `01a6c01`; the checkout was cloned from the local repo). The eight moved files are deleted from FPGAmixer (each checked identical to its library copy first, apart from line endings; `tb_coef_smooth` split into the library's unit TB and FPGAmixer's **`tb_smooth_blocks`**). `xsim_regress.ps1` / `sim.mk` read the primitives from `src/lib` (targets `coefram` and `smooth` gone: they run in the library; `smooth_blocks` new); `create_project.tcl` globs `src/lib/rtl` and `src/lib/sim`, takes the scoped XDC from `src/lib/constraints/`, and tells a clone without the submodule to `git submodule update --init`; the mutant lists point at `src/lib`; `architecture_modules.md`'s table at the library paths.
 
 **D, checked:** FPGAmixer's regression **17 / 17 PASS** against the submodule (18 before, less the two that moved, plus `smooth_blocks`); the read-strobe mutants against `tb_smooth_blocks`: **3 / 3**. **Vivado** (`lf3chk`, from the submodule): WNS 4.160 ns, 0 critical warnings, the bank's XDC applied from `src/lib/constraints`. **Utilization against `lf2`: registers 37,284, LUT-RAM 3,424, BRAM 7.5, DSPs 11, muxes and carry chains identical; logic LUTs 21,643 (lf2: 21,610), 33 more (0.05 % of the device).** Not the "± 0" the plan said: the RTL is structurally different since A (the swap comparisons inside the blocks) and the sources reach synthesis in another order, and Vivado's optimizer varies with both. The same registers and memories, and simulations showing every pulse unchanged, say the logic is the same; recorded as such, not as identical. `lf2`'s image stays the one to bench; nothing in steps 3's RTL is audible.
+
+## 13. Step 4 plan: the first library block, a parametric EQ (2026-10-31, for the user's review)
+
+**What you get:** a per-channel parametric EQ on the input channels, controlled from the app like any other module. The app already renders advertised modules by `group` (knobs for numbers with ranges, menus for enums, buttons for bools: StudioRunner D65), and its mock device already uses `eq_band1..4_freq/gain/q`, so no app work is needed to use it. The pop-out EQ editor (D73) stays an app item for later. With the EQ flat or bypassed, the path stays **bit-exact**, so the null tests keep working.
+
+**The parts, in order:**
+
+**4a, a numerical prototype first (Python, on the PC; no RTL yet).** It decides the filter structure and the number formats from measured numbers, not guesses, and it becomes the TB's reference model.
+- **The question it answers:** low frequencies are the hard case for a fixed-point EQ. At 20 Hz and 48 kHz the filter's poles sit very close to 1, so coefficient precision and internal noise decide whether a low shelf works at all.
+- **Two candidates:**
+  - **(i) a state-variable filter**, the "TPT" form. It is known to stay well-conditioned at low frequencies, and to tolerate its coefficients changing while it runs.
+  - **(ii) the classic biquad** (Direct Form I) with error feedback.
+- **For each, it measures:**
+  - the response error against a floating-point reference, 20 Hz–20 kHz, for every band type at the extremes of frequency, gain and Q;
+  - the noise floor;
+  - **whether the coefficients may be smoothed directly** (LF4). Every intermediate coefficient set of a fast sweep must stay stable; otherwise the block declares a crossfade.
+- **Expected outcome:** 24-bit audio, wider internal state, coefficients wider than the DSP's 18-bit port, so a multiply uses 2 DSPs. The prototype fixes the exact widths.
+
+**4b, the block `lib_eq` in the library, from the template.**
+- **Structure:**
+  - per channel, 4 bands in series plus a bypass;
+  - time-shared over the channels like the matrix, a few DSP lanes, roughly 6–10 DSPs for 20 channels × 4 bands;
+  - a fixed latency of about one more frame (20.8 µs: fine since LF1).
+- **Coefficients:** per band, the handful the structure needs, computed by the server, in a bank of 20 × 4 × that many words.
+- **Smoothing or crossfade:** whatever 4a says.
+- **Flat or off is exactly identity:** unity pass-through coefficients, so the output is bit-identical to the input.
+- **Its TB:** bit-exact against the prototype's fixed-point model, plus mutants.
+
+**4c, FPGAmixer:**
+- a new core stage on the input channels, between the input patch and the input levels (pre-fader, where a console's channel EQ sits);
+- its register window (a new AXI window on the second SmartConnect, which has 13 masters free; a block-design change, so the device tree gains a node);
+- its bank (+ smoother) in `fpgamixer_top`;
+- the server:
+  - a `mixer_hw` class (ID "EQ");
+  - the modules in `inputChannel`'s config;
+  - the coefficient maths (the standard design formulas for the chosen structure);
+  - stored with the mix and snapshots;
+  - Python tests of the maths against the prototype;
+- `tb_mixer_core` with the EQ stage, then a bitstream and an image.
+
+**4d, the bench session (yours):**
+- **The gate:** the AVB null tests.
+- **Bit-exact with the EQ flat:** USB → USB null.
+- **By ear:** sweep a band, boost and cut, shelves, the high-pass; no zipper noise or clicks while moving.
+- **A response check:** a sine at a few frequencies through a known setting, compared on the meters.
+
+**Proposed modules (per input channel, group `eq`):**
+- `eq_on` (bool, bypass);
+- for each band 1–4:
+  - `eq_bandN_on` (bool);
+  - `eq_bandN_type` (enum with `optionLabels`: Peak, Low shelf, High shelf, High-pass, Low-pass);
+  - `eq_bandN_freq` (Hz, 20–20,000);
+  - `eq_bandN_gain` (dB, ±15);
+  - `eq_bandN_q` (0.1–10).
+
+These follow the app's mock naming, plus `type` and `on`.
+
+**Questions for the user:**
+- **Q1, bands:** 4 bands, each any type (Peak, shelves, high/low-pass), with the modules above. Recommended. The alternative is a fixed layout: high-pass, low shelf, two peaks, high shelf.
+- **Q2, where:** input channels only, pre-fader. Recommended for now; the block is per-channel and generic, so buses or outputs later are another instance.
+- **Q3, filter structure:** let the prototype decide between the state-variable filter and the biquad, and report the numbers before RTL. Recommended. The alternative is choosing the biquad now, the familiar form.
+- **Q4, LF8 (the chain as sections):** decided "now" but not yet done.
+  - Recommended: insert the EQ stage directly in `mixer_core` (one change at a time), then do LF8 as its own refactor right after, when there are two optional stages to describe.
+  - The alternative: do LF8 first, so the EQ goes in as a section entry.
