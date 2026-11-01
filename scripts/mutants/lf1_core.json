@@ -37,7 +37,7 @@
  },
  {
   "name": "flat reader LATCH follows the vector live",
-  "file": "src/rtl/coef_flat_reader.sv",
+  "file": "src/lib/rtl/coef_flat_reader.sv",
   "old": "if (frame_i || !loaded) begin",
   "new": "if (1'b1) begin"
  }
