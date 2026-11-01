@@ -22,8 +22,9 @@ system zone", "Config", "Error reply").
                    so stored, echoed and snapshot values agree);
                  - strings only for string modules, numbers only for the rest;
                  - clamping is not a refusal: the applied value is returned.
-  ZoneSpec     a zone's shape (channels: count; matrix: rows x cols) and the
-               modules it implements, in order.
+  ZoneSpec     a zone's shape (channels: count; matrix: rows x cols; pool:
+               count slots of one insert type, LF8) and the modules it
+               implements, in order.
   Model        zones + module metadata + system settings. resolve(tail) turns
                an address tail into a Param, or raises Refused with the path
                (normalised, no trailing slash) and the reason for the error
@@ -164,7 +165,9 @@ class ModuleSpec:
 
 @dataclass(frozen=True)
 class ZoneSpec:
-    """kind 'channels' (count) or 'matrix' (rows x cols); modules in order."""
+    """kind 'channels' (count), 'matrix' (rows x cols) or 'pool' (count
+    slots of one insert type, LF8 inserts; the config says "kind": "pool");
+    modules in order."""
     kind: str
     modules: tuple
     count: int = 0
@@ -172,24 +175,28 @@ class ZoneSpec:
     cols: int = 0
 
     def __post_init__(self):
-        if self.kind not in ("channels", "matrix"):
+        if self.kind not in ("channels", "matrix", "pool"):
             raise ValueError(f"unknown zone kind {self.kind!r}")
 
     def indices(self):
-        """Every canonical index, in order (channels, or row-major crosspoints)."""
-        if self.kind == "channels":
+        """Every canonical index, in order (channels or slots, or row-major crosspoints)."""
+        if self.kind in ("channels", "pool"):
             return [str(i) for i in range(self.count)]
         return [f"{r}_{c}" for r in range(self.rows) for c in range(self.cols)]
 
     def describe(self):
         """The config JSON's zone object."""
-        shape = {"count": self.count} if self.kind == "channels" else {"rows": self.rows, "cols": self.cols}
-        return dict(shape, modules=list(self.modules))
+        if self.kind == "matrix":
+            return {"rows": self.rows, "cols": self.cols, "modules": list(self.modules)}
+        d = {"count": self.count, "modules": list(self.modules)}
+        if self.kind == "pool":
+            d["kind"] = "pool"
+        return d
 
     def index(self, text):
         """The canonical index for `text`, or None if it isn't one of this
         zone's indices."""
-        if self.kind == "channels":
+        if self.kind in ("channels", "pool"):
             n = _parse_int(text)
             return str(n) if n is not None and n < self.count else None
         a, sep, b = text.partition("_")
@@ -230,9 +237,14 @@ class Model:
         share must be described identically (the config has one 'modules')."""
         if zone in self.zones or zone == SYSTEM_ZONE:
             raise ValueError(f"zone {zone!r} described twice")
-        expected = CHANNEL_ZONES if spec.kind == "channels" else MATRIX_ZONES
-        if zone not in expected:
-            raise ValueError(f"{zone!r} is not a {spec.kind} zone of the standard")
+        if spec.kind == "pool":     # an insert type (LF8): any lower-case name the standard doesn't use
+            if zone in CHANNEL_ZONES + MATRIX_ZONES or not zone.isascii() or not zone.isalnum() \
+                    or not zone[0].isalpha() or zone != zone.lower():
+                raise ValueError(f"{zone!r} can't be a pool zone")
+        else:
+            expected = CHANNEL_ZONES if spec.kind == "channels" else MATRIX_ZONES
+            if zone not in expected:
+                raise ValueError(f"{zone!r} is not a {spec.kind} zone of the standard")
         for name in spec.modules:
             if name not in modules:
                 raise ValueError(f"{zone} lists module {name!r} without metadata")

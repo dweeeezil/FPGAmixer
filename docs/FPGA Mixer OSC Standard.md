@@ -1,5 +1,5 @@
 Alexander Kelly
-18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups, channel names, I/O patch, channel counts, config changed)
+18 Aug 2026 (revised 4 Oct 2026: amendments A–H folded in; 8 Oct 2026: snapshots, virtual groups, channel names, I/O patch, channel counts, config changed; 31 Oct 2026: inserts)
 
 This is the one source of truth for the mixer's OSC protocol. The 4 Oct 2026 revision merges the amendments agreed for the StudioRunner controller (A: name and alias, B: config, C: metering, D: TCP framing, E: discovery, F: value encoding, G: error reply, H: ping) and the device rules decided with them. The change log is at the end.
 
@@ -322,6 +322,35 @@ Optional (the config's `system` block lists `inputCount`, `busCount` and `output
 /<name>/config/changed
 ```
 
+## Inserts
+
+Optional (config `capabilities` contains `"inserts"`). DSP processors live in **pools**, one per processor type, each with a fixed number of **slots** (instances). Any input channel, bus or output channel can run through any number of them, up to K, pre-fader, in any order, several of a type. The full controller-facing description, with examples and a checklist, is `docs/inserts_controller_spec_2026-10-31.md`; the rules:
+
+- **Config:**
+  - top-level `"inserts": { "maxPerChannel": K, "types": [...], "delayFrames": n }`;
+  - one zone per type, named by it, `{ "count": <slots>, "modules": [...], "kind": "pool" }`, indexed by slot like a channel zone (a controller accepts unknown zone names that say `"kind": "pool"`);
+  - the channel zones list the module `inserts` (`string`, `linked`).
+  - A processor module's `default` is its identity (no effect on the audio). Today: type `gain`, module `gain_level` (dB, default 0).
+- **`inserts`** is the chain in signal order: entries `<type>:<slot>` separated by spaces; `""` = none. Canonical form (echo, get, config, snapshots): every entry with its slot, one space apart.
+- **A set replaces the whole chain:**
+  - an entry with a slot keeps that insert (it must be this channel's);
+  - a bare `<type>` is a new insert, and the mixer picks a free slot;
+  - an insert left out is removed and its slot goes free.
+- **The echo**, to every controller, is the canonical chain, followed by every parameter of each newly assigned slot. A new slot starts at identity, or at a group's values.
+- **A processor's parameters** are `/<name>/set/<type>/<slot>/<module>`, ordinary parameters. A set or get on a slot no channel holds is refused.
+- **Refused, nothing changed, error reply:** a malformed entry, an unknown type, a slot out of range, the same slot twice, more than K, a slot that isn't the channel's, **no free slot of a type** (`no free <type> slot`). A slot freed by a set is not reused within the same set.
+- **Virtual groups:** a set of `inserts` on a grouped channel gives every member the same types in the same order, each member its own slots.
+  - A member position keeps its slot when the request kept the slot at that position and the member has the same type there.
+  - Afterwards the members' processors equal the requester's, position by position.
+  - A processor parameter set on a grouped channel's slot at position p goes to every member's slot at p with the same type.
+  - All members or none (`no free <type> slot (the group needs n, m free)`).
+  - Echo: the requested `inserts` first, then the members', then the new slots' parameters, then changed kept ones.
+- **Snapshots** carry every chain and the in-use slots' parameters (never a free slot's). A recall restores exactly those slots, and is refused whole if an entry has no slot or a slot is on two channels.
+- **Audio (informational):**
+  - every channel at every insert point is `delayFrames` samples late, inserted or not;
+  - front-of-chain edits are click-free;
+  - other edits dip that channel briefly.
+
 ## Snapshots
 
 Optional (config `capabilities` contains `"snapshots"`). A snapshot is every parameter of the mixer, stored on the mixer under a name, or held by a controller as a file. TCP only: a `snapshot` message over UDP is ignored.
@@ -408,3 +437,11 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 - **8 Oct 2026 (later):** *Virtual groups* (the `vgroup` module, linking rules, the echo order) and the module metadata key `linked`; additive, `schemaVersion` stays 1. Decided in the same doc (V1–V8). Revised the same day before any controller shipped it: matrix crosspoints never link (V5 changed by the user).
 - **8 Oct 2026 (later still):** *Channel names* (the `name` module on channel zones) and the string metadata key `maxLength`; strings with control characters are refused. Additive, `schemaVersion` stays 1.
 - **8 Oct 2026 (channel sources):** *I/O patch* (`source` on `inputChannel`, `destination` on `outputChannel`, the move rule and its echo), *Channel counts* (`system/inputCount`, `busCount`, `outputCount`, hidden channels), *Config changed* (the `config` command kind, `/<name>/config/changed`), the enum metadata key `optionLabels`, meter blobs sized by their length. Additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/phase15_status_2026-10-08.md` (CS1–CS13; no default patch).
+- **31 Oct 2026:** *Inserts*:
+  - the `inserts` string module on the channel zones;
+  - pool zones (`"kind": "pool"`, one per processor type, indexed by slot);
+  - the config's top-level `inserts` object and the `"inserts"` capability;
+  - group linking by structure;
+  - the type `gain` (`gain_level`).
+
+  Additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/insert_architecture_proposal_2026-10-31.md` (§12: the whole-list set, `gain` exposed, free slots refused, inserts follow groups); the controller's spec is `docs/inserts_controller_spec_2026-10-31.md`.

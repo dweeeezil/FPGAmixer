@@ -136,6 +136,18 @@ made here so you can compare against the real firmware once it exists):
     (GainBackend.hide: source / destination None, bus level off). A change
     is echoed, then '/<name>/config/changed' goes to every controller.
     Meter blobs carry the counts. --no-patch simulates an older bitstream.
+  - Inserts (standard "Inserts", LF8, 2026-10-31; the controller's spec:
+    docs/inserts_controller_spec_2026-10-31.md): 'inserts' on the three
+    channel zones (a string: the chain, "<type>:<slot> ..."; a set replaces
+    the whole chain, a bare type is a new insert, set_inserts), one pool zone
+    per processor type ("kind": "pool", PoolBackend; today 'gain' with
+    'gain_level', default 0 dB = identity), the config's "inserts" object
+    and capability. The logic is mixer_inserts.py (allocation, groups, the
+    router's tables, edit plans). Virtual groups link the structure, each
+    member its own slots. A free slot's parameters are refused. The
+    hardware follows outside the ordering lock (InsertWorker): bit-exact
+    front edits, a dip for the others. --no-inserts simulates an older
+    bitstream; with --hw the insert router's window decides.
   - Ordering (F3): ClientRegistry.lock is held while a change is applied,
     stored and echoed, while any packet is sent, and while the config
     snapshot is read and sent. Echoes therefore follow the store order, two
@@ -189,6 +201,8 @@ from mixer_params import SYSTEM_ZONE, Model, ModuleSpec, Param, Refused, ZoneSpe
 from osc_discovery import DNSSD_FILE, DNSSD_RELOAD, NoAdvertiser, make_advertiser  # noqa: E402
 import mixer_meters  # noqa: E402
 import mixer_snapshots  # noqa: E402
+import mixer_inserts  # noqa: E402
+from mixer_inserts import INSERTS_MODULE, InsertRefused  # noqa: E402
 
 DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
@@ -376,6 +390,113 @@ class PatchPart:
         return {c: float(v) for c, v in got.items()}
 
 
+# Inserts (LF8, 2026-10-31; docs/inserts_controller_spec_2026-10-31.md): the
+# `inserts` module on the three channel zones, a string: the chain in signal
+# order, "<type>:<slot> ...". Linked (virtual groups: the structure, each
+# member its own slots; mixer_inserts). Never reaches a backend directly:
+# set_inserts handles it.
+INSERTS_SPEC = ModuleSpec("string", default="", max_length=mixer_inserts.INSERTS_MAX_BYTES,
+                          group="inserts", linked=True)
+INSERT_K = 8                 # the simulator's K and slots (the hardware: the router's CONFIG)
+INSERT_SLOTS = 32
+# The fade an edit waits for (the coefficient smoothers, K = 8: tau 5.3 ms,
+# within -60 dB after ~37 ms, exact after ~70 ms): a level stage going off
+# before a dip, a slot going to identity before a bit-exact front edit.
+FADE_S = 0.080
+
+
+def gain_pool_type(slots, max_db, index=0):
+    """The gain pool (the library's template block): one module, gain_level,
+    dB, default 0 = identity (unity, bit-exact). Its own name: module
+    metadata is global and 'level' defaults to off."""
+    level = ModuleSpec("float", unit="dB", min=OFF_DB, max=float32(max_db), default=0.0,
+                       group="gain", linked=True)
+    return mixer_inserts.PoolType("gain", slots, {"gain_level": level}, {"gain_level": 0.0}, index)
+
+
+class GainPoolDriver:
+    """Writes a gain pool's slots to its window (mixer_hw.GainPoolHW)."""
+
+    def __init__(self, hw):
+        self.hw = hw
+
+    def write(self, params):
+        """{slot: {module: value}} -> {slot: {module: applied}}, one COMMIT."""
+        got = self.hw.set_bank_db({s: m["gain_level"] for s, m in params.items()})
+        return {s: {"gain_level": float32(v)} for s, v in got.items()}
+
+
+class PoolBackend:
+    """One insert type's zone (kind 'pool'): <type>/<slot>/<module>, a slot's
+    processor parameters. With a driver the values go to the pool's window;
+    without (simulator) the same rules run without it. A slot the router
+    doesn't feed yet (pending: newly inserted, not yet switched in) keeps its
+    identity in the hardware until the insert worker writes its stored
+    values, so a front add stays bit-exact."""
+
+    def __init__(self, ptype, driver=None):
+        self.zone = ptype.name
+        self.ptype = ptype
+        self.driver = driver
+        self.pending = set()
+        self.state = None        # the parameter store (seed_and_push): a write needs every module
+
+    def describe(self):
+        return (ZoneSpec("pool", tuple(self.ptype.modules), count=self.ptype.slots),
+                dict(self.ptype.modules))
+
+    def apply(self, index, module, value):
+        return self.apply_many({(index, module): value})[(index, module)]
+
+    def apply_many(self, changes):
+        """The changed modules over each slot's stored others, one COMMIT;
+        pending slots stay at identity in the hardware (the worker writes them)."""
+        got = dict(changes)
+        if self.driver is None:
+            return got
+        by_slot = {}
+        for (index, module), v in changes.items():
+            if int(index) not in self.pending:
+                by_slot.setdefault(int(index), {})[module] = v
+        if by_slot:
+            full = {s: dict(self.params_of(s, self.state), **m) for s, m in by_slot.items()}
+            applied = self.driver.write(full)
+            for (index, module) in changes:
+                if int(index) in applied:
+                    got[(index, module)] = applied[int(index)][module]
+        return got
+
+    def params_of(self, slot, state):
+        """A slot's stored parameters (absent or refused: the identity)."""
+        out = {}
+        for module, spec in self.ptype.modules.items():
+            stored = state.get(f"{self.zone}/{slot}/{module}", default=None)
+            v, why = spec.apply(stored) if stored is not None else (None, "missing")
+            out[module] = self.ptype.identity[module] if why is not None else v
+        return out
+
+    def write_hw(self, params):
+        """{slot: {module: value}} straight to the hardware (the worker)."""
+        if self.driver is not None and params:
+            self.driver.write(params)
+
+    def seed_and_push(self, state):
+        """Every slot to the hardware: in use, its stored parameters; free, identity."""
+        self.state = state
+        if self.driver is None or INSERTS is None:
+            return
+        params = {s: (self.params_of(s, state) if INSERTS.is_used(self.zone, s) else dict(self.ptype.identity))
+                  for s in range(self.ptype.slots)}
+        self.driver.write(params)
+        log(f"Pushed {len(params)} {self.zone} slot(s) to the PL "
+            f"({sum(1 for s in params if INSERTS.is_used(self.zone, s))} in use)")
+
+
+INSERTS = None        # mixer_inserts.Inserts, when the mixer has inserts (main)
+ROUTER = None         # mixer_hw.InsertRouterHW with --hw on an LF8 bitstream
+WORKER = None         # InsertWorker, with ROUTER
+
+
 class Backend:
     """Serves one OSC zone.
 
@@ -524,14 +645,20 @@ class GainBackend(Backend):
         self.level = level_module(max_db)
         self.patch = patch
         self.hide = hide
+        self.inserts = False     # LF8: the zone lists `inserts` (the mixer has an insert router)
+        self.dipped = set()      # channels whose level stage the insert worker holds off
 
     def describe(self):
         modules = {"level": self.level, "vgroup": VGROUP_MODULE, "name": NAME_MODULE}
-        order = ("level", "vgroup", "name")
+        order = ["level"]
         if self.patch is not None:
             modules[self.patch.module] = self.patch.spec
-            order = ("level", self.patch.module, "vgroup", "name")
-        return ZoneSpec("channels", order, count=self.count), modules
+            order.append(self.patch.module)
+        if self.inserts:
+            modules[INSERTS_MODULE] = INSERTS_SPEC
+            order.append(INSERTS_MODULE)
+        order += ["vgroup", "name"]
+        return ZoneSpec("channels", tuple(order), count=self.count), modules
 
     def level_key(self, ch):
         return f"{self.zone}/{ch}/level"
@@ -545,23 +672,35 @@ class GainBackend(Backend):
         if self.patch is not None and module == self.patch.module:
             return self.apply_many({(index, module): value})[(index, module)]
         if self.hw is not None and module == "level":
+            if ch in self.dipped:        # the insert worker restores it from the store
+                return value
             if self._hidden(ch, module):
                 self.hw.set_db(ch, self.hide[1])
                 return value
             return float32(self.hw.set_db(ch, value))
         return value
 
+    def restore_level(self, ch, state):
+        """The insert worker's end of a dip: the stored level (hidden: hide's) back to the hardware."""
+        self.dipped.discard(ch)
+        if self.hw is None:
+            return
+        db, why = self.level.apply(state.get(self.level_key(ch), default=0.0))
+        db = 0.0 if why is not None else db
+        self.hw.set_db(ch, self.hide[1] if self._hidden(ch, "level") else db)
+
     def apply_many(self, changes):
         """The levels in one bank write and one COMMIT, the patch entries in
         one more; other modules (vgroup, name) as given. A hidden channel's
         hardware gets hide's value; its stored value is what was asked."""
         got = dict(changes)
-        levels = {int(index): v for (index, m), v in changes.items() if m == "level"}
+        levels = {int(index): v for (index, m), v in changes.items()
+                  if m == "level" and int(index) not in self.dipped}
         if self.hw is not None and levels:
             applied = self.hw.set_bank_db({c: (self.hide[1] if self._hidden(c, "level") else v)
                                            for c, v in levels.items()})
             for (index, m) in changes:
-                if m == "level" and not self._hidden(int(index), m):
+                if m == "level" and int(index) in applied and not self._hidden(int(index), m):
                     got[(index, m)] = float32(applied[int(index)])
         if self.patch is not None:
             pm = self.patch.module
@@ -770,6 +909,144 @@ def build_backends(use_hw, matrix_size, bus_layer=True, identity_from=0, patch=T
     return add_patch(backends, ip, op, mixer_hw.IO_PORTS)
 
 
+def build_inserts(use_hw, backends, enabled=True):
+    """LF8: the insert router and its pools, added to `backends` (one
+    PoolBackend per insert type, in the router's pool order) and the channel
+    zones' `inserts` module switched on. Returns the mixer_inserts.Inserts,
+    or None (no inserts: --no-inserts, a bitstream from before LF8, or no
+    bus layer). With use_hw: the router window and every pool window
+    (mixer_hw.POOLS) together or not at all; the router's CONFIG gives K,
+    the slots, and must count the pools."""
+    global ROUTER, WORKER
+    channel = [backends.get(z) for z in LEVEL_ZONES]
+    if not enabled or not all(isinstance(b, GainBackend) for b in channel):
+        return None
+    n = {z: backends[z].n for z in LEVEL_ZONES}
+    if not use_hw:
+        pools = {"gain": gain_pool_type(INSERT_SLOTS, SIM_MAX_DB)}
+        drivers = {"gain": None}
+        k = INSERT_K
+    else:
+        import mixer_hw
+        try:
+            router = mixer_hw.open_window("insert")
+        except mixer_hw.WindowAbsent:
+            log("No insert router (a bitstream from before LF8): no inserts")
+            return None
+        log(f"PL window 'insert' at 0x{router.base:08x}: {router.describe()}")
+        if router.pools != len(mixer_hw.POOLS):
+            raise RuntimeError(f"{router.describe()}: mixer_hw.POOLS lists {len(mixer_hw.POOLS)} "
+                               f"(the pool order and the bitstream disagree)")
+        pools, drivers = {}, {}
+        for index, (typ, name) in enumerate(mixer_hw.POOLS):
+            w = mixer_hw.open_window(name)
+            log(f"PL window '{name}' at 0x{w.base:08x}: {w.describe()}")
+            if w.n != router.slots:
+                raise RuntimeError(f"{w.describe()}: the router says {router.slots} slots")
+            if typ != "gain":
+                raise RuntimeError(f"no driver for insert type {typ!r}")
+            pools[typ] = gain_pool_type(w.n, q_ceiling_db(w.gain_width, w.gain_frac), index)
+            drivers[typ] = GainPoolDriver(w)
+        k = router.k
+        ROUTER = router
+    for typ, ptype in pools.items():
+        backends[typ] = PoolBackend(ptype, drivers[typ])
+    for b in channel:
+        b.inserts = True
+    if ROUTER is not None:
+        WORKER = InsertWorker(ROUTER, backends)
+        WORKER.start()
+    return mixer_inserts.Inserts(k, pools, n)
+
+
+class InsertWorker(threading.Thread):
+    """Runs edit plans (mixer_inserts.Inserts.plan) against the hardware, one
+    after the other, never under the ordering lock: the waits (FADE_S) don't
+    hold up other controllers. Values come from the store when a step runs,
+    not when the plan was made, so a set that arrived meanwhile isn't undone."""
+
+    SETTLE_TIMEOUT = 0.5
+
+    def __init__(self, router, backends):
+        super().__init__(name="insert-worker", daemon=True)
+        import queue
+        self.queue = queue.Queue()
+        self.router = router
+        self.backends = backends
+        self.freed_at = {}           # (type, slot) -> when it went to identity
+        self.state = None
+
+    def submit(self, plan, state):
+        self.state = state
+        self.queue.put(plan)
+
+    def run(self):
+        while True:
+            plan = self.queue.get()
+            try:
+                self.execute(plan)
+            except Exception as e:    # a hardware fault must not kill the worker
+                log(f"    insert worker: plan failed: {e!r}")
+
+    def pool_identity(self, slots):
+        by_type = {}
+        for t, s in slots:
+            by_type.setdefault(t, {})[s] = dict(self.backends[t].ptype.identity)
+        for t, params in by_type.items():
+            self.backends[t].write_hw(params)
+
+    def execute(self, plan):
+        import time as _t
+        fade_until = 0.0
+        later = [s for step in plan if step[0] == "params" for s in step[1]]
+        for step in plan:
+            kind = step[0]
+            if kind == "identity":
+                self.pool_identity(step[1])
+                fade_until = _t.monotonic() + FADE_S
+            elif kind == "dip":
+                for zone, ch in step[1]:
+                    b = self.backends[zone]
+                    b.dipped.add(ch)
+                    if b.hw is not None:
+                        b.hw.set_db(ch, OFF_DB)
+                fade_until = _t.monotonic() + FADE_S
+            elif kind == "wait_fade":
+                ready = max([fade_until] + [self.freed_at.get(s, 0.0) + FADE_S for s in later])
+                delay = ready - _t.monotonic()
+                if delay > 0:
+                    _t.sleep(delay)
+            elif kind == "tables":
+                before = self.router.commits()
+                self.router.set_tables(step[1])
+            elif kind == "settle":
+                end = _t.monotonic() + self.SETTLE_TIMEOUT
+                while self.router.commits() == before and _t.monotonic() < end:
+                    _t.sleep(0.001)
+                _t.sleep(0.001)          # the swap's own frame
+            elif kind == "params":
+                by_type = {}
+                for t, s in step[1]:
+                    pb = self.backends[t]
+                    pb.pending.discard(s)
+                    if INSERTS is not None and INSERTS.is_used(t, s):
+                        by_type.setdefault(t, {})[s] = pb.params_of(s, self.state)
+                for t, params in by_type.items():
+                    self.backends[t].write_hw(params)
+            elif kind == "restore":
+                for zone, ch in step[1]:
+                    self.backends[zone].restore_level(ch, self.state)
+            elif kind == "freed":
+                # a slot a later edit has already taken is still pending (not
+                # switched in yet), and identity is what it needs then too
+                free = [x for x in step[1] if INSERTS is None or not INSERTS.is_used(*x)
+                        or x[1] in self.backends[x[0]].pending]
+                self.pool_identity(free)
+                now = _t.monotonic()
+                for x in free:
+                    self.freed_at[x] = now
+
+
 # The system zone's settings (standard: "The system zone"). deviceName is
 # handled by the rename path; a read-only setting's value is its default.
 # 'config' is a request, not a setting (handle_get -> reply_config).
@@ -873,6 +1150,11 @@ def reply_config(state, registry, reply_sock, via):
                             lambda p: current_value(p, state))
         if SNAPSHOTS is not None:
             body["capabilities"] = ["snapshots"]
+        if INSERTS is not None:           # LF8 (spec: inserts_controller_spec_2026-10-31.md)
+            body.setdefault("capabilities", []).append("inserts")
+            body["inserts"] = {"maxPerChannel": INSERTS.k,
+                               "types": list(INSERTS.pools),
+                               "delayFrames": INSERTS.k + 1}
         text = json.dumps(body, separators=(",", ":"), allow_nan=False)
         registry.send(reply_sock, encode_message(f"/{state.mixer_name}/set/{CONFIG_PATH}", [text]))
     log(f"    [{via}] config sent ({len(text)} bytes, {len(body['values'])} value(s))")
@@ -920,8 +1202,42 @@ def link_targets(param, state):
     be routed independently (user, 2026-10-08)."""
     if not param.spec.linked:
         return [param]
+    if is_pool(param.zone):
+        return [param] + [Param(param.zone, s, param.module, param.spec)
+                          for s in pool_link_slots(param.zone, param.index, state)]
     others = [ix for ix in group_members(param.zone, param.index, state) if ix != param.index]
     return [param] + [Param(param.zone, ix, param.module, param.spec) for ix in others]
+
+
+def is_pool(zone):
+    return isinstance(BACKENDS.get(zone), PoolBackend)
+
+
+def pool_link_slots(typ, slot, state):
+    """Inserts and virtual groups (proposal 12.6, rule 3): a processor's
+    parameter on a slot that a grouped channel holds at position p also goes
+    to the slot at position p of every other member with the same type there
+    (member index order). [] otherwise."""
+    owner = INSERTS.owner.get((typ, int(slot))) if INSERTS is not None else None
+    if owner is None:
+        return []
+    zone, ch, pos = owner
+    out = []
+    for m in group_members(zone, str(ch), state):
+        if int(m) == ch:
+            continue
+        chain = INSERTS.chain(zone, m)
+        if pos < len(chain) and chain[pos][0] == typ:
+            out.append(str(chain[pos][1]))
+    return out
+
+
+def free_slot_refusal(param):
+    """A pool zone's parameter on a slot no channel holds (the user's Q3,
+    2026-10-31): the reason, else None."""
+    if is_pool(param.zone) and INSERTS is not None and not INSERTS.is_used(param.zone, param.index):
+        return f"{param.zone}:{param.index} isn't inserted on any channel"
+    return None
 
 
 def apply_set(tail, value, state, registry, reply, via):
@@ -947,6 +1263,11 @@ def apply_set(tail, value, state, registry, reply, via):
             return send_error(reply, state, param.path, f"can't store: {conflict}", via)
         if param.zone == SYSTEM_ZONE and param.index in COUNT_SETTINGS:
             return set_count(param, applied, state, registry, via)
+        if param.module == INSERTS_MODULE:
+            return set_inserts(param, applied, state, registry, reply, via)
+        why = free_slot_refusal(param)
+        if why is not None:
+            return send_error(reply, state, param.path, why, via)
         backend = BACKENDS.get(param.zone)
         # a virtual group's members (Phase 14), then a destination's previous holder (Phase 15)
         targets = [(t, applied) for t in link_targets(param, state)]
@@ -974,6 +1295,70 @@ def apply_set(tail, value, state, registry, reply, via):
     if VERBOSE:
         log(f"    [{via}] SET {param.path} = {applied!r}"
             + (f" (+{len(targets) - 1} more)" if len(targets) > 1 else ""))
+
+
+def set_inserts(param, text, state, registry, reply, via):
+    """A set of <channel zone>/<ch>/inserts (LF8; spec: docs/
+    inserts_controller_spec_2026-10-31.md), under the ordering lock:
+    resolve it for the channel's virtual group (mixer_inserts: all members
+    or nothing; a refusal is an error reply and changes nothing), store the
+    new chains and the slots' parameters (new slots: the requester's at that
+    position, or the identity; freed slots: back to the identity), echo, and
+    hand the hardware an edit plan (the worker runs it outside the lock)."""
+    zone, ch = param.zone, int(param.index)
+    members = group_members(zone, param.index, state)
+    try:
+        res = INSERTS.resolve(zone, ch, text, members)
+    except InsertRefused as e:
+        return send_error(reply, state, param.path, str(e), via)
+    INSERTS.commit(res)
+
+    stored = {}
+    for (z, m), chain in res.chains.items():
+        stored[f"{z}/{m}/{INSERTS_MODULE}"] = mixer_inserts.fmt(chain)
+    param_paths = []                     # echo order: new slots, then changed kept ones
+    for t, s in res.added:
+        src = res.copies.get((t, s))
+        values = (BACKENDS[t].params_of(src[1], state) if src is not None and src not in res.added
+                  else dict(BACKENDS[t].ptype.identity))
+        for module, v in values.items():
+            stored[f"{t}/{s}/{module}"] = v
+            param_paths.append(f"{t}/{s}/{module}")
+    for target, src in res.copies.items():
+        if target in res.added:
+            continue
+        t = target[0]
+        values = BACKENDS[t].params_of(src[1], state)
+        old = BACKENDS[t].params_of(target[1], state)
+        for module, v in values.items():
+            if v != old[module]:
+                stored[f"{t}/{target[1]}/{module}"] = v
+                param_paths.append(f"{t}/{target[1]}/{module}")
+    for t, s in res.freed:
+        for module, v in BACKENDS[t].ptype.identity.items():
+            stored.setdefault(f"{t}/{s}/{module}", v)
+    if WORKER is not None:
+        for t, s in res.added:
+            BACKENDS[t].pending.add(s)
+    for p, why in state.set_many(stored).items():
+        log(f"    [{via}] could not store {p}: {why}")
+
+    def echo(path):
+        registry.broadcast(encode_message(f"/{state.mixer_name}/set/{path}", [state.get(path, default="")]))
+
+    echo(param.path)                     # the requested channel first (always: the confirmation)
+    for (z, m), chain in res.chains.items():
+        if m != ch and chain != res.old[(z, m)] and MODEL.zones[z].index(str(m)) is not None:
+            echo(f"{z}/{m}/{INSERTS_MODULE}")
+    for p in param_paths:
+        echo(p)
+    plan = INSERTS.plan(res)
+    if WORKER is not None:
+        WORKER.submit(plan, state)
+    if VERBOSE:
+        log(f"    [{via}] SET {param.path} = {mixer_inserts.fmt(res.chains[(zone, ch)])!r}"
+            f" ({len(res.chains)} channel(s), +{len(res.added)} -{len(res.freed)} slot(s); "
+            f"plan {[s[0] for s in plan]})")
 
 
 def destination_holders(param, value, state):
@@ -1051,6 +1436,9 @@ def handle_get(tail, state, reply, via):
         param = MODEL.resolve(tail)
     except Refused as r:
         return send_error(reply, state, r.path, r.reason, via)
+    why = free_slot_refusal(param)
+    if why is not None:
+        return send_error(reply, state, param.path, why, via)
     value = current_value(param, state)
     if VERBOSE:
         log(f"    [{via}] GET {param.path} -> {value!r}")
@@ -1131,8 +1519,37 @@ SNAPSHOTS = None   # mixer_snapshots.SnapshotStore (main)
 
 
 def live_values(state):
-    """Every parameter but system/*, at its current value: what a snapshot holds."""
-    return {p.path: current_value(p, state) for p in MODEL.params() if p.zone != SYSTEM_ZONE}
+    """Every parameter but system/*, at its current value: what a snapshot
+    holds. A free slot's parameters aren't parameters anyone has (LF8)."""
+    return {p.path: current_value(p, state) for p in MODEL.params()
+            if p.zone != SYSTEM_ZONE and free_slot_refusal(p) is None}
+
+
+def recalled_chains(fitted, state):
+    """LF8: every channel's chain after a recall (the snapshot's `inserts`,
+    else the current one): ({(zone, ch): chain}, None), or (None, reason) if
+    they can't all hold (an entry without a slot, a slot twice, too many)."""
+    chains = {}
+    for zone in LEVEL_ZONES:
+        for ch in range(BACKENDS[zone].n):
+            path = f"{zone}/{ch}/{INSERTS_MODULE}"
+            text = fitted[path][1] if path in fitted else mixer_inserts.fmt(INSERTS.chain(zone, ch))
+            try:
+                entries = mixer_inserts.parse(text, INSERTS.pools, INSERTS.k)
+            except InsertRefused as e:
+                return None, f"{path}: {e}"
+            if any(s is None for _t, s in entries):
+                return None, f"{path}: a snapshot's inserts must name their slots"
+            if entries:
+                chains[(zone, ch)] = entries
+    seen = {}
+    for key, chain in chains.items():
+        for x in chain:
+            if x in seen:
+                return None, (f"{x[0]}:{x[1]} is on both {seen[x][0]}/{seen[x][1]} and "
+                              f"{key[0]}/{key[1]}")
+            seen[x] = key
+    return chains, None
 
 
 def snapshot_of(state, name, auto=False):
@@ -1165,6 +1582,15 @@ def fit_snapshot(doc):
         if why is not None:
             return None, None, f"{param.path}: {why}"
         fitted[param.path] = (param, applied)
+    if INSERTS is not None:          # LF8: the chains must hold together; free slots' values go
+        chains, why = recalled_chains(fitted, state=None)
+        if why is not None:
+            return None, None, why
+        used = {x for chain in chains.values() for x in chain}
+        for path in [p for p, (prm, _v) in fitted.items() if is_pool(prm.zone)]:
+            prm = fitted[path][0]
+            if (prm.zone, int(prm.index)) not in used:
+                del fitted[path]
     return fitted, skipped, None
 
 
@@ -1183,6 +1609,7 @@ def recall_snapshot(fitted, skipped, label, state, registry, via):
             if value != current_value(param, state):
                 by_zone.setdefault(param.zone, {})[(param.index, param.module)] = value
         recall_destinations(by_zone, state)
+        ins_plan, freed_fix = recall_inserts(fitted, state)
         stored = {}
         for zone, changes in by_zone.items():
             backend = BACKENDS.get(zone)
@@ -1192,6 +1619,10 @@ def recall_snapshot(fitted, skipped, label, state, registry, via):
         rejected = state.set_many(stored) if stored else {}
         for path, why in rejected.items():
             log(f"    [{via}] could not store {path}: {why}")
+        if freed_fix:
+            state.set_many(freed_fix)    # slots no longer in use: back to identity, unannounced
+        if ins_plan is not None and WORKER is not None:
+            WORKER.submit(ins_plan, state)
         for path, value in stored.items():
             zone, index, _module = path.split("/")
             if path not in rejected and MODEL.zones[zone].index(index) is not None:
@@ -1200,6 +1631,26 @@ def recall_snapshot(fitted, skipped, label, state, registry, via):
                                           [label, len(fitted), skipped]))
     log(f"    [{via}] snapshot {label!r} recalled: {len(fitted)} applied, "
         f"{len(stored)} changed, {skipped} skipped")
+
+
+def recall_inserts(fitted, state):
+    """LF8: a recall's chains into INSERTS (fit_snapshot checked they hold).
+    Returns (the hardware plan or None, {freed slot parameter: identity}).
+    A recall changes the mix at once anyway, so no fades or dips: the tables
+    in one COMMIT, then every slot in use gets its stored parameters."""
+    if INSERTS is None:
+        return None, {}
+    chains, _why = recalled_chains(fitted, state)
+    before = set(INSERTS.owner)
+    for zone, ch in list(INSERTS.chains):
+        INSERTS.set_chain(zone, ch, [])
+    for (zone, ch), chain in chains.items():
+        INSERTS.set_chain(zone, ch, chain)
+    freed = sorted(before - set(INSERTS.owner))
+    fix = {f"{t}/{s}/{m}": v for t, s in freed for m, v in BACKENDS[t].ptype.identity.items()}
+    plan = [("tables", INSERTS.tables()), ("settle",), ("params", sorted(INSERTS.owner)),
+            ("freed", freed)]
+    return plan, fix
 
 
 def recall_destinations(by_zone, state):
@@ -1503,8 +1954,36 @@ def build_meter_source(use_hw, kind, backends, state):
     return None
 
 
+def seed_inserts(state):
+    """At startup: every channel's stored chain into INSERTS (entries that
+    can't be honoured are dropped and the store brought into line), and the
+    stored parameters of free slots back to the identity."""
+    if INSERTS is None:
+        return
+    stored = {}
+    for zone in LEVEL_ZONES:
+        for ch in range(BACKENDS[zone].n):
+            text = state.get(f"{zone}/{ch}/{INSERTS_MODULE}", default=None)
+            if isinstance(text, str) and text.strip():
+                stored[(zone, ch)] = text
+    notes, canon = INSERTS.load(stored)
+    for note in notes:
+        log(f"    {note}")
+    fix = {f"{z}/{c}/{INSERTS_MODULE}": t for (z, c), t in canon.items()}
+    for typ in INSERTS.pools:
+        pb = BACKENDS[typ]
+        for s in INSERTS.free_slots(typ):
+            for module, v in pb.ptype.identity.items():
+                if state.get(f"{typ}/{s}/{module}", default=None) not in (None, v):
+                    fix[f"{typ}/{s}/{module}"] = v
+    if fix:
+        state.set_many(fix)
+    log(f"Inserts: K {INSERTS.k}, pools {', '.join(f'{t} ({p.slots})' for t, p in INSERTS.pools.items())}; "
+        f"{len(INSERTS.chains)} channel(s) with inserts")
+
+
 def main():
-    global VERBOSE, MODEL, FIRMWARE, ADVERTISER, METER_HUB, SNAPSHOTS
+    global VERBOSE, MODEL, FIRMWARE, ADVERTISER, METER_HUB, SNAPSHOTS, INSERTS
     p = argparse.ArgumentParser(description="Reference/simulator server for the FPGA mixer OSC protocol.")
     p.add_argument("--host", default="0.0.0.0", help="address to bind (default: all interfaces)")
     p.add_argument("--tcp-port", type=int, required=True)
@@ -1533,6 +2012,9 @@ def main():
     p.add_argument("--no-patch", action="store_true",
                    help="simulate a bitstream from before Phase 15: no I/O patch (source, "
                         "destination) and no channel counts (with --hw the windows decide)")
+    p.add_argument("--no-inserts", action="store_true",
+                   help="simulate a bitstream from before LF8: no insert router, no pools, no "
+                        "'inserts' module (with --hw the windows decide)")
     p.add_argument("--tcp-framing", choices=FRAMINGS, default=DEFAULT_FRAMING,
                    help="TCP stream framing: len32 = OSC 1.0 4-byte size prefix per packet "
                         "(default); none = unframed messages back to back (older controllers)")
@@ -1563,14 +2045,19 @@ def main():
     log(f"Snapshots: {snapshot_dir or 'in memory'} ({len(SNAPSHOTS.list())} stored)")
     BACKENDS.update(build_backends(args.hw, args.matrix_size, bus_layer=not args.no_bus_layer,
                                    identity_from=args.identity_from, patch=not args.no_patch))
+    INSERTS = build_inserts(args.hw, BACKENDS, enabled=not args.no_inserts)
     MODEL = build_model(BACKENDS, system_settings(BACKENDS))
     counts = counts_of(state, MODEL.system)
     apply_topology(counts, state, push=False)   # before the first push: hidden channels never sound
     FIRMWARE = firmware_version()
     log(f"Firmware {FIRMWARE}; zones: {', '.join(MODEL.zones) or 'none'}"
         + (f"; counts {', '.join(f'{z} {n}' for z, n in counts.items())}" if counts else ""))
+    seed_inserts(state)                         # the chains first: the pools push by them
     for backend in BACKENDS.values():
         backend.seed_and_push(state)
+    if ROUTER is not None:
+        ROUTER.set_tables(INSERTS.tables())
+        log(f"Pushed the insert tables to the PL ({len(INSERTS.chains)} channel(s) with inserts)")
     registry = ClientRegistry(args.tcp_framing)
     log(f"TCP framing: {args.tcp_framing}")
     ADVERTISER = make_advertiser(args.advertise, args.tcp_port, args.tcp_framing,

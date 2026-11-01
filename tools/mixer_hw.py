@@ -54,6 +54,8 @@ As a bring-up CLI, on the board:
                                               # adds the services)
     python3 mixer_hw.py patch                 # both patch tables with port labels
                                               # (Phase 15; read only)
+    python3 mixer_hw.py inserts               # the insert router's tables, decoded,
+                                              # and the pools (LF8; read only)
     python3 mixer_hw.py link [seconds]        # PS<->PL link counters (Phase 8);
                                               # with seconds: deltas and rates
     python3 mixer_hw.py link2 [seconds]       # the same for link #2 (Phase 9
@@ -340,6 +342,68 @@ class OutputPatchHW(PatchHW):
     DIR = 1
 
 
+class InsertRouterHW(RegWindow):
+    """The insert router's tables (src/rtl/insert_router_regs_axil.sv, LF8,
+    2026-10-31): one window, one COMMIT for every table. CONFIG = [31:24] K
+    (most inserts per channel), [23:16] S (slots per pool), [15:8] NP
+    (pools), [7:0] the frames every insert point delays. ENTRY[k] at 0x100 +
+    4k, 18 bits unsigned (the format is mixer_inserts' / insert_router_pkg's):
+    RETURN per channel (inputs, buses, outputs, the mixer's N each), then
+    SOURCE per pool slot."""
+
+    ID = 0x4952_5001
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.k = (self.config >> 24) & 0xFF
+        self.slots = (self.config >> 16) & 0xFF
+        self.pools = (self.config >> 8) & 0xFF
+        self.delay_frames = self.config & 0xFF
+
+    def describe(self):
+        return (f"insert router, K {self.k}, {self.pools} pool(s) x {self.slots} slots, "
+                f"{self.delay_frames} frames per insert point")
+
+    def read_entry(self, k):
+        return self.rd(REG_COEF0 + 4 * k)
+
+    def set_tables(self, words):
+        """words: {k: entry}; one COMMIT, so the whole edit lands in one frame."""
+        self.write_coefs({k: int(v) & 0x3_FFFF for k, v in words.items()})
+
+    def commits(self):
+        return self.rd(REG_COMMITS)
+
+
+class GainPoolHW(RegWindow):
+    """The gain pool (the library's template block at 32 slots,
+    lib_template_regs_axil, LF8): one gain per slot, in dB. CONFIG = [31:24]
+    slots, [23:16] 0, [15:8] gain width, [7:0] gain fraction bits."""
+
+    ID = 0x5450_5001
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.gain_width = (self.config >> 8) & 0xFF
+        self.gain_frac = self.config & 0xFF
+
+    def describe(self):
+        return f"gain pool, {self.n} slots, Q{self.gain_width - self.gain_frac}.{self.gain_frac}"
+
+    def set_bank_db(self, levels):
+        """levels: {slot: dB}; one COMMIT. Returns {slot: dB applied}."""
+        codes = {s: db_to_code(db, self.gain_frac, self.gain_width) for s, db in levels.items()}
+        for s in codes:
+            if not 0 <= s < self.n:
+                raise IndexError(f"slot {s} outside {self.n} slots")
+        self.write_coefs({s: code for s, (code, _a) in codes.items()})
+        return {s: applied for s, (_c, applied) in codes.items()}
+
+    def read_db(self, slot):
+        return code_to_db(self.read_coef(slot), self.gain_frac)
+
+
 class PeakHW(RegWindow):
     """A peak-meter window (src/rtl/peak_regs_axil.sv, Phase 13): per-channel
     peak magnitudes of one zone. CONFIG = [31:24] channels, [23:16] TAP (0
@@ -573,7 +637,16 @@ WINDOWS = {
     # Phase 15: the I/O patch (every PS bitstream from then on)
     "inpatch":   (0x8000_D000, InputPatchHW),
     "outpatch":  (0x8000_E000, OutputPatchHW),
+    # LF8 (2026-10-31): the insert router and its pools
+    "insert":    (0x8000_F000, InsertRouterHW),
+    "gainpool":  (0x8001_0000, GainPoolHW),
 }
+
+# The pools, in the router's pool order (fpgamixer_top: POOL_GAIN = 0): an
+# explicit copy, like IO_PORTS. (insert type, window). The router's CONFIG
+# must say this many pools; the router and every pool window are present
+# together (an LF8 bitstream) or not at all.
+POOLS = (("gain", "gainpool"),)
 
 # The patch's windows: present together (a Phase 15 bitstream) or not at all.
 PATCH = ("inpatch", "outpatch")
@@ -766,6 +839,26 @@ def _main(argv):
                 e = pt.read_entry(c)
                 label = "None" if e == 0 else (IO_PORTS[e - 1] if e <= len(IO_PORTS) else f"? {e}")
                 print(f"{c:>6} {e:>3}  {label}")
+        return 0
+
+    if cmd == "inserts":
+        # LF8: the router's tables, decoded (read only; the OSC server owns them)
+        rt = open_window("insert")
+        print(rt.describe())
+        n = open_window("inlevel").n
+        for k in range(3 * n + rt.pools * rt.slots):
+            e = rt.read_entry(k)
+            if not e:
+                continue
+            where = (f"RETURN {('in', 'bus', 'out')[k // n]} {k % n}" if k < 3 * n
+                     else f"SOURCE {POOLS[(k - 3 * n) // rt.slots][0]}:{(k - 3 * n) % rt.slots}")
+            kind, sel, age, idx = e >> 16, (e >> 12) & 0xF, (e >> 8) & 0xF, e & 0xFF
+            what = (f"zone {sel} ch {idx} age {age}" if kind == 1 else
+                    f"{POOLS[sel][0] if sel < len(POOLS) else sel}:{idx}" if kind == 2 else f"kind {kind}")
+            print(f"  {where:<20} <- {what}")
+        for typ, name in POOLS:
+            pw = open_window(name)
+            print(pw.describe())
         return 0
 
     if cmd == "level" and len(argv) == 5:

@@ -827,6 +827,9 @@ class InProcess(unittest.TestCase):
 APP_ZONES = {"inputChannel": "channel", "busChannel": "channel", "outputChannel": "channel",
              "inputMatrix": "matrix", "busMatrix": "matrix", "system": "system"}
 APP_TYPES = ("float", "int", "bool", "enum", "string")
+# LF8 (2026-10-31): the controller after the Inserts amendment
+# (docs/inserts_controller_spec_2026-10-31.md) also takes any zone whose
+# object says "kind": "pool", indexed like a channel zone (by slot).
 
 
 def app_config_problems(d):
@@ -834,6 +837,11 @@ def app_config_problems(d):
     controller repo, 2026-10-04) would throw on or warn about, ported rule by
     rule, so the reply can be checked without a Mac. Empty = decodes cleanly."""
     problems = []
+    kinds = dict(APP_ZONES)
+    if isinstance(d.get("zones"), dict):
+        for name, z in d["zones"].items():
+            if isinstance(z, dict) and z.get("kind") == "pool" and name not in kinds:
+                kinds[name] = "channel"
 
     def is_int(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool) and float(v).is_integer()
@@ -867,9 +875,9 @@ def app_config_problems(d):
         parts = key.split("/")
         while parts and parts[-1] == "":
             parts.pop()
-        if len(parts) < 2 or "" in parts or parts[0] not in APP_ZONES:
+        if len(parts) < 2 or "" in parts or parts[0] not in kinds:
             return False
-        kind = APP_ZONES[parts[0]]
+        kind = kinds[parts[0]]
         if kind == "system":
             return len(parts) <= 3
         if len(parts) != 3:
@@ -897,7 +905,7 @@ def app_config_problems(d):
         problems.append("zones missing or not an object")
         zones = {}
     for name, z in zones.items():
-        kind = APP_ZONES.get(name)
+        kind = kinds.get(name)
         if kind in (None, "system"):
             problems.append(f"zone {name!r} ignored")
             continue
@@ -972,17 +980,25 @@ class Config(ServerCase):
         diagonals and every channel level at 0 dB."""
         d = self.config(self.tcp())
         self.assertEqual(set(d), {"schemaVersion", "deviceName", "firmware", "sampleRate", "zones",
-                                  "modules", "system", "values", "capabilities"})
-        self.assertEqual(d["capabilities"], ["snapshots"])                 # Phase 14
-        ch = {"count": 4, "modules": ["level", "vgroup", "name"]}          # vgroup, name: Phase 14
+                                  "modules", "system", "values", "capabilities", "inserts"})
+        self.assertEqual(d["capabilities"], ["snapshots", "inserts"])      # Phase 14; LF8
+        self.assertEqual(d["inserts"], {"maxPerChannel": 8, "types": ["gain"], "delayFrames": 9})
+        ch = {"count": 4, "modules": ["level", "inserts", "vgroup", "name"]}   # vgroup, name: Phase 14
         mx = {"rows": 4, "cols": 4, "modules": ["level"]}
-        self.assertEqual(d["zones"], {"inputChannel": dict(ch, modules=["level", "source", "vgroup", "name"]),
+        self.assertEqual(d["zones"], {"inputChannel": dict(ch, modules=["level", "source", "inserts",
+                                                                        "vgroup", "name"]),
                                       "inputMatrix": mx, "busChannel": ch, "busMatrix": mx,
-                                      "outputChannel": dict(ch, modules=["level", "destination",
-                                                                         "vgroup", "name"])})  # Phase 15
+                                      "outputChannel": dict(ch, modules=["level", "destination", "inserts",
+                                                                         "vgroup", "name"]),  # Phase 15
+                                      "gain": {"count": 32, "modules": ["gain_level"], "kind": "pool"}})
         self.assertEqual(list(d["zones"]), ["inputChannel", "inputMatrix", "busChannel",
-                                            "busMatrix", "outputChannel"])   # signal-flow order
-        self.assertEqual(set(d["modules"]), {"level", "vgroup", "name", "source", "destination"})
+                                            "busMatrix", "outputChannel", "gain"])   # signal flow, then pools
+        self.assertEqual(set(d["modules"]), {"level", "vgroup", "name", "source", "destination",
+                                             "inserts", "gain_level"})
+        self.assertEqual(d["modules"]["inserts"], {"type": "string", "default": "", "maxLength": 255,
+                                                   "group": "inserts", "linked": True})
+        self.assertEqual(d["modules"]["gain_level"]["default"], 0.0)       # identity
+        self.assertEqual(d["modules"]["gain_level"]["group"], "gain")
         self.assertEqual(d["modules"]["name"], NAME)
         self.assertEqual(d["modules"]["vgroup"], VGROUP)                   # not linked itself
         self.assertEqual(d["modules"]["source"], PATCH)                    # Phase 15
@@ -1555,11 +1571,12 @@ class ChannelNames(ServerCase):
 
 class Snapshots(ServerCase):
     """Phase 14 (standard "Snapshots"), end to end over TCP. The simulated
-    mixer is 4 x 4 x 4: 76 parameters (3 x 4 channels x level, vgroup, name;
-    4 sources, 4 destinations (Phase 15); 2 x 16 crosspoints), reset state =
-    identity matrices, 0 dB levels, no groups, no names, nothing patched."""
+    mixer is 4 x 4 x 4: 88 parameters (3 x 4 channels x level, vgroup, name,
+    inserts (LF8); 4 sources, 4 destinations (Phase 15); 2 x 16 crosspoints;
+    no pool slot in use, so none of theirs), reset state = identity
+    matrices, 0 dB levels, no groups, no names, nothing patched, no inserts."""
 
-    N_PARAMS = 76
+    N_PARAMS = 88
 
     def pair(self):
         """Two controllers, both registered: a get is answered only once the
@@ -1940,7 +1957,7 @@ class ChannelCounts(Phase15Case):
         a.send_message("/mixer/snapshot/load", ["Four"])
         sets = self.drain(a)
         self.assertEqual(sets[-1][0], "snapshot/loaded")
-        self.assertEqual(sets[-1][1][2], 2 * 4 + 2 * 4)    # skipped: 2 hidden inputs x 4 modules, 2 x 4 crosspoints
+        self.assertEqual(sets[-1][1][2], 2 * 5 + 2 * 4)    # skipped: 2 hidden inputs x 5 modules (LF8: + inserts), 2 x 4 crosspoints
         self.assertNotIn("set/inputChannel/3/level", dict(sets[:-1]))
         self.echoes(a, "/mixer/set/system/inputCount", 4)
         self.assertEqual(self.get(a, "inputChannel/3/level"), 0.0)           # untouched while hidden
@@ -1959,9 +1976,9 @@ class ChannelCountsFromState(Phase15Case):
 
 class NoPatch(Phase15Case):
     """A bitstream from before Phase 15 (simulated: --no-patch): no patch
-    modules, no counts, channel k is I/O port k."""
+    modules, no counts, channel k is I/O port k (and, older than LF8, no inserts)."""
 
-    SERVER_ARGS = ["--no-patch"]
+    SERVER_ARGS = ["--no-patch", "--no-inserts"]
 
     def test_no_patch_and_no_counts(self):
         a = self.tcp()
@@ -2055,6 +2072,281 @@ class PatchInProcess(unittest.TestCase):
         self.assertEqual(spec.describe(), {"type": "enum", "default": 0.0, "group": "patch",
                                            "options": [0.0, 1.0, 2.0],
                                            "optionLabels": ["None", "A", "B"]})
+
+
+class Inserts(Phase15Case):
+    """LF8 (docs/inserts_controller_spec_2026-10-31.md): the `inserts` string
+    on the channel zones, the gain pool's zone, virtual groups, refusals,
+    snapshots. The simulator: K 8, 32 gain slots."""
+
+    def ins(self, link, zone, ch, text):
+        return self.echoes(link, f"/mixer/set/{zone}/{ch}/inserts", text)
+
+    def test_add_front_and_end_echo_canonical_and_new_slot_parameters(self):
+        a, b = self.pair()
+        self.assertEqual(self.ins(a, "inputChannel", 0, "gain"),
+                         [("set/inputChannel/0/inserts", "gain:0"), ("set/gain/0/gain_level", 0.0)])
+        self.assertEqual(self.drain(b), [("set/inputChannel/0/inserts", "gain:0"),
+                                         ("set/gain/0/gain_level", 0.0)])     # every controller
+        self.assertEqual(self.ins(a, "inputChannel", 0, "gain   gain:0 gain"),
+                         [("set/inputChannel/0/inserts", "gain:1 gain:0 gain:2"),
+                          ("set/gain/1/gain_level", 0.0), ("set/gain/2/gain_level", 0.0)])
+        self.assertEqual(self.get(a, "inputChannel/0/inserts"), "gain:1 gain:0 gain:2")
+        self.assertEqual(self.config(a)["values"]["inputChannel/0/inserts"], "gain:1 gain:0 gain:2")
+
+    def test_reorder_remove_and_the_freed_slot_starts_clean(self):
+        a = self.tcp()
+        self.ins(a, "busChannel", 3, "gain gain")
+        self.assertEqual(self.echoes(a, "/mixer/set/gain/0/gain_level", -6.0), [("set/gain/0/gain_level", -6.0)])
+        self.assertEqual(self.ins(a, "busChannel", 3, "gain:1 gain:0"),
+                         [("set/busChannel/3/inserts", "gain:1 gain:0")])     # no new slot: nothing more
+        self.assertEqual(self.get(a, "gain/0/gain_level"), -6.0)
+        self.assertEqual(self.ins(a, "busChannel", 3, "gain:1"), [("set/busChannel/3/inserts", "gain:1")])
+        a.send_message("/mixer/get/gain/0/gain_level")                       # freed
+        self.assertEqual(self.error(a, "gain/0/gain_level"), "gain:0 isn't inserted on any channel")
+        self.assertEqual(self.ins(a, "outputChannel", 0, "gain"),
+                         [("set/outputChannel/0/inserts", "gain:0"), ("set/gain/0/gain_level", 0.0)])
+        self.assertEqual(self.ins(a, "busChannel", 3, ""), [("set/busChannel/3/inserts", "")])
+        self.assertNotIn("busChannel/3/inserts", self.config(a)["values"])     # sparse: "" is the default
+
+    def test_refusals_change_nothing_and_answer_only_the_requester(self):
+        a, b = self.pair()
+        self.ins(a, "inputChannel", 1, "gain")
+        self.drain(b)
+        for text, reason in (("eq", "no insert type 'eq'"), ("gain:", "is not"), ("gain:32", "slots 0..31"),
+                             ("gain:0 gain:0", "twice"), ("gain:5", "free"), (" ".join(["gain"] * 9), "at most 8")):
+            a.send_message("/mixer/set/inputChannel/0/inserts", [text])
+            self.assertIn(reason, self.error(a, "inputChannel/0/inserts"), text)
+        a.send_message("/mixer/set/inputChannel/0/inserts", ["gain:0"])
+        self.assertIn("on inputChannel/1", self.error(a, "inputChannel/0/inserts"))
+        a.send_message("/mixer/set/inputChannel/0/inserts", [3.0])
+        self.assertEqual(self.error(a, "inputChannel/0/inserts"), "expected a string")
+        self.assertEqual(self.get(a, "inputChannel/0/inserts"), "")
+        self.assertEqual(self.drain(b), [])
+
+    def test_no_free_slot_is_an_error_to_the_requester(self):
+        a, b = self.pair()
+        for ch in range(4):
+            self.ins(a, "inputChannel", ch, " ".join(["gain"] * 8))          # 4 x 8 = all 32
+        self.drain(b)
+        a.send_message("/mixer/set/busChannel/0/inserts", ["gain"])
+        self.assertEqual(self.error(a, "busChannel/0/inserts"), "no free gain slot")
+        self.assertEqual(self.drain(b), [])
+        self.assertEqual(self.get(a, "busChannel/0/inserts"), "")
+
+    def test_a_free_slots_parameters_are_refused(self):
+        a = self.tcp()
+        a.send_message("/mixer/set/gain/5/gain_level", [-3.0])
+        self.assertEqual(self.error(a, "gain/5/gain_level"), "gain:5 isn't inserted on any channel")
+        a.send_message("/mixer/get/gain/5/gain_level")
+        self.assertEqual(self.error(a, "gain/5/gain_level"), "gain:5 isn't inserted on any channel")
+        a.send_message("/mixer/set/gain/32/gain_level", [-3.0])
+        self.assertIn("no index", self.error(a, "gain/32/gain_level"))
+
+    def test_groups_link_the_structure_and_the_parameters(self):
+        a = self.tcp()
+        for ch in (0, 2):
+            self.echoes(a, f"/mixer/set/inputChannel/{ch}/vgroup", 1)
+        self.assertEqual(self.ins(a, "inputChannel", 2, "gain gain"),
+                         [("set/inputChannel/2/inserts", "gain:0 gain:1"),   # the requested one first
+                          ("set/inputChannel/0/inserts", "gain:2 gain:3"),
+                          ("set/gain/0/gain_level", 0.0), ("set/gain/1/gain_level", 0.0),
+                          ("set/gain/2/gain_level", 0.0), ("set/gain/3/gain_level", 0.0)])
+        self.assertEqual(self.echoes(a, "/mixer/set/gain/1/gain_level", -4.0),
+                         [("set/gain/1/gain_level", -4.0), ("set/gain/3/gain_level", -4.0)])
+        # from the other member: keep position 1, add a new one in front
+        self.assertEqual(self.ins(a, "inputChannel", 0, "gain gain:3"),
+                         [("set/inputChannel/0/inserts", "gain:4 gain:3"),
+                          ("set/inputChannel/2/inserts", "gain:5 gain:1"),
+                          ("set/gain/4/gain_level", 0.0), ("set/gain/5/gain_level", 0.0)])
+        self.assertEqual(self.get(a, "gain/1/gain_level"), -4.0)
+        a.send_message("/mixer/get/gain/0/gain_level")
+        self.assertIn("isn't inserted", self.error(a, "gain/0/gain_level"))
+        self.echoes(a, "/mixer/set/inputChannel/2/vgroup", 0)                  # leaving changes nothing
+        self.assertEqual(self.echoes(a, "/mixer/set/gain/1/gain_level", -1.0), [("set/gain/1/gain_level", -1.0)])
+
+    def test_a_member_out_of_step_takes_the_requesters_parameters(self):
+        a = self.tcp()
+        self.ins(a, "outputChannel", 1, "gain")                                # gain:0, alone
+        self.echoes(a, "/mixer/set/gain/0/gain_level", -7.0)
+        for ch in (1, 3):                                                      # 3 joins, with no inserts
+            self.echoes(a, f"/mixer/set/outputChannel/{ch}/vgroup", 2)
+        self.assertEqual(self.ins(a, "outputChannel", 1, "gain:0"),            # the same chain, re-sent
+                         [("set/outputChannel/1/inserts", "gain:0"),
+                          ("set/outputChannel/3/inserts", "gain:1"),
+                          ("set/gain/1/gain_level", -7.0)])                    # brought together
+
+    def test_a_group_needs_a_slot_for_every_member(self):
+        a = self.tcp()
+        for ch in range(3):
+            self.ins(a, "outputChannel", ch, " ".join(["gain"] * 8))         # 24 used
+        self.ins(a, "outputChannel", 3, " ".join(["gain"] * 7))              # 31 used
+        for ch in (0, 1):
+            self.echoes(a, f"/mixer/set/busChannel/{ch}/vgroup", 7)
+        a.send_message("/mixer/set/busChannel/1/inserts", ["gain"])
+        self.assertEqual(self.error(a, "busChannel/1/inserts"), "no free gain slot (the group needs 2, 1 free)")
+        self.assertEqual(self.get(a, "busChannel/0/inserts"), "")
+
+    def test_udp_sets_apply_and_are_never_answered(self):
+        a, u = self.tcp(), self.udp()
+        self.get(a, "inputChannel/0/level")
+        u.send_message("/mixer/set/outputChannel/2/inserts", ["gain"])
+        self.assertEqual(a.read_message().address, "/mixer/set/outputChannel/2/inserts")
+        self.assertEqual(self.drain(a), [("set/gain/0/gain_level", 0.0)])
+        u.send_message("/mixer/set/outputChannel/2/inserts", ["nope"])
+        time.sleep(0.3)
+        self.assertEqual(self.get(a, "outputChannel/2/inserts"), "gain:0")
+        self.assertIn("refused outputChannel/2/inserts", self.log())
+
+    def test_snapshots_carry_chains_and_used_slots_only(self):
+        a = self.tcp()
+        self.ins(a, "busChannel", 1, "gain gain")
+        self.echoes(a, "/mixer/set/gain/1/gain_level", -9.0)
+        a.send_message("/mixer/snapshot/save", ["Ins"])
+        a.read_message()
+        a.send_message("/mixer/snapshot/fetch")
+        values = json.loads(a.read_message().args[1])["values"]
+        self.assertEqual(values["busChannel/1/inserts"], "gain:0 gain:1")
+        self.assertEqual({k for k in values if k.startswith("gain/")}, {"gain/0/gain_level", "gain/1/gain_level"})
+        self.ins(a, "busChannel", 1, "")
+        self.ins(a, "inputChannel", 0, "gain")                                 # takes gain:0
+        a.send_message("/mixer/snapshot/load", ["Ins"])
+        sets = dict(self.drain(a)[:-1])
+        self.assertEqual(sets["set/busChannel/1/inserts"], "gain:0 gain:1")
+        self.assertEqual(sets["set/inputChannel/0/inserts"], "")
+        self.assertEqual(self.get(a, "gain/1/gain_level"), -9.0)
+
+    def test_a_recall_whose_slots_collide_is_refused(self):
+        a = self.tcp()
+        doc = {"snapshotVersion": 1, "values": {"inputChannel/0/inserts": "gain:3",
+                                                "busChannel/2/inserts": "gain:3"}}
+        a.send_message("/mixer/snapshot/apply", [json.dumps(doc)])
+        self.assertIn("gain:3 is on both", self.error(a, "snapshot/apply"))
+        doc = {"snapshotVersion": 1, "values": {"inputChannel/0/inserts": "gain"}}
+        a.send_message("/mixer/snapshot/apply", [json.dumps(doc)])
+        self.assertIn("must name their slots", self.error(a, "snapshot/apply"))
+        self.assertEqual(self.get(a, "inputChannel/0/inserts"), "")
+
+
+class InsertsFromState(Phase15Case):
+    """Chains and slot parameters across a power cycle; a stored chain that
+    can't hold (a slot two channels claim) loses the later claim."""
+
+    STATE = {"system": {"deviceName": "mixer"},
+             "inputChannel": {"0": {"inserts": "gain:3  gain:7"}},
+             "busChannel": {"1": {"inserts": "gain:7"}},
+             "gain": {"3": {"gain_level": -3.0}, "9": {"gain_level": -12.0}}}
+
+    def test_restored_canonical_and_cleaned(self):
+        a = self.tcp()
+        self.assertEqual(self.get(a, "inputChannel/0/inserts"), "gain:3 gain:7")
+        self.assertEqual(self.get(a, "busChannel/1/inserts"), "")
+        self.assertEqual(self.get(a, "gain/3/gain_level"), -3.0)
+        values = self.config(a)["values"]
+        self.assertNotIn("gain/9/gain_level", values)                        # a free slot: back to identity
+        self.assertIn("dropped", self.log())
+
+
+class NoInserts(Phase15Case):
+    SERVER_ARGS = ["--no-inserts"]
+
+    def test_no_pools_no_module_no_capability(self):
+        d = self.config(self.tcp())
+        self.assertNotIn("gain", d["zones"])
+        self.assertNotIn("inserts", d["zones"]["busChannel"]["modules"])
+        self.assertNotIn("inserts", d)
+        self.assertEqual(d["capabilities"], ["snapshots"])
+
+
+class FakeRouterHW:
+    def __init__(self, log):
+        self.log, self.n = log, 0
+
+    def set_tables(self, words):
+        self.log.append(("tables", dict(words)))
+        self.n += 1
+
+    def commits(self):
+        return self.n
+
+
+class FakeLevelHW:
+    def __init__(self, log, zone):
+        self.log, self.zone = log, zone
+
+    def set_db(self, ch, db):
+        self.log.append(("level", self.zone, ch, db))
+        return db
+
+    def set_bank_db(self, levels):
+        self.log.append(("levels", self.zone, dict(levels)))
+        return dict(levels)
+
+
+class FakePoolDriver:
+    def __init__(self, log):
+        self.log = log
+
+    def write(self, params):
+        self.log.append(("pool", {s: dict(m) for s, m in params.items()}))
+        return params
+
+
+class InsertWorkerOrder(unittest.TestCase):
+    """The worker's steps on fake hardware: a reorder dips before the tables
+    and restores after; a front add keeps the new slot at identity until the
+    tables switch (a set meanwhile reaches the hardware only then)."""
+
+    def setUp(self):
+        import osc_mixer_server as srv
+        from mixer_state import MixerState
+        self.srv, self.log = srv, []
+        srv.log = lambda m: None
+        srv.FADE_S = 0.0
+        self.state = MixerState("mixer", None, log=lambda m: None)
+        srv.BACKENDS.clear()
+        for z in srv.LEVEL_ZONES:
+            srv.BACKENDS[z] = srv.GainBackend(z, FakeLevelHW(self.log, z), 4, max_db=6.0)
+        pt = srv.gain_pool_type(8, 6.0)
+        srv.BACKENDS["gain"] = srv.PoolBackend(pt, FakePoolDriver(self.log))
+        srv.BACKENDS["gain"].state = self.state
+        srv.INSERTS = srv.mixer_inserts.Inserts(3, {"gain": pt}, {z: 4 for z in srv.LEVEL_ZONES})
+        self.worker = srv.InsertWorker(FakeRouterHW(self.log), srv.BACKENDS)
+        self.worker.state = self.state
+
+    def tearDown(self):
+        self.srv.BACKENDS.clear()
+        self.srv.INSERTS = None
+
+    def edit(self, zone, ch, text):
+        x = self.srv.INSERTS
+        res = x.resolve(zone, ch, text, [ch])
+        x.commit(res)
+        for t, s in res.added:
+            self.srv.BACKENDS[t].pending.add(s)
+        return x.plan(res)
+
+    def test_reorder_dips_then_tables_then_restores(self):
+        self.worker.execute(self.edit("busChannel", 1, "gain gain"))
+        self.state.set("busChannel/1/level", -5.0)
+        del self.log[:]
+        self.worker.execute(self.edit("busChannel", 1, "gain:1 gain:0"))
+        kinds = [e[0] for e in self.log]
+        self.assertEqual(kinds, ["level", "tables", "level"])
+        self.assertEqual(self.log[0], ("level", "busChannel", 1, -90.0))
+        self.assertEqual(self.log[2], ("level", "busChannel", 1, -5.0))
+        self.assertEqual(self.srv.BACKENDS["busChannel"].dipped, set())
+
+    def test_front_add_keeps_the_new_slot_at_identity_until_switched_in(self):
+        plan = self.edit("inputChannel", 0, "gain")
+        pb = self.srv.BACKENDS["gain"]
+        pb.apply_many({("0", "gain_level"): -6.0})                 # a set before the worker ran
+        self.state.set("gain/0/gain_level", -6.0)
+        self.assertEqual(self.log, [])                             # pending: not in the hardware
+        self.worker.execute(plan)
+        self.assertEqual([e[0] for e in self.log], ["tables", "pool"])
+        self.assertEqual(self.log[1], ("pool", {0: {"gain_level": -6.0}}))   # the stored value, after the switch
+        self.assertEqual(pb.pending, set())
 
 
 if __name__ == "__main__":

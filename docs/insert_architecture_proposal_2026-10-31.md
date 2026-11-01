@@ -311,3 +311,50 @@ An image with `lf8` and this server. It inherits `lf2`'s untested steps (§11.2 
 - **Q3, a free slot's parameters:** refuse a set on a slot that is not inserted (recommended; nothing is stored for a processor nobody uses), or accept and store it.
 - **Q4, after this step:** build the image and bench it (12.4; recommended, since the router and lf2's changes would then be checked on the board before the EQ adds more), or go straight on to the EQ.
 - **Not asked, deferred:** whether inserts follow virtual groups (a stereo pair sharing one EQ setting). Today `inserts` won't be linked; it can be added later without breaking anything.
+
+**Decided (the user, 2026-10-31):**
+- Q1: the whole list (*"easier to implement given the json config structuring"*);
+- Q2: yes, `gain` is a real insert type;
+- Q3: yes, a free slot's parameters are refused;
+- Q4: bench first.
+
+Not deferred after all. **Inserts follow virtual groups** (*"That's actually the driving reason behind virtual groups"*). Defined as follows (12.6), and the user asked for a full write-up of the protocol for the controller (`docs/inserts_controller_spec_2026-10-31.md`).
+
+### 12.6 Inserts and virtual groups
+
+Grouped channels are separate audio, so each member has **its own slots**. What links is the chain's *structure* and the processors' *parameters*:
+
+1. **A set of `inserts` on a grouped channel applies to every member** (same zone, same `vgroup`).
+   - The requester's chain is as given.
+   - Each other member gets the same types in the same order. Member position j keeps its own slot if the requester's entry j kept the slot at position p, and the member has the same type at position p. Otherwise it gets a new slot.
+   - A member's slots that aren't kept go free.
+2. **Afterwards every member's processors equal the requester's**, position by position. A member's new slots take the requester's parameters at that position, and its kept slots are brought to them too ("the next set of a linked module brings the members together").
+3. **A set of a processor's parameter** (pool modules are `linked`) on a slot owned by a grouped channel at position p applies to the slot at position p of every member that has the same type there.
+4. **All or nothing.** If the group needs more free slots of a type than there are, the set is refused (`no free <type> slot`) and nothing changes. A slot freed by an edit is never reused within that same edit, since it isn't at identity yet.
+5. **Echo order:**
+   - the requested channel's `inserts` first, then the other members' in index order;
+   - then every parameter of each newly assigned slot, so a controller never has to diff lists;
+   - then the changed parameters of kept slots.
+6. **Unchanged rules:** joining or leaving a group changes nothing; recall doesn't link; matrices never link.
+
+### 12.7 Built (2026-10-31, server; not on the board)
+
+**What was built:**
+- `tools/mixer_inserts.py` (new): parse/format; allocation (lowest free slot first, never a slot freed by the same edit); groups (12.6); the router's tables; edit plans.
+- `tools/mixer_hw.py`: `InsertRouterHW`, `GainPoolHW`, `WINDOWS` `insert` / `gainpool`, `POOLS` (the router's pool order), CLI `inserts`.
+- `tools/mixer_params.py`: the zone kind `pool` (`"kind": "pool"` in the config).
+- `tools/osc_mixer_server.py`: `PoolBackend`, the `inserts` module, `set_inserts`, linked pool parameters, refusals of free slots, `InsertWorker` (outside the lock), startup (`seed_inserts`, the tables pushed), snapshots (chains checked before a recall, free slots never in a snapshot), the config's `inserts` object and capability, `--no-inserts`.
+- **Module name:** the gain pool's parameter is `gain_level`, not `level`: module metadata is global, and `level` defaults to off where a processor's default must be its identity.
+
+**Edit timing:** `FADE_S` = 80 ms before a dip's switch, or before a front remove (the smoother is exact after about 70 ms at K = 8). A level set on a dipped channel waits in the store, and the restore applies it. A parameter set on a slot not yet switched in reaches the hardware only after the switch.
+
+**Checked:**
+- Python 283 tests on Linux (the build VM): `test_mixer_inserts` 19, `test_osc_mixer_server` with 15 insert tests (TCP end to end, groups, refusals, UDP, snapshots, state across a restart, the worker's step order on fake hardware), `test_mixer_hw` `InsertWindows` 3.
+- On Windows the same minus the mmap tests; the old `MediaClock*` tests error there on `os.O_SYNC` (pre-existing, Linux-only).
+- **Mutants `lf8_server.json` 15 / 15.** The first run left one alive: a group member's new slot copying the requester's values. A real test gap, closed by `test_a_member_out_of_step_takes_the_requesters_parameters`.
+
+**Docs:**
+- the standard's *Inserts* section and change log;
+- **`docs/inserts_controller_spec_2026-10-31.md`**: the full spec for the controller, with discovery, the value, edits, parameters, groups, every error string, snapshots, audio behaviour, a checklist and a message session.
+
+**Next: the bench (12.4)**, an image with `lf8` and this server.
