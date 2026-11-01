@@ -238,6 +238,8 @@ After a pass: `lf2` replaces `p15e`, and the OSC standard's "a recall may click"
 
 ## 13. Step 4 plan: the first library block, a parametric EQ (2026-10-31, for the user's review)
 
+> **Superseded on placement (2026-10-31).** The user: DSP modules live off to the side in pools, and the controller inserts them on any channel (inputs, buses, outputs), pre-fader, any number and any order, 32 slots per type. The EQ is no longer a fixed core stage; it becomes the first pool. See `insert_architecture_proposal_2026-10-31.md`. The EQ prototype (4a) and the block itself below still stand.
+
 **What you get:** a per-channel parametric EQ on the input channels, controlled from the app like any other module. The app already renders advertised modules by `group` (knobs for numbers with ranges, menus for enums, buttons for bools: StudioRunner D65), and its mock device already uses `eq_band1..4_freq/gain/q`, so no app work is needed to use it. The pop-out EQ editor (D73) stays an app item for later. With the EQ flat or bypassed, the path stays **bit-exact**, so the null tests keep working.
 
 **The parts, in order:**
