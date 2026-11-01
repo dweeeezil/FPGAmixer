@@ -223,3 +223,5 @@ After a pass: `lf2` replaces `p15e`, and the OSC standard's "a recall may click"
 - **Q4, `pcm_gain` and `pcm_matrix`:**
   - Recommended: **they stay in FPGAmixer for now** (they are the core's own blocks and step 1/2 just changed them); they can move to the library later, once the template has proved itself.
   - The alternative: move them now as the first library blocks.
+
+**Answered (the user, 2026-10-31): Q1 EQ first (dynamics second); Q2 each block exports its own `coef_swap` (`pcm_gain` / `pcm_matrix` too, the core wires their pulses); Q3 the GitHub repo is private (still: ask before pushing); Q4 `pcm_gain` / `pcm_matrix` stay in FPGAmixer for now.**
