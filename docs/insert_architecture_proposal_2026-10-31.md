@@ -204,3 +204,110 @@ The block design gets two windows (router, gain pool) on the second SmartConnect
 - the server (allocation, the no-free-slot error, persistence) and the OSC design (§7);
 - an image and the bench;
 - pushing (the library first: FPGAmixer's submodule points at the library's local commit).
+
+## 12. Step plan: the server (2026-10-31, for the user's review)
+
+What the server must do (§7, the user's answers): give each insert a free slot of its type, refuse with an error when there is none, keep every channel's ordered list, change the hardware without clicks (§4), and keep it all across a power cycle and in snapshots. The FPGA side is done (§11.6); this step is Python only, in `tools/`, plus an amendment to the OSC standard.
+
+### 12.1 The OSC side (proposal)
+
+The standard already has everything a processor's *parameters* need: zones with indices, modules with metadata (`type`, `min`, `max`, `default`, `group`), set/get/echo, config, snapshots, error replies. What's new is only **which processors a channel has, in which order**. The proposal adds two things and no new command kinds:
+
+**1. A zone per processor type, indexed by slot.** Each pool is a zone with `count` = its slots, its modules being the processor's parameters:
+
+```
+"zones": { ..., "gain": { "count": 32, "modules": ["level"] } }        // later: "eq": { "count": 32, "modules": ["eq_band1_freq", ...] }
+/<name>/set/gain/5/level -6.0        // slot 5 of the gain pool
+```
+
+Every existing rule then applies unchanged: clamping, echo to every controller, config values (sparse: the default is the processor's identity), snapshots, persistence.
+
+**2. A channel module `inserts`, a string: the chain in signal order.** Each entry is `<type>:<slot>`, space-separated:
+
+```
+/<name>/get/busChannel/3/inserts          -> "eq:5 gain:2 eq:9"
+```
+
+A controller **changes the chain by setting the whole list**. An entry with a slot keeps that insert, and one with only a type is a new insert:
+
+| set `busChannel/3/inserts` to | means |
+|---|---|
+| `"eq:5 gain:2 eq:9 eq"` | add an EQ at the end (the server picks a free slot) |
+| `"eq gain:2"` from `"gain:2"` | add an EQ at the front |
+| `"eq:9 eq:5 gain:2"` | reorder |
+| `"eq:5 eq:9"` | remove gain:2 (its slot goes free, back to identity) |
+| `""` | remove all |
+
+The echo, to every controller, is the canonical list with every slot filled in (`"eq:5 gain:2 eq:9 eq:14"`), so every controller learns the new slot the same way. **Refused with an error reply, nothing changed:**
+- no free slot of a type: `/<name>/error busChannel/3/inserts "no free eq slot"` (the user's requirement);
+- more than K = 8 entries;
+- an unknown type;
+- a slot that isn't this channel's (another channel's, or free);
+- the same slot twice.
+
+A set of a slot's parameters while it is free is refused too (Q3).
+
+Why a whole-list set rather than new `insert` / `remove` / `move` commands:
+- it rides on the existing set path (TCP and UDP, echo, groups, the state file, snapshots, recall) with no new message kind;
+- any edit is one message, so it is atomic.
+
+The price: the value is a small string grammar, defined in the standard.
+
+### 12.2 The server's pieces
+
+| Piece | Where | What |
+|---|---|---|
+| hardware | `tools/mixer_hw.py` | `InsertRouterHW` (0x8000_F000: CONFIG → K, S, NP; entries; COMMIT) and `GainPoolHW` (0x8001_0000: one gain per slot), in `WINDOWS`, checked by ID and found through the device tree like every window; a CLI `inserts` that prints the tables |
+| the insert logic | `tools/mixer_inserts.py` (new; no OSC, no hardware, like `mixer_params`) | the pools' free lists; parsing and formatting `inserts`; the chain → table entries (RETURN, SOURCE, heads at age K − n, the format of `insert_router_pkg`); and the **edit plan**: the ordered steps of a change (below), as data, so it is tested without hardware |
+| the server | `tools/osc_mixer_server.py` | a backend per pool (its zone, its modules; the gain pool's `level`); the `inserts` module on the three channel zones; the executor that runs an edit plan; at startup, rebuilding the tables and slot parameters from the state file; recall |
+| the simulator | the same code, `hw` None | as for every backend: the same rules, no window |
+
+**An edit, step by step:**
+1. **Front add or remove, or a dry channel's first insert:**
+   - set the new slot to identity and route it in (bit-exact, §4); for a remove, fade the slot to identity first;
+   - then set the slot's parameters, which the smoother fades in.
+2. **Mid-chain add or remove, and reorders:**
+   - dip the channel's level stage (the one after its insert point; the hardware only, the stored level unchanged);
+   - switch in one COMMIT;
+   - restore the level from the state, so a level set during the dip still lands.
+3. **Freed slots** go back to identity and to silence.
+
+The waits (about 30 ms) run without holding the registry lock, so other controllers are not held up. Each channel's edits run in order.
+
+**Recall and startup:**
+- the slots are part of the stored values (`inserts`, `gain/5/level`), so a recall restores exactly those slots;
+- all routing goes in one COMMIT. A recall changes the mix anyway, so it is not made seamless.
+
+### 12.3 Tests
+
+- `test_mixer_inserts.py`:
+  - parse and format;
+  - every refusal;
+  - allocation, including all 32 slots used and the 33rd refused;
+  - the tables against hand-worked chains, with the same entries as `tb_insert_router`'s model;
+  - each edit kind's plan: front edits without a dip, mid-chain edits with one.
+- `test_osc_mixer_server.py`:
+  - over TCP: add, remove and reorder, with the echo to every controller and the config;
+  - the no-free-slot error to the requester only;
+  - pool parameter sets refused on a free slot;
+  - the state file across a restart;
+  - snapshot save and recall;
+  - UDP (applied, never answered).
+- `test_mixer_hw.py`: the two windows on a fake `/dev/mem`, as the others.
+- The standard: an amendment (*Inserts*), additive, `schemaVersion` stays 1.
+
+### 12.4 Then: the bench (Q4)
+
+An image with `lf8` and this server. It inherits `lf2`'s untested steps (§11.2 of the library proposal: the core spans frames, smoothing). It is lean, per the bench rule:
+
+1. **Null test (USB, as T3) with nothing inserted:** exact. The latency should be **27 samples more** than on p15e (3 × 9 frames), the one number that proves the router is in the path.
+2. **The same with a gain insert at 0 dB on that channel:** still exact (identity is bit-exact).
+3. **By ear:** that insert at −12 dB, then removed: a drop and back, no click on the front edit.
+
+### 12.5 Questions for the user
+
+- **Q1, the OSC design:** the whole-list `inserts` string with a zone per pool (12.1; recommended). The alternative is new command kinds (`insert`, `remove`, `move`), each one edit, with replies of their own.
+- **Q2, the gain pool:** expose it as a real insert type, `gain`, a trim with a `level` in dB. Recommended: it proves the whole path on the bench before the EQ exists, and it is a useful processor anyway. The alternative is to keep it hidden as a test fixture.
+- **Q3, a free slot's parameters:** refuse a set on a slot that is not inserted (recommended; nothing is stored for a processor nobody uses), or accept and store it.
+- **Q4, after this step:** build the image and bench it (12.4; recommended, since the router and lf2's changes would then be checked on the board before the EQ adds more), or go straight on to the EQ.
+- **Not asked, deferred:** whether inserts follow virtual groups (a stereo pair sharing one EQ setting). Today `inserts` won't be linked; it can be added later without breaking anything.
