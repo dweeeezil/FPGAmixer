@@ -22,6 +22,7 @@
 #   make -f scripts/sim.mk link       # Phase 8 PS<->PL link front door (AXIS <-> PCM, two clocks)
 #   make -f scripts/sim.mk linkstat   # Phase 8 link status window (RO, snapshot atomicity)
 #   make -f scripts/sim.mk regs       # Phase 5 AXI gain registers + CDC + matrix
+#   make -f scripts/sim.mk router     # LF8 insert router (chains, edits, the table store)
 #   make -f scripts/sim.mk topwin     # fpgamixer_top as a PS build: every window wired
 #   make -f scripts/sim.mk all        # all of them (default)
 # (The Pmod I2S tests rx, tx, txphase, loopback, phase3, dynamic moved to
@@ -48,14 +49,28 @@ LSIM     := src/lib/sim
 MIXCORE  := $(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv \
             $(RTL)/pcm_pack2stream.sv $(RTL)/pcm_stream2pack.sv \
             $(RTL)/pcm_patch2stream.sv $(RTL)/pcm_stream2patch.sv \
-            $(RTL)/pcm_matrix.sv $(RTL)/pcm_gain.sv $(RTL)/mixer_core.sv
+            $(RTL)/pcm_matrix.sv $(RTL)/pcm_gain.sv $(RTL)/pcm_insert_loop.sv \
+            $(RTL)/mixer_core.sv
 MXSIM    := $(SIM)/matrix_packed_sim.sv
 
+# LF8 (2026-10-31): the insert router, and the library's template block (the gain pool)
+LTPL     := src/lib/template
+ROUTER   := $(RTL)/insert_router_pkg.sv $(RTL)/insert_router.sv
+
 CORE_RTL := $(MIXCORE) $(LRTL)/coef_flat_reader.sv $(LRTL)/coef_smooth.sv \
+            $(ROUTER) $(LTPL)/lib_template_pkg.sv $(LTPL)/lib_template.sv \
             $(RTL)/reset_sync.sv $(RTL)/audio_clocking.sv
 
-.PHONY: all matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat topwin clean
-all: matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat topwin
+.PHONY: all matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat router topwin clean
+all: matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat router topwin
+
+# --- LF8: the insert router with its table store and two gain pools ---
+router: | $(BUILD)
+	@echo ">>> Building tb_insert_router"
+	@$(IVERILOG) $(FLAGS) -s tb_insert_router -o $(BUILD)/tb_insert_router.vvp \
+		$(RTL)/pcm_matrix_pkg.sv $(RTL)/mixer_core_pkg.sv $(ROUTER) \
+		$(LRTL)/coef_bank_ram.sv $(SIM)/tb_insert_router.sv
+	@$(VVP) $(BUILD)/tb_insert_router.vvp
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -192,7 +207,8 @@ topwin: | $(BUILD)
 	@$(IVERILOG) $(FLAGS) -DINCLUDE_PS -s tb_top_windows -o $(BUILD)/tb_top_windows.vvp \
 		$(CORE_RTL) $(LRTL)/coef_bank_ram.sv $(LRTL)/axil_coef_window.sv \
 		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/pcm_peak.sv \
-		$(RTL)/peak_regs_axil.sv $(RTL)/patch_regs_axil.sv $(RTL)/fpgamixer_top.sv \
+		$(RTL)/peak_regs_axil.sv $(RTL)/patch_regs_axil.sv \
+		$(RTL)/insert_router_regs_axil.sv $(LTPL)/lib_template_regs_axil.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
 	@$(VVP) $(BUILD)/tb_top_windows.vvp
 

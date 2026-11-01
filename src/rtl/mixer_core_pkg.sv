@@ -4,22 +4,39 @@
 // The PCM core's chain arithmetic, in one place (Phase 12, decision L4), so the
 // core (which runs the chain), the platform layer (which sizes both matrices'
 // coefficient stores) and the TBs can't disagree. The per-matrix formulas stay
-// in pcm_matrix_pkg; this adds the gain stage and the chain:
+// in pcm_matrix_pkg; this adds the gain stage, the insert stage and the chain.
 //
-//   patch2stream -> gain -> matrix 1 -> gain -> matrix 2 -> gain -> stream2patch
-//   (input patch)   (in)   N_IN->N_BUS  (bus)  N_BUS->N_OUT (out)  (output patch)
+// ----- The chain as three sections (decision LF8, 2026-10-31) -----
+// docs/insert_architecture_proposal_2026-10-31.md sec. 6, 11. Each section is
+// a zone of the console, ending at its level stage; each has one INSERT
+// POINT, pre-fader, where the zone's stream leaves the core (send) and comes
+// back INS_LAT cycles later (return), through whatever closes the port (the
+// insert router, or pcm_insert_loop):
+//
+//   section  stages                                            ends at (last beat)
+//   inputs   input patch  -> insert [I] -> input levels        sec_in_last
+//   buses    input matrix -> insert [B] -> bus levels          sec_bus_last
+//   outputs  bus matrix   -> insert [O] -> output levels       sec_out_last
+//            -> output patch                                   D = chain_latency
 //
 // Every block starts on order, not on its producer's timing, so the latencies
-// add. Last beat of each stream, cycles after the strobe:
-//   inputs (patch2stream) N_IN + IN_PATCH_LAT     (Phase 15: was N_IN, pack2stream)
-//   input levels          + GAIN_LAT
-//   input matrix (buses)  + matrix_lat_last(N_IN, N_BUS, L1)
-//   bus levels            + GAIN_LAT
-//   bus matrix (outputs)  + matrix_lat_last(N_BUS, N_OUT, L2)
-//   output levels         + GAIN_LAT
-//   core D                + OUT_PATCH_LAT (stream2patch; was 1, stream2pack)
-// The links take the output on the first strobe after it updates: with
-// D <= pcm_matrix_pkg::D_MAX (255) the next one, as before.
+// add. Cycles after the strobe:
+//   input patch     last beat N_IN + IN_PATCH_LAT        = ins_in_send_last
+//   insert [I]      + INS_LAT
+//   input levels    + GAIN_LAT                           = sec_in_last
+//   input matrix    + matrix_lat_last(N_IN, N_BUS, L1)   = ins_bus_send_last
+//   insert [B]      + INS_LAT
+//   bus levels      + GAIN_LAT                           = sec_bus_last
+//   bus matrix      + matrix_lat_last(N_BUS, N_OUT, L2)  = ins_out_send_last
+//   insert [O]      + INS_LAT
+//   output levels   + GAIN_LAT                           = sec_out_last
+//   core D          + OUT_PATCH_LAT (stream2patch)
+// An insert stage keeps its stream's order, gaps and span: it only shifts it.
+// (Whatever it does to the CONTENT -- the router's K + 1 frames -- is not
+// the core's business.) The links take the output on the first strobe after
+// it updates: with D <= pcm_matrix_pkg::D_MAX (255) the next one, as before.
+// A new section (a spatial processor, HD7) is added the same way: its stages,
+// its insert point, its function here.
 //
 // ----- The chain may span frames (library foundation, decision LF1) -----
 // docs/library_foundation_proposal_2026-10-10.md sec. 2, 10. D is no longer
@@ -45,12 +62,12 @@
 // smaller D, then to the smaller L1; only when nothing fits a frame, the
 // fewest lanes for which chain_fits holds, same ties. 0 when nothing fits at
 // all (the core then refuses to elaborate).
-// 20 / 20 / 20: L1 = 4, L2 = 4, D = 251 (one lane more, 4 + 5, would give
-// 232; the rule spends DSPs only when the frame needs them, as matrix_lanes
-// does). 12 / 12 / 12: 1 + 2, D = 254. 28 / 28 / 28: 10 + 10, D = 235.
-// (Before Phase 15, with D_MAX 250 and the plain converters: 249, 2 + 2 at
-// 181, 233.) Sizes past one frame, e.g. 48 / 48 / 48, now get a multi-frame
-// chain instead of none.
+// 20 / 20 / 20: L1 = 4, L2 = 5, D = 241 (LF8: the three insert stages add
+// 9 cycles; 4 + 4 would give 260, past the frame, so the rule spends one
+// DSP, as matrix_lanes does). 12 / 12 / 12: 2 + 2, D = 192. 28 / 28 / 28:
+// 10 + 10, D = 244. (Before LF8: 4 + 4 at 251, 1 + 2 at 254, 10 + 10 at
+// 235.) Sizes past one frame, e.g. 48 / 48 / 48, get a multi-frame chain
+// instead of none (but no inserts yet: insert_router_pkg::router_fits).
 // -----------------------------------------------------------------------------
 package mixer_core_pkg;
 
@@ -59,6 +76,7 @@ package mixer_core_pkg;
     localparam int GAIN_LAT      = 4;  // pcm_gain: output beat, cycles after its input beat
     localparam int IN_PATCH_LAT  = 1;  // pcm_patch2stream: beats in cycles 1+1 .. N+1
     localparam int OUT_PATCH_LAT = 2;  // pcm_stream2patch: output, cycles after the last beat
+    localparam int INS_LAT       = 3;  // an insert stage: return beat, cycles after its send beat
     localparam int FRAME         = 256;        // cycles per frame (mclk / fs)
     localparam int D_CAP         = 8 * FRAME;  // LF1: the longest chain allowed
 
@@ -76,26 +94,39 @@ package mixer_core_pkg;
         return matrix_lat_last(n_in, n_out, lanes) - matrix_lat_first(n_in);
     endfunction
 
-    // Last beat of the input channels' stream (the input patch), cycles after the strobe.
-    function automatic int chain_in_last(input int n_in);
+    // ----- the sections (LF8): last beats, cycles after the strobe -----
+    // inputs: the input patch's stream leaves at insert [I]
+    function automatic int ins_in_send_last(input int n_in);
         return n_in + IN_PATCH_LAT;
     endfunction
-    // Last beat of the input matrix's output (the buses), cycles after the strobe.
-    function automatic int chain_bus_last(input int n_in, input int n_bus, input int l1);
-        return chain_in_last(n_in) + GAIN_LAT + matrix_lat_last(n_in, n_bus, l1);
+    // ... and the section ends at the input levels' last beat
+    function automatic int sec_in_last(input int n_in);
+        return ins_in_send_last(n_in) + INS_LAT + GAIN_LAT;
     endfunction
 
-    // Last beat of the bus matrix's output, cycles after the strobe.
-    function automatic int chain_out_last(input int n_in, input int n_bus, input int n_out,
-                                          input int l1, input int l2);
-        return chain_bus_last(n_in, n_bus, l1) + GAIN_LAT + matrix_lat_last(n_bus, n_out, l2);
+    // buses: the input matrix's stream leaves at insert [B]
+    function automatic int ins_bus_send_last(input int n_in, input int n_bus, input int l1);
+        return sec_in_last(n_in) + matrix_lat_last(n_in, n_bus, l1);
+    endfunction
+    function automatic int sec_bus_last(input int n_in, input int n_bus, input int l1);
+        return ins_bus_send_last(n_in, n_bus, l1) + INS_LAT + GAIN_LAT;
+    endfunction
+
+    // outputs: the bus matrix's stream leaves at insert [O]
+    function automatic int ins_out_send_last(input int n_in, input int n_bus, input int n_out,
+                                             input int l1, input int l2);
+        return sec_bus_last(n_in, n_bus, l1) + matrix_lat_last(n_bus, n_out, l2);
+    endfunction
+    function automatic int sec_out_last(input int n_in, input int n_bus, input int n_out,
+                                        input int l1, input int l2);
+        return ins_out_send_last(n_in, n_bus, n_out, l1, l2) + INS_LAT + GAIN_LAT;
     endfunction
 
     // The core's D: its packed output updates this many cycles after the
     // strobe that captured the frame (may exceed FRAME: LF1).
     function automatic int chain_latency(input int n_in, input int n_bus, input int n_out,
                                          input int l1, input int l2);
-        return chain_out_last(n_in, n_bus, n_out, l1, l2) + GAIN_LAT + OUT_PATCH_LAT;
+        return sec_out_last(n_in, n_bus, n_out, l1, l2) + OUT_PATCH_LAT;
     endfunction
 
     // LF1: whether the chain keeps up with the frame rate on l1 + l2 lanes.

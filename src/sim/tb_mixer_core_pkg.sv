@@ -9,6 +9,9 @@
 // accuracy of the formulas themselves is checked by the core TB (step 2).
 // LF1 (2026-10-26): the chooser's fallback to chains that span frames, and
 // matrix_fits / chain_fits at their edges.
+// LF8 (2026-10-31): the insert stages (+INS_LAT per section); values again
+// from an independent Python model (with no insert latency it reproduces the
+// earlier table).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -41,33 +44,33 @@ module tb_mixer_core_pkg;
 
     initial begin
         // Phase 15: the patch converters (+1 in, +1 out) and D_MAX 255
-        expect_chain(20, 20, 20,  4,  4, 251);   // today's core (L2: N_BUS = N_OUT)
-        expect_chain(12, 12, 12,  1,  2, 254);   // one DSP fewer than with D_MAX 250
-        expect_chain(28, 28, 28, 10, 10, 235);   // Phase 11 growth
-        expect_chain(40, 40, 40, 20, 28, 255);   // exactly D_MAX
-        expect_chain(35, 35, 35, 15, 18, 255);   // exactly D_MAX
+        expect_chain(20, 20, 20,  4,  5, 241);   // today's core (LF8: +3 x INS_LAT costs a lane)
+        expect_chain(12, 12, 12,  2,  2, 192);
+        expect_chain(28, 28, 28, 10, 10, 244);   // Phase 11 growth
+        expect_chain(40, 40, 40, 20, 37, 255);   // exactly D_MAX
+        expect_chain(35, 35, 35, 18, 18, 241);
         // LF1 (2026-10-26): past one frame the chooser falls back to a chain
         // that spans frames (were "nothing fits"); values from an independent
         // Python model of the formulas and the latency-first rule
-        expect_chain(48, 48, 48, 12, 16, 435);
-        expect_chain(64, 64, 64, 22, 32, 459);
-        expect_chain(96, 96, 96, 48, 48, 599);
-        expect_chain(20,  8, 20,  2,  2, 207);   // other bus counts
-        expect_chain(20, 16, 20,  4,  3, 241);
-        expect_chain( 7,  5,  3,  1,  1,  82);
-        expect_chain( 1,  1,  1,  1,  1,  28);
+        expect_chain(48, 48, 48, 12, 16, 444);
+        expect_chain(64, 64, 64, 22, 32, 468);
+        expect_chain(96, 96, 96, 48, 48, 608);
+        expect_chain(20,  8, 20,  2,  2, 216);   // other bus counts
+        expect_chain(20, 16, 20,  4,  3, 250);
+        expect_chain( 7,  5,  3,  1,  1,  91);
+        expect_chain( 1,  1,  1,  1,  1,  37);
         if (D_MAX != 255) begin
             errors++;
             $display("  D_MAX = %0d, expected 255", D_MAX);
         end
-        if (chain_latency(20, 20, 20, 4, 5) != 232) begin
+        if (chain_latency(20, 20, 20, 4, 5) != 241) begin
             errors++;
-            $display("  chain_latency(20,20,20,4,5) = %0d, expected 232",
+            $display("  chain_latency(20,20,20,4,5) = %0d, expected 241",
                      chain_latency(20, 20, 20, 4, 5));
         end
-        if (chain_bus_last(20, 20, 4) != 20 + 1 + GAIN_LAT + matrix_lat_last(20, 20, 4)) begin
+        if (ins_bus_send_last(20, 20, 4) != 136) begin                // independent model
             errors++;
-            $display("  chain_bus_last(20,20,4) = %0d", chain_bus_last(20, 20, 4));
+            $display("  ins_bus_send_last(20,20,4) = %0d, expected 136", ins_bus_send_last(20, 20, 4));
         end
         // LF1: the occupancy rule at its edges, and whole chains
         if (FRAME != 256 || D_CAP != 2048) begin
@@ -78,16 +81,16 @@ module tb_mixer_core_pkg;
         expect_fits("matrix 16x16, 1 lane, span 16", matrix_fits(16, 16, 1, 16), 0);  // samples: 257
         expect_fits("matrix 32->16, 2 lanes",        matrix_fits(32, 16, 2, 0),  1);  // depth 256
         expect_fits("matrix 32->17, 2 lanes",        matrix_fits(32, 17, 2, 0),  0);  // depth 288
-        expect_fits("chain 16/16/16, 2 + 2",  chain_fits(16, 16, 16, 2, 2), 1);       // D 299: the TB's long chain
+        expect_fits("chain 16/16/16, 2 + 2",  chain_fits(16, 16, 16, 2, 2), 1);       // D 308: the TB's long chain
         expect_fits("chain 16/16/16, 1 + 1",  chain_fits(16, 16, 16, 1, 1), 0);
         expect_fits("chain 20/20/20, 2 + 2",  chain_fits(20, 20, 20, 2, 2), 0);
         expect_fits("chain 12/12/12, 1 + 1",  chain_fits(12, 12, 12, 1, 1), 0);
         expect_fits("chain 20/20/20, 4 + 4",  chain_fits(20, 20, 20, 4, 4), 1);
         expect_fits("chain 7/5/3, lanes 0",   chain_fits(7, 5, 3, 0, 1), 0);
         expect_fits("chain 7/5/3, L2 > N_OUT", chain_fits(7, 5, 3, 1, 4), 0);
-        if (chain_latency(16, 16, 16, 2, 2) != 299) begin
+        if (chain_latency(16, 16, 16, 2, 2) != 308) begin
             errors++;
-            $display("  chain_latency(16,16,16,2,2) = %0d, expected 299", chain_latency(16, 16, 16, 2, 2));
+            $display("  chain_latency(16,16,16,2,2) = %0d, expected 308", chain_latency(16, 16, 16, 2, 2));
         end
         if (errors == 0) $display("PASS: tb_mixer_core_pkg");
         else             $display("FAIL: tb_mixer_core_pkg - %0d errors", errors);

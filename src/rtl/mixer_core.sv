@@ -4,13 +4,21 @@
 // The PCM core (docs/architecture_modules.md 1, 2, 2.1): everything between
 // the front doors, as one block with the PACKED PCM contract on both sides.
 // Inside, blocks are chained by the PCM stream contract (2.1). Since Phase 12
-// the core is the console's signal flow (decisions L1-L5):
+// the core is the console's signal flow (decisions L1-L5), and since LF8
+// (2026-10-31) three sections, each with an insert point [I] [B] [O],
+// pre-fader (mixer_core_pkg, sec. "sections"):
 //
-//   in_flat -patch2stream-> pcm_gain -> pcm_matrix -> pcm_gain -> pcm_matrix -> pcm_gain -stream2patch-> out_flat
-//   P_IN     input patch    input      input matrix   bus        bus matrix     output    output patch   P_OUT
-//   I/O ports               levels     N_IN -> N_BUS  levels     N_BUS -> N_OUT levels                 I/O ports
-//              ^              ^             ^            ^            ^            ^           ^
-//          in_patch_*      in_lvl_*     in_mx_*      bus_lvl_*    bus_mx_*     out_lvl_*   out_patch_*
+//   in_flat -patch2stream-> [I] -> pcm_gain -> pcm_matrix -> [B] -> pcm_gain -> pcm_matrix -> [O] -> pcm_gain -stream2patch-> out_flat
+//   P_IN     input patch           input      input matrix          bus        bus matrix            output    output patch   P_OUT
+//   I/O ports                      levels     N_IN -> N_BUS         levels     N_BUS -> N_OUT        levels                 I/O ports
+//              ^             ^       ^             ^         ^        ^            ^          ^        ^           ^
+//          in_patch_*   ins_in_*  in_lvl_*     in_mx_*  ins_bus_*  bus_lvl_*    bus_mx_*  ins_out_*  out_lvl_*  out_patch_*
+//
+// Insert ports: at each insert point the zone's stream leaves (send) and
+// must come back INS_LAT cycles later (return), same beats; the core checks
+// the timing (err_o) and nothing else. The insert router closes them in the
+// builds (docs/insert_architecture_proposal_2026-10-31.md), pcm_insert_loop
+// in TBs of the core alone. The core doesn't know about pools.
 //
 // Phase 15 (decision CS1): the packed sides are the I/O PORTS (P_IN in,
 // P_OUT out), and the converters at the ends are the patch: input channel k
@@ -32,16 +40,17 @@
 // Tap ports (Phase 13, decision M1): the three level stages' output streams
 // leave the core as copies (stream contract), the zones' post-DSP points the
 // OSC standard meters; the peak meters (pcm_peak) attach there, outside the
-// chain. Last beats (cycles after the strobe): tap_in = chain_in_last +
-// GAIN_LAT, tap_bus = chain_bus_last + GAIN_LAT, tap_out = D - OUT_PATCH_LAT.
+// chain. Last beats (cycles after the strobe): tap_in = sec_in_last,
+// tap_bus = sec_bus_last, tap_out = sec_out_last = D - OUT_PATCH_LAT.
 //
-// Phase 7 DSP blocks go into this chain the same way, between the converters,
-// so the platform layer and the front doors never change when the core grows.
+// DSP processors are not core stages: they are pools behind the insert
+// router (LF8), so the core, the platform layer and the front doors don't
+// change when a new processor type arrives.
 // (Phase 9, P9.A4: the core was pack2stream -> pcm_matrix -> stream2pack.)
 //
 // Timing: in_flat is captured on the strobe (frame_i). out_flat changes on one
 // edge, D = mixer_core_pkg::chain_latency(N_IN, N_BUS, N_OUT, L1, L2) cycles
-// after the strobe (20/20/20 on 4 + 4 lanes: 251), valid_o pulsing on that
+// after the strobe (20/20/20 on 4 + 5 lanes: 241), valid_o pulsing on that
 // edge's cycle. L1/L2 default to the package's chooser (the fewest lanes with
 // D <= D_MAX); the core refuses to elaborate past D_MAX. err_o pulses on a
 // malformed internal stream (never expected; for a status counter).
@@ -124,7 +133,31 @@ module mixer_core
     output logic [SW-1:0]        tap_bus_data,
     output logic                 tap_out_valid,
     output logic [CWO-1:0]       tap_out_ch,
-    output logic [SW-1:0]        tap_out_data
+    output logic [SW-1:0]        tap_out_data,
+
+    // insert ports (LF8, insert architecture 2026-10-31): each zone's stream
+    // leaves at its insert point (send) and must come back (return) exactly
+    // INS_LAT cycles later, same channels, same timing; the content is the
+    // closer's (insert_router, or pcm_insert_loop). A return off that timing
+    // pulses err_o.
+    output logic                 ins_in_send_valid,
+    output logic [CWI-1:0]       ins_in_send_ch,
+    output logic [SW-1:0]        ins_in_send_data,
+    input  logic                 ins_in_ret_valid,
+    input  logic [CWI-1:0]       ins_in_ret_ch,
+    input  logic [SW-1:0]        ins_in_ret_data,
+    output logic                 ins_bus_send_valid,
+    output logic [CWB-1:0]       ins_bus_send_ch,
+    output logic [SW-1:0]        ins_bus_send_data,
+    input  logic                 ins_bus_ret_valid,
+    input  logic [CWB-1:0]       ins_bus_ret_ch,
+    input  logic [SW-1:0]        ins_bus_ret_data,
+    output logic                 ins_out_send_valid,
+    output logic [CWO-1:0]       ins_out_send_ch,
+    output logic [SW-1:0]        ins_out_send_data,
+    input  logic                 ins_out_ret_valid,
+    input  logic [CWO-1:0]       ins_out_ret_ch,
+    input  logic [SW-1:0]        ins_out_ret_data
 );
 
     localparam int D = chain_latency(N_IN, N_BUS, N_OUT, L1, L2);
@@ -133,26 +166,43 @@ module mixer_core
         if (L1 < 1 || L2 < 1)
             $error("mixer_core: %0d -> %0d -> %0d does not fit the frame budget",
                    N_IN, N_BUS, N_OUT);
+        else if (INS_LAT < 2)
+            $error("mixer_core: the insert check below needs INS_LAT >= 2 (%0d)", INS_LAT);
         else if (!chain_fits(N_IN, N_BUS, N_OUT, L1, L2))
             $error("mixer_core: lanes %0d + %0d don't keep up with the frame rate (D = %0d; mixer_core_pkg::chain_fits)",
                    L1, L2, D);
     endgenerate
 
-    // ----- streams between the blocks (a..f, in chain order) -----
+    // ----- streams between the blocks (a..f, in chain order; ai/ci/ei are
+    //       the insert points' returns) -----
     logic           a_valid, b_valid, c_valid, d_valid, e_valid, f_valid;
     logic [CWI-1:0] a_ch, b_ch;
     logic [CWB-1:0] c_ch, d_ch;
     logic [CWO-1:0] e_ch, f_ch;
     logic [SW-1:0]  a_data, b_data, c_data, d_data, e_data, f_data;
+    logic           ai_valid, ci_valid, ei_valid;
+    logic [CWI-1:0] ai_ch;
+    logic [CWB-1:0] ci_ch;
+    logic [CWO-1:0] ei_ch;
+    logic [SW-1:0]  ai_data, ci_data, ei_data;
 
+    // ===== section: inputs =====
     pcm_patch2stream #(.P (P_IN), .N (N_IN), .SW (SW)) u_in (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame_i), .in_flat (in_flat),
         .coef_addr (in_patch_addr), .coef_swap (in_patch_swap), .coef_data (in_patch_data),
         .s_valid (a_valid), .s_ch (a_ch), .s_data (a_data));
 
+    // insert point [I]
+    assign ins_in_send_valid = a_valid;
+    assign ins_in_send_ch    = a_ch;
+    assign ins_in_send_data  = a_data;
+    assign ai_valid = ins_in_ret_valid;
+    assign ai_ch    = ins_in_ret_ch;
+    assign ai_data  = ins_in_ret_data;
+
     pcm_gain #(.N (N_IN), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_in_lvl (
         .mclk (mclk), .rst_n (rst_n),
-        .in_valid (a_valid), .in_ch (a_ch), .in_data (a_data),
+        .in_valid (ai_valid), .in_ch (ai_ch), .in_data (ai_data),
         .coef_addr (in_lvl_addr), .coef_rd (in_lvl_rd), .coef_swap (in_lvl_swap), .coef_data (in_lvl_data),
         .out_valid (b_valid), .out_ch (b_ch), .out_data (b_data));
 
@@ -165,9 +215,17 @@ module mixer_core
         .coef_addr (in_mx_addr), .coef_rd (in_mx_rd), .coef_swap (in_mx_swap), .coef_data (in_mx_data),
         .out_valid (c_valid), .out_ch (c_ch), .out_data (c_data));
 
+    // insert point [B]
+    assign ins_bus_send_valid = c_valid;
+    assign ins_bus_send_ch    = c_ch;
+    assign ins_bus_send_data  = c_data;
+    assign ci_valid = ins_bus_ret_valid;
+    assign ci_ch    = ins_bus_ret_ch;
+    assign ci_data  = ins_bus_ret_data;
+
     pcm_gain #(.N (N_BUS), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_bus_lvl (
         .mclk (mclk), .rst_n (rst_n),
-        .in_valid (c_valid), .in_ch (c_ch), .in_data (c_data),
+        .in_valid (ci_valid), .in_ch (ci_ch), .in_data (ci_data),
         .coef_addr (bus_lvl_addr), .coef_rd (bus_lvl_rd), .coef_swap (bus_lvl_swap), .coef_data (bus_lvl_data),
         .out_valid (d_valid), .out_ch (d_ch), .out_data (d_data));
 
@@ -180,9 +238,17 @@ module mixer_core
         .coef_addr (bus_mx_addr), .coef_rd (bus_mx_rd), .coef_swap (bus_mx_swap), .coef_data (bus_mx_data),
         .out_valid (e_valid), .out_ch (e_ch), .out_data (e_data));
 
+    // insert point [O]
+    assign ins_out_send_valid = e_valid;
+    assign ins_out_send_ch    = e_ch;
+    assign ins_out_send_data  = e_data;
+    assign ei_valid = ins_out_ret_valid;
+    assign ei_ch    = ins_out_ret_ch;
+    assign ei_data  = ins_out_ret_data;
+
     pcm_gain #(.N (N_OUT), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_out_lvl (
         .mclk (mclk), .rst_n (rst_n),
-        .in_valid (e_valid), .in_ch (e_ch), .in_data (e_data),
+        .in_valid (ei_valid), .in_ch (ei_ch), .in_data (ei_data),
         .coef_addr (out_lvl_addr), .coef_rd (out_lvl_rd), .coef_swap (out_lvl_swap), .coef_data (out_lvl_data),
         .out_valid (f_valid), .out_ch (f_ch), .out_data (f_data));
 
@@ -208,10 +274,37 @@ module mixer_core
     assign tap_out_ch    = f_ch;
     assign tap_out_data  = f_data;
 
+    logic patch_err;
     pcm_stream2patch #(.N (N_OUT), .P (P_OUT), .SW (SW)) u_out (
         .mclk (mclk), .rst_n (rst_n),
         .s_valid (f_valid), .s_ch (f_ch), .s_data (f_data),
         .coef_addr (out_patch_addr), .coef_swap (out_patch_swap), .coef_data (out_patch_data),
-        .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o));
+        .out_flat (out_flat), .valid_o (valid_o), .err_o (patch_err));
+
+    // ----- insert returns on time: the same beats, INS_LAT cycles later -----
+    // (the sections' arithmetic, and so every later block, relies on it)
+    logic [INS_LAT-1:0]   iv_d, bv_d, ov_d;
+    logic [CWI-1:0]       ic_d [INS_LAT];
+    logic [CWB-1:0]       bc_d [INS_LAT];
+    logic [CWO-1:0]       oc_d [INS_LAT];
+    logic                 ins_err;
+    always_ff @(posedge mclk) begin
+        if (!rst_n) begin
+            iv_d <= '0; bv_d <= '0; ov_d <= '0;
+            ins_err <= 1'b0;
+        end else begin
+            iv_d <= {iv_d[INS_LAT-2:0], a_valid};
+            bv_d <= {bv_d[INS_LAT-2:0], c_valid};
+            ov_d <= {ov_d[INS_LAT-2:0], e_valid};
+            ins_err <= (ai_valid != iv_d[INS_LAT-1]) || (ai_valid && ai_ch != ic_d[INS_LAT-1])
+                    || (ci_valid != bv_d[INS_LAT-1]) || (ci_valid && ci_ch != bc_d[INS_LAT-1])
+                    || (ei_valid != ov_d[INS_LAT-1]) || (ei_valid && ei_ch != oc_d[INS_LAT-1]);
+        end
+        ic_d[0] <= a_ch;  bc_d[0] <= c_ch;  oc_d[0] <= e_ch;
+        for (int j = 1; j < INS_LAT; j++) begin
+            ic_d[j] <= ic_d[j-1];  bc_d[j] <= bc_d[j-1];  oc_d[j] <= oc_d[j-1];
+        end
+    end
+    assign err_o = patch_err || ins_err;
 
 endmodule

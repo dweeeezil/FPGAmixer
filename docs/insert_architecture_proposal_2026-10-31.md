@@ -2,7 +2,7 @@
 
 **Context:** the library foundation's step 4 was to put a parametric EQ on the input channels as a fixed core stage (`library_foundation_proposal_2026-10-10.md` §13). **The user (2026-10-31):** *"DSP modules should exist off to the side, and channels should be routed through them when the controller 'adds' them to a channel."* Every insert pre-fader; any channel, any zone (inputs, buses, outputs); any order the user chooses; several of the same kind on one channel ("if a user wants two EQs, that should be possible"); **32 channels' worth per module type**; and when a type has no free slot, the server answers the controller with an error. This also does LF8 ("describe the chain as sections"), which the user asked to do first.
 
-**State:** Q1–Q4 decided (§10). Step plan (§11) for the user's review. Nothing built. The EQ prototype (4a) is unaffected: the EQ becomes the first pool.
+**State:** Q1–Q4 decided (§10). Step plan §11 decided and **built in simulation, Vivado-checked (§11.6)**; not flashed. Next: the server (§7). The EQ prototype (4a) is unaffected: the EQ becomes the first pool.
 
 ---
 
@@ -169,3 +169,38 @@ The block design gets two windows (router, gain pool) on the second SmartConnect
 - **Q2, the router outside the core:** the core only exports a send/return port per zone, and the router and pools sit in the platform layer. Recommended (the core stays generic, `modularity-first`). The alternative, the router inside `mixer_core`, saves the ports but makes the core know about pools.
 - **Q3, one router window, one COMMIT:** recommended, so a multi-step edit never shows half-done. The alternative is a window per table, which is smaller but needs ordering rules in the server.
 - **Q4, at the end of this step:** a Vivado synthesis + timing check (as for step 3; no image, nothing to flash) — recommended — or go straight on to the EQ and check both together.
+
+**Decided (the user, 2026-10-31):** Q1 K = 8 (9 frames per insert point, 0.56 ms); Q2 the router outside the core; Q3 one router window, one COMMIT; Q4 a Vivado synthesis + timing check at the end of the step.
+
+### 11.6 Built (2026-10-31, simulation + Vivado check; not flashed, no image)
+
+**What was built, as planned, plus one library change:**
+- `mixer_core`: three insert port pairs, its check of the return timing (`err_o`); `mixer_core_pkg`: `INS_LAT` = 3 and the sections (`ins_*_send_last`, `sec_*_last`); `pcm_insert_loop`.
+- `insert_router` + `insert_router_pkg` + `insert_router_regs_axil`; in `fpgamixer_top` the router, the gain pool (`lib_template` at 32 slots, its window, a `coef_smooth`), and in the block design `M_AXI_INSERT` 0x8000_F000 and `M_AXI_GPOOL` 0x8001_0000 on `ctrl_smc2` (M02, M03; link #3's status moves to M04, same address). Builds without the PS: tables all 0 (no inserts), the pool at identity.
+- **Library (`HDL-DSP-Library` 1ea7926, local):** `coef_bank_ram` gets `PORTS` read ports on one handshake. Found while planning the router: separate banks with one COMMIT could swap a frame apart (each synchronizer resolves on its own), which would break "an edit lands whole". Default 1, so every other user is unchanged.
+
+**Numbers:** 20/20/20 now 4 + 5 lanes, D = 241 (+1 DSP, as predicted). Every channel 9 frames late at every insert point (0.56 ms in total).
+
+**Checked:**
+- FPGAmixer regression **18 / 18** (the 17, plus `router`); the library's **3 / 3** (`coefram` with a 3-port case: every port must see the same bank in every frame).
+- `tb_insert_router`, both sizes (5/4/3, K 3, 6 slots; 20/20/20, K 8, 32 slots; two pools each), against an exact model: front add and front remove **bit-exact on every channel**; mid-chain add **only that channel changes, in 2 frames**, then bit-exact again.
+- `tb_top_windows`: the two new windows (ID, CONFIG), and real inserts through them: input 9 at 0.5, bus 10 at 0.25, a chain of two on input 11, output 12, all exact.
+- **Mutants:**
+  - router 13 / 13. The first run left two alive, age K and kind 3 read as a zone: a TB gap (random unused slots rarely drew them). Fixed probe sources on the reserved slots now cover both.
+  - core/top 4 / 4 (`lf8_core_top.json`).
+  - library bank ports 4 / 4 (`coef_bank_ports.json`).
+  - Two kills are weak: the loop-back timing mutant by a TB timeout (not proven to be the core's `err_o` check), the bank's wrong-lane mutant at elaboration.
+- **Vivado (`lf8chk`):** WNS 4.403 ns, 0 critical warnings, methodology PASS. Against `lf3chk`:
+
+| | lf3chk | lf8chk | |
+|---|---|---|---|
+| logic LUTs | 21,643 | 22,377 | +734 |
+| LUT-RAM | 3,424 | 3,690 | +266 |
+| registers | 37,284 | 38,267 | +983 |
+| BRAM tiles | 7.5 | 13.5 | +6 (the history copies, the 4-port table bank, the pool's bank) |
+| DSPs | 11 | 13 | +2 (one matrix lane, the gain pool) |
+
+**Not done:**
+- the server (allocation, the no-free-slot error, persistence) and the OSC design (§7);
+- an image and the bench;
+- pushing (the library first: FPGAmixer's submodule points at the library's local commit).

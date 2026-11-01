@@ -25,10 +25,13 @@ $ls   = "$root\src\lib\sim"
 
 $mixcore = @("pcm_matrix_pkg","mixer_core_pkg","pcm_pack2stream","pcm_stream2pack",
              "pcm_patch2stream","pcm_stream2patch","pcm_matrix",
-             "pcm_gain","mixer_core") |
+             "pcm_gain","pcm_insert_loop","mixer_core") |
            ForEach-Object { "$rtl\$_.sv" }
 $mxsim   = "$sim\matrix_packed_sim.sv"   # the single matrix between the converters (matrix TBs)
-$coreRtl = $mixcore + @("$lr\coef_flat_reader.sv","$lr\coef_smooth.sv") + (@(
+$lt      = "$root\src\lib\template"   # the template block: the gain pool since LF8
+$coreRtl = $mixcore + @("$lr\coef_flat_reader.sv","$lr\coef_smooth.sv",
+                        "$rtl\insert_router_pkg.sv","$rtl\insert_router.sv",
+                        "$lt\lib_template_pkg.sv","$lt\lib_template.sv") + (@(
                          "reset_sync","audio_clocking","fpgamixer_top") |
                        ForEach-Object { "$rtl\$_.sv" })
 
@@ -50,7 +53,8 @@ $targets = [ordered]@{
   mclk        = @("tb_media_clock_meter", "", @("$rtl\media_clock_meter.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\media_clock_stat_regs.sv","$sim\tb_media_clock_meter.sv"))
   steer       = @("tb_media_clock_steer", "", @("$rtl\axil_reg_window.sv","$rtl\media_clock_ctrl_regs.sv","$rtl\media_clock_steer.sv","$rtl\media_clock_meter.sv","$sim\tb_media_clock_steer.sv"))
   linkstat    = @("tb_link_stat_regs",   "", @("$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\pcm_link_stat_regs.sv","$sim\tb_link_stat_regs.sv"))
-  topwin      = @("tb_top_windows",      "INCLUDE_PS", ($coreRtl + @("$lr\coef_bank_ram.sv","$lr\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$rtl\patch_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
+  router      = @("tb_insert_router",    "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$rtl\insert_router_pkg.sv","$rtl\insert_router.sv","$lr\coef_bank_ram.sv","$sim\tb_insert_router.sv"))
+  topwin      = @("tb_top_windows",      "INCLUDE_PS", ($coreRtl + @("$lr\coef_bank_ram.sv","$lr\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$rtl\patch_regs_axil.sv","$rtl\insert_router_regs_axil.sv","$lt\lib_template_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
 }
 
 function Invoke-Limited([string]$dir, [scriptblock]$block, [object[]]$argsList, [int]$seconds) {

@@ -128,6 +128,11 @@ module core_harness
     logic [CWI-1:0] ti_c;  logic [CWB-1:0] tb_c;  logic [CWO-1:0] to_c;
     logic [SW-1:0]  ti_d, tb_d, to_d;
 
+    // insert ports (LF8)
+    logic is_v, ir_v, bs_v, br_v, os_v, or_v;
+    logic [CWI-1:0] is_c, ir_c;  logic [CWB-1:0] bs_c, br_c;  logic [CWO-1:0] os_c, or_c;
+    logic [SW-1:0]  is_d, ir_d, bs_d, br_d, os_d, or_d;
+
     mixer_core #(.N_IN (N_IN), .N_BUS (N_BUS), .N_OUT (N_OUT), .P_IN (P_IN), .P_OUT (P_OUT),
                  .SW (SW), .GW (GW), .GF (GF), .L1 (L1), .L2 (L2)) dut (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
@@ -144,7 +149,24 @@ module core_harness
         .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data),
         .tap_in_valid (ti_v),  .tap_in_ch (ti_c),  .tap_in_data (ti_d),
         .tap_bus_valid (tb_v), .tap_bus_ch (tb_c), .tap_bus_data (tb_d),
-        .tap_out_valid (to_v), .tap_out_ch (to_c), .tap_out_data (to_d));
+        .tap_out_valid (to_v), .tap_out_ch (to_c), .tap_out_data (to_d),
+        .ins_in_send_valid  (is_v), .ins_in_send_ch  (is_c), .ins_in_send_data  (is_d),
+        .ins_in_ret_valid   (ir_v), .ins_in_ret_ch   (ir_c), .ins_in_ret_data   (ir_d),
+        .ins_bus_send_valid (bs_v), .ins_bus_send_ch (bs_c), .ins_bus_send_data (bs_d),
+        .ins_bus_ret_valid  (br_v), .ins_bus_ret_ch  (br_c), .ins_bus_ret_data  (br_d),
+        .ins_out_send_valid (os_v), .ins_out_send_ch (os_c), .ins_out_send_data (os_d),
+        .ins_out_ret_valid  (or_v), .ins_out_ret_ch  (or_c), .ins_out_ret_data  (or_d));
+
+    // The insert points: nothing inserted (the router has its own TB)
+    pcm_insert_loop #(.N (N_IN),  .SW (SW)) u_loop_i (.mclk, .rst_n,
+        .send_valid (is_v), .send_ch (is_c), .send_data (is_d),
+        .ret_valid  (ir_v), .ret_ch  (ir_c), .ret_data  (ir_d));
+    pcm_insert_loop #(.N (N_BUS), .SW (SW)) u_loop_b (.mclk, .rst_n,
+        .send_valid (bs_v), .send_ch (bs_c), .send_data (bs_d),
+        .ret_valid  (br_v), .ret_ch  (br_c), .ret_data  (br_d));
+    pcm_insert_loop #(.N (N_OUT), .SW (SW)) u_loop_o (.mclk, .rst_n,
+        .send_valid (os_v), .send_ch (os_c), .send_data (os_d),
+        .ret_valid  (or_v), .ret_ch  (or_c), .ret_data  (or_d));
 
     // The banks: latched on their block's swap pulse, as coef_bank_ram is.
     coef_flat_reader #(.W (GW), .N_ROWS (N_IN),  .ROW_LEN (1),     .LANES (1),  .LATCH (1)) u_c0 (
@@ -164,17 +186,18 @@ module core_harness
 
     // ----- stream checks: frames may cross strobes (SPANS) -----
     int mon_err_b, mon_frames_b, mon_err_o, mon_frames_o;
-    localparam int BUS_LAST = chain_bus_last(N_IN, N_BUS, L1);
+    localparam int BUS_LAST = ins_bus_send_last(N_IN, N_BUS, L1);   // the input matrix's
     pcm_stream_monitor #(.N (N_BUS),
-                         .FIRST_BEAT (chain_in_last(N_IN) + GAIN_LAT + matrix_lat_first(N_IN)),
+                         .FIRST_BEAT (sec_in_last(N_IN) + matrix_lat_first(N_IN)),
                          .LAST_BEAT  (BUS_LAST), .SPANS (1'b1), .FRAME (FRAME),
                          .NAME ("buses")) u_mon_b (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame),
         .s_valid (dut.c_valid), .s_ch (dut.c_ch),
         .errors (mon_err_b), .frames (mon_frames_b));
     pcm_stream_monitor #(.N (N_OUT),
-                         .FIRST_BEAT (BUS_LAST + GAIN_LAT + matrix_lat_first(N_BUS) + GAIN_LAT),
-                         .LAST_BEAT  (chain_out_last(N_IN, N_BUS, N_OUT, L1, L2) + GAIN_LAT),
+                         .FIRST_BEAT (sec_bus_last(N_IN, N_BUS, L1) + matrix_lat_first(N_BUS)
+                                      + INS_LAT + GAIN_LAT),
+                         .LAST_BEAT  (sec_out_last(N_IN, N_BUS, N_OUT, L1, L2)),
                          .SPANS (1'b1), .FRAME (FRAME), .NAME ("outputs")) u_mon_o (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame),
         .s_valid (to_v), .s_ch (to_c),                    // the output tap = the output levels' stream
@@ -182,12 +205,12 @@ module core_harness
 
     // the other two taps: the stream contract at their stated last beats
     int mon_err_ti, mon_frames_ti, mon_err_tb, mon_frames_tb;
-    pcm_stream_monitor #(.N (N_IN), .FIRST_BEAT (1 + IN_PATCH_LAT + GAIN_LAT),
-                         .LAST_BEAT (chain_in_last(N_IN) + GAIN_LAT),
+    pcm_stream_monitor #(.N (N_IN), .FIRST_BEAT (1 + IN_PATCH_LAT + INS_LAT + GAIN_LAT),
+                         .LAST_BEAT (sec_in_last(N_IN)),
                          .CONTIGUOUS (1'b1), .SPANS (1'b1), .FRAME (FRAME), .NAME ("tap in")) u_mon_ti (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (ti_v), .s_ch (ti_c),
         .errors (mon_err_ti), .frames (mon_frames_ti));
-    pcm_stream_monitor #(.N (N_BUS), .LAST_BEAT (BUS_LAST + GAIN_LAT), .SPANS (1'b1), .FRAME (FRAME),
+    pcm_stream_monitor #(.N (N_BUS), .LAST_BEAT (sec_bus_last(N_IN, N_BUS, L1)), .SPANS (1'b1), .FRAME (FRAME),
                          .NAME ("tap bus")) u_mon_tb (
         .clk (mclk), .rst_n (rst_n), .frame_i (frame), .s_valid (tb_v), .s_ch (tb_c),
         .errors (mon_err_tb), .frames (mon_frames_tb));

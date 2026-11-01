@@ -132,8 +132,11 @@ foreach d {src/rtl src/sim src/lib/rtl src/lib/sim constraints scripts} {
 
 # ------ Gather sources ------
 # The library's primitives (submodule HDL-DSP-Library at src/lib, library
-# step 3) are RTL like ours; its template block and its TBs stay out.
-set rtl_files [concat [glob -nocomplain src/rtl/*.sv] [glob -nocomplain src/lib/rtl/*.sv]]
+# step 3) are RTL like ours; its TBs stay out. Since LF8 (2026-10-31) the
+# template block is RTL too: it is the gain pool (lib_template*, not its TB).
+set rtl_files [concat [glob -nocomplain src/rtl/*.sv] [glob -nocomplain src/lib/rtl/*.sv] \
+                      [glob -nocomplain src/lib/template/lib_template*.sv]]
+set rtl_files [lsearch -all -inline -not -glob $rtl_files *tb_lib_template.sv]
 
 # Sim files: everything in src/sim (and the library's sim/) EXCEPT the
 # sim-only IP stub.
@@ -720,7 +723,7 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     set smc2 [create_bd_cell -type ip \
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc2]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {2 + ($include_link3 ? 1 : 0)}]] $smc2
+        CONFIG.NUM_MI [expr {4 + ($include_link3 ? 1 : 0)}]] $smc2
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc2/aclk]
     connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $smc2/aresetn]
     connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] \
@@ -728,7 +731,9 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     puts "INFO: ctrl_smc2 on ctrl_smc [format "M%02d" $mi]"
     incr mi
 
-    set ports2 {M_AXI_INPATCH 0x8000D000 M_AXI_OUTPATCH 0x8000E000}
+    # LF8 (2026-10-31): the insert router's tables and the gain pool
+    set ports2 {M_AXI_INPATCH 0x8000D000 M_AXI_OUTPATCH 0x8000E000
+                M_AXI_INSERT 0x8000F000 M_AXI_GPOOL 0x80010000}
     if {$include_link3} { lappend ports2 M_AXI_LINK3STAT 0x8000C000 }
     set mi2 0
     foreach {port offset} $ports2 {

@@ -36,10 +36,17 @@
 // LF2/LF3 (2026-10-26): the gain/matrix ports are smoothed; the top runs
 // with SMOOTH_K = 2, checks wait until a change has arrived exactly, and the
 // per-window changes are first seen mid-fade (the smoothers are wired in).
+// LF8 (2026-10-31): the insert router and the gain pool. Every channel is
+// INS_FR = 3 x 9 frames later through the three insert points, so a change
+// upstream of an insert point reaches the outputs that much later (the waits
+// below add it). The router's and the pool's windows (ID, CONFIG), then real
+// inserts through them: a slot on input channel 9 (0.5), on bus 10 (0.25),
+// a chain of two slots on input channel 11 (0.5, 0.5), on output 12 (0.5).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
 module tb_top_windows;
+    import insert_router_pkg::*;
 
     localparam int N  = 20;
     localparam int SW = 24;
@@ -51,6 +58,10 @@ module tb_top_windows;
     // frames; the checks after a coefficient change wait SETTLE frames.
     localparam int TB_K   = 2;
     localparam int SETTLE = ((18 + 1) << TB_K) + 3;
+    // LF8: the top's K = 8; each insert point delays 9 frames
+    localparam int INS_K  = 8;
+    localparam int INS_PT = delay_frames(INS_K);       // per insert point
+    localparam int INS_FR = 3 * INS_PT;                // input -> output
 
     logic sysclk = 0;
     always #4 sysclk = ~sysclk;
@@ -58,7 +69,7 @@ module tb_top_windows;
     fpgamixer_top #(.SMOOTH_K (TB_K)) u_dut (.sysclk (sysclk));   // Phase 11: no Pmod pins any more
 
     task automatic settle();
-        repeat (SETTLE) @(posedge u_dut.u_core.valid_o);
+        repeat (SETTLE + INS_FR) @(posedge u_dut.u_core.valid_o);
     endtask
 
     // ----- known core inputs: in[k] = (k + 1) * 0x010000 -----
@@ -104,8 +115,10 @@ module tb_top_windows;
     localparam int CTRL = 0, BUSMX = 1, INLVL = 2, BUSLVL = 3, OUTLVL = 4;
     localparam int INMTR = 5, BUSMTR = 6, OUTMTR = 7;                    // Phase 13
     localparam int INPATCH = 8, OUTPATCH = 9;                             // Phase 15
-    string name [10] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
-                         "input meter", "bus meter", "output meter", "input patch", "output patch"};
+    localparam int INSERT = 10, GPOOL = 11;                               // LF8
+    string name [12] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
+                         "input meter", "bus meter", "output meter", "input patch", "output patch",
+                         "insert router", "gain pool"};
 
     function automatic logic [31:0] mag(input logic [SW-1:0] x);       // as pcm_peak
         if (x == 24'h800000) return 32'h7F_FFFF;
@@ -173,6 +186,10 @@ module tb_top_windows;
         rd(INPATCH,  32'h004, r); check("input patch CONFIG",  r, 32'h1414_0005);
         rd(OUTPATCH, 32'h000, r); check("output patch ID",     r, 32'h5054_5001);
         rd(OUTPATCH, 32'h004, r); check("output patch CONFIG", r, 32'h1414_0105);
+        rd(INSERT, 32'h000, r); check("insert router ID",     r, 32'h4952_5001);
+        rd(INSERT, 32'h004, r); check("insert router CONFIG", r, 32'h0820_0109);  // K 8, S 32, NP 1, 9 frames
+        rd(GPOOL,  32'h000, r); check("gain pool ID",         r, 32'h5450_5001);
+        rd(GPOOL,  32'h004, r); check("gain pool CONFIG",     r, 32'h2000_1210);  // 32 slots, Q2.16
 
         $display("-- reset state: a blank slate (CS5): nothing patched, every port silent");
         repeat (3) @(posedge u_dut.u_core.valid_o);
@@ -223,8 +240,10 @@ module tb_top_windows;
 
         // LF2/LF3: 3 frames on, the changed outputs are mid-fade: neither the
         // old value (= the input) nor the new one, so the smoothers are on
-        // these paths (input levels, both matrices, bus and output levels)
-        repeat (3) @(posedge u_dut.u_core.valid_o);
+        // these paths (input levels, both matrices, bus and output levels).
+        // LF8: the input levels' change passes two insert points on its way
+        // out (the input matrix's too), so "3 frames on" is 3 + 2 x 9.
+        repeat (3 + 2 * INS_PT) @(posedge u_dut.u_core.valid_o);
         @(negedge u_dut.mclk);
         for (int k = B; k <= B + 2; k++)
             check($sformatf("out%0d mid-fade after 3 frames", k),
@@ -258,7 +277,7 @@ module tb_top_windows;
         commit(INPATCH); commit(OUTPATCH);
         exp_out[2]   = stim[13*SW +: SW];               // channel B+3, fed by port 13
         exp_out[B+3] = '0;                              // no channel names port B+3
-        repeat (3) @(posedge u_dut.u_core.valid_o);
+        repeat (3 + INS_FR) @(posedge u_dut.u_core.valid_o);   // the input patch: before all three
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("repatched port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
@@ -270,6 +289,36 @@ module tb_top_windows;
         rd(BUSMX,  mx(B+1, B), r);  check("bus matrix B+1<-B", r, 32'h0001_0000);
         rd(OUTLVL, lv(B+1), r);     check("output level B+1", r, 32'h0000_8000);
         rd(CTRL,   mx(0, 0), r);    check("input matrix 0<-0 off at reset (H5)", r, 32'h0);
+
+        $display("-- inserts (LF8): the gain pool on all three zones, and a chain of two");
+        // table entry k at 0x100 + 4k: RETURN inputs 0..19, buses 20..39,
+        // outputs 40..59, then the gain pool's SOURCE slots 60..91
+        wr(GPOOL, lv(0), 32'h0000_8000);                // slot 0: 0.5
+        wr(GPOOL, lv(1), 32'h0000_4000);                // slot 1: 0.25
+        wr(GPOOL, lv(2), 32'h0000_8000);                // slots 2, 3: 0.5 each
+        wr(GPOOL, lv(3), 32'h0000_8000);
+        wr(GPOOL, lv(4), 32'h0000_8000);                // slot 4: 0.5
+        commit(GPOOL);
+        wr(INSERT, lv(60 + 0), 32'(ent_zone(ZONE_IN,  9,  head_age(INS_K, 1))));  // in 9 -> slot 0
+        wr(INSERT, lv(9),      32'(ent_slot(0, 0)));
+        wr(INSERT, lv(60 + 1), 32'(ent_zone(ZONE_BUS, 10, head_age(INS_K, 1))));  // bus 10 -> slot 1
+        wr(INSERT, lv(20 + 10), 32'(ent_slot(0, 1)));
+        wr(INSERT, lv(60 + 2), 32'(ent_zone(ZONE_IN,  11, head_age(INS_K, 2))));  // in 11 -> 2 -> 3
+        wr(INSERT, lv(60 + 3), 32'(ent_slot(0, 2)));
+        wr(INSERT, lv(11),     32'(ent_slot(0, 3)));
+        wr(INSERT, lv(60 + 4), 32'(ent_zone(ZONE_OUT, 12, head_age(INS_K, 1))));  // out 12 -> slot 4
+        wr(INSERT, lv(40 + 12), 32'(ent_slot(0, 4)));
+        commit(INSERT);
+        exp_out[9]  = SW'(32'h0A0000 / 2);
+        exp_out[10] = SW'(32'h0B0000 / 4);
+        exp_out[11] = SW'(32'h0C0000 / 4);
+        exp_out[12] = SW'(32'h0D0000 / 2);
+        settle();
+        @(negedge u_dut.mclk);
+        for (int k = 0; k < N; k++)
+            check($sformatf("inserted port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
+        rd(INSERT, lv(11), r);     check("RETURN in 11 reads back", r, 32'(ent_slot(0, 3)));
+        rd(INSERT, lv(60 + 2), r); check("SOURCE slot 2 reads back", r, 32'(ent_zone(ZONE_IN, 11, INS_K - 2)));
 
         check("frame strobes at 256-cycle spacing", 32'(frame_errors), 0);
         if (strobes < 10) begin $display("  FAIL only %0d frame strobes", strobes); errors++; end
@@ -283,7 +332,7 @@ module tb_top_windows;
     end
 
     initial begin
-        #10ms;
+        #25ms;                         // LF8: every settle is 27 frames longer
         $display("FAIL: tb_top_windows TIMEOUT");
         $finish;
     end

@@ -1,0 +1,26 @@
+[
+ {
+  "name": "loop-back returns valid one cycle early (the core's insert check must flag it)",
+  "file": "src/rtl/pcm_insert_loop.sv",
+  "old": "assign ret_valid = v[INS_LAT-1];",
+  "new": "assign ret_valid = v[INS_LAT-2];"
+ },
+ {
+  "name": "core: bus levels fed the send, not the return",
+  "file": "src/rtl/mixer_core.sv",
+  "old": "assign ci_data  = ins_bus_ret_data;",
+  "new": "assign ci_data  = c_data;"
+ },
+ {
+  "name": "top: gain pool bank never swaps",
+  "file": "src/rtl/fpgamixer_top.sv",
+  "old": ".mclk (mclk), .frame_i (gp_swap),\n        .coef_addr (gp_bk_addr), .coef_data (gp_bk_data)\n    );\n",
+  "new": ".mclk (mclk), .frame_i (1'b0),\n        .coef_addr (gp_bk_addr), .coef_data (gp_bk_data)\n    );\n"
+ },
+ {
+  "name": "top: router on the output zone's send as the bus zone's",
+  "file": "src/rtl/fpgamixer_top.sv",
+  "old": ".bus_send_valid (ins_bus_sv), .bus_send_ch (ins_bus_sc), .bus_send_data (ins_bus_sd),",
+  "new": ".bus_send_valid (ins_bus_sv), .bus_send_ch (ins_bus_sc), .bus_send_data (ins_out_sd),"
+ }
+]
