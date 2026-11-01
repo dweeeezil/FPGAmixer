@@ -358,3 +358,46 @@ Grouped channels are separate audio, so each member has **its own slots**. What 
 - **`docs/inserts_controller_spec_2026-10-31.md`**: the full spec for the controller, with discovery, the value, edits, parameters, groups, every error string, snapshots, audio behaviour, a checklist and a message session.
 
 **Next: the bench (12.4)**, an image with `lf8` and this server.
+
+### 12.8 Bitstream, image and bench
+
+- **Vivado** (`create_project.tcl`, `build.tcl lf8`, from the committed tree): **WNS 4.405 ns**, WHS 0.010 ns, 0 failing paths, 0 critical warnings, methodology PASS (`lf8chk` was 4.403: the same design). XSA `build/fpgamixer_lf8.xsa`.
+- **SDT** (`build/sdt`; `lf2`'s kept as `build/sdt.lf2`, on the VM `~/edf/sdt.lf2`):
+  - `psu_init.*`, `zynqmp*.dtsi` **identical** (no PS change);
+  - `pcw.dtsi` and `system-top.dts` gain exactly the two windows' nodes, `M_AXI_INSERT@8000f000` and `M_AXI_GPOOL@80010000`, and their ranges (the server's device-tree guard needs them);
+  - `pl.dtsi`: only `firmware-name`.
+- **Found while preparing the image:** the `fpgamixer-osc` recipe installs an explicit file list, and the worker's `queue` is in `python3-threading`, not core. Without the fix (1a8c8ee: `mixer_inserts.py` installed, `python3-threading` added) the board's server would have failed at startup.
+- **Image `lf8-inserts-20261101`** (`gen-machine-conf` from the new SDT, then bitbake; layer `1a8c8ee`): 15,107 tasks, all succeeded, 7 min 4 s, no warning beyond `lf2`'s. **Checked in the image:**
+  - the deployed bitstream's MD5 `e3ef0145…` = the XSA's;
+  - rootfs `VERSION` `1a8c8ee`;
+  - `mixer_inserts.py`, the server's `set_inserts` and `mixer_hw`'s `POOLS` installed;
+  - `queue.py` present (`python3-threading`);
+  - the kernel's and U-Boot's DTBs carry both new nodes;
+  - `p15e`'s fixes still there (gadget `REQ_NUMBER=8`, PAUSE off, the journal mount).
+
+  **`build/sd/lf8-inserts-20261101.wic.xz`** (`xz -t` OK, MD5 `06aa00e4…`, the same on both ends). **Not flashed.**
+
+**Bench session (the user; the board at `ssh amd-edf@10.0.0.2`). A reflash wipes the mix and the on-board snapshots, so save what's needed first.** The test path is the channel-20 path (index 19 in OSC; `hardening_status_2026-10-10.md` §6). One insert on each of its three insert points tests all three in one null run.
+
+1. **Flash, boot.** If the Ethernet LEDs go dark after a second, do a full power-off for ~10 s (the PHY's first-boot flake). Restore the mix and the channel-20 path.
+2. **Board check:** `sudo python3 /usr/lib/fpgamixer/mixer_hw.py inserts` must print:
+   - `insert router, K 8, 1 pool(s) x 32 slots, 9 frames per insert point`;
+   - no table entries;
+   - `gain pool, 32 slots, Q2.16`.
+
+   `journalctl -b -u fpgamixer-osc | grep Inserts` must show `Inserts: K 8, pools gain (32); 0 channel(s) with inserts`.
+3. **The gate** (`lf2`'s too): T1 USB → USB, AVB → AVB, USB → AVB, 5 min each; all PASS, bit-exact. Note the latencies. They should be about 27 samples more than `p15c`'s (2,760 / 2,292), but USB's varies by tens of samples per session, so this is informational.
+4. **Inserts in the path** (from the Mac: `python3 osc_console.py --host 10.0.0.2 --tcp-port 8000 --udp-port 8001`):
+   - `/mixer/set/inputChannel/19/inserts gain`, `/mixer/set/busChannel/19/inserts gain`, `/mixer/set/outputChannel/19/inserts gain`. Each is echoed with its slot (`gain:0`, `gain:1`, `gain:2`), then `…/gain_level 0.0`.
+   - `mixer_hw.py inserts` (step 2) now shows three RETURNs and three SOURCEs at age 7.
+   - **T1 USB → USB, 5 min: PASS, bit-exact.** Three identity inserts in the path, one per insert point.
+5. **By ear,** on a channel you listen to (music):
+   - insert `gain` on it;
+   - `/mixer/set/gain/<slot>/gain_level -12`: quieter, gliding, no click; back to 0;
+   - remove it (`…/inserts ""`): no click;
+   - two gains, then swap them (`"gain:a gain:b"` → `"gain:b gain:a"`): one short dip (~0.1 s), expected;
+   - `lf2`'s checks: fast fader moves, −∞ and back, a snapshot recall: no clicks.
+6. **Persistence:** `sudo reboot`, then `/mixer/get/inputChannel/19/inserts`: `"gain:0"` (and `mixer_hw.py inserts` shows the three again).
+7. **Clean up:** `""` on the three channel-20 inserts.
+
+**After a pass:** `lf8` (with `lf2`'s smoothing) replaces `p15e` as the image in use.
