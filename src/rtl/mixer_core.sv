@@ -147,13 +147,13 @@ module mixer_core
 
     pcm_patch2stream #(.P (P_IN), .N (N_IN), .SW (SW)) u_in (
         .mclk (mclk), .rst_n (rst_n), .frame_i (frame_i), .in_flat (in_flat),
-        .coef_addr (in_patch_addr), .coef_data (in_patch_data),
+        .coef_addr (in_patch_addr), .coef_swap (in_patch_swap), .coef_data (in_patch_data),
         .s_valid (a_valid), .s_ch (a_ch), .s_data (a_data));
 
     pcm_gain #(.N (N_IN), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_in_lvl (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (a_valid), .in_ch (a_ch), .in_data (a_data),
-        .coef_addr (in_lvl_addr), .coef_rd (in_lvl_rd), .coef_data (in_lvl_data),
+        .coef_addr (in_lvl_addr), .coef_rd (in_lvl_rd), .coef_swap (in_lvl_swap), .coef_data (in_lvl_data),
         .out_valid (b_valid), .out_ch (b_ch), .out_data (b_data));
 
     pcm_matrix #(
@@ -162,13 +162,13 @@ module mixer_core
     ) u_in_mx (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (b_valid), .in_ch (b_ch), .in_data (b_data),
-        .coef_addr (in_mx_addr), .coef_rd (in_mx_rd), .coef_data (in_mx_data),
+        .coef_addr (in_mx_addr), .coef_rd (in_mx_rd), .coef_swap (in_mx_swap), .coef_data (in_mx_data),
         .out_valid (c_valid), .out_ch (c_ch), .out_data (c_data));
 
     pcm_gain #(.N (N_BUS), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_bus_lvl (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (c_valid), .in_ch (c_ch), .in_data (c_data),
-        .coef_addr (bus_lvl_addr), .coef_rd (bus_lvl_rd), .coef_data (bus_lvl_data),
+        .coef_addr (bus_lvl_addr), .coef_rd (bus_lvl_rd), .coef_swap (bus_lvl_swap), .coef_data (bus_lvl_data),
         .out_valid (d_valid), .out_ch (d_ch), .out_data (d_data));
 
     pcm_matrix #(
@@ -177,30 +177,25 @@ module mixer_core
     ) u_bus_mx (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (d_valid), .in_ch (d_ch), .in_data (d_data),
-        .coef_addr (bus_mx_addr), .coef_rd (bus_mx_rd), .coef_data (bus_mx_data),
+        .coef_addr (bus_mx_addr), .coef_rd (bus_mx_rd), .coef_swap (bus_mx_swap), .coef_data (bus_mx_data),
         .out_valid (e_valid), .out_ch (e_ch), .out_data (e_data));
 
     pcm_gain #(.N (N_OUT), .SAMPLE_WIDTH (SW), .GAIN_WIDTH (GW), .GAIN_FRAC (GF)) u_out_lvl (
         .mclk (mclk), .rst_n (rst_n),
         .in_valid (e_valid), .in_ch (e_ch), .in_data (e_data),
-        .coef_addr (out_lvl_addr), .coef_rd (out_lvl_rd), .coef_data (out_lvl_data),
+        .coef_addr (out_lvl_addr), .coef_rd (out_lvl_rd), .coef_swap (out_lvl_swap), .coef_data (out_lvl_data),
         .out_valid (f_valid), .out_ch (f_ch), .out_data (f_data));
 
-    // ----- bank swaps (LF1): each block's bank on its input's last beat -----
-    // The read issued in that cycle still sees the old bank (coef_bank_ram),
-    // every later one the new: a pcm_gain or the output patch reads per input
-    // beat, so the next frame gets the new bank; a pcm_matrix starts its
-    // frame's reads on that edge, so that frame does (chain_fits: the previous
-    // frame's reads are done by then). Each frame sees one whole bank per
-    // block, however far down a long chain it runs. The input patch reads
-    // after the strobe that captures its frame, so its bank swaps on the strobe.
-    assign in_patch_swap  = frame_i;
-    assign in_lvl_swap    = a_valid && (a_ch == CWI'(N_IN  - 1));
-    assign in_mx_swap     = b_valid && (b_ch == CWI'(N_IN  - 1));
-    assign bus_lvl_swap   = c_valid && (c_ch == CWB'(N_BUS - 1));
-    assign bus_mx_swap    = d_valid && (d_ch == CWB'(N_BUS - 1));
-    assign out_lvl_swap   = e_valid && (e_ch == CWO'(N_OUT - 1));
-    assign out_patch_swap = f_valid && (f_ch == CWO'(N_OUT - 1));
+    // ----- bank swaps (LF1): each block states its own (coef_swap, step 3 Q2) -----
+    // The read issued in the swap cycle still sees the old bank
+    // (coef_bank_ram), every later one the new. Today every block's pulse is
+    // its input's last beat, except the input patch's (the strobe, since its
+    // reads follow it): a pcm_gain or the output patch reads per input beat, so
+    // the next frame gets the new bank; a pcm_matrix starts its frame's reads
+    // on that edge, so that frame does (chain_fits: the previous frame's reads
+    // are done by then). Each frame sees one whole bank per block, however far
+    // down a long chain it runs. A block with another read schedule (an EQ,
+    // a delay) states its own; the core only wires the pulses out.
 
     // ----- taps: listen only; the chain doesn't know they exist -----
     assign tap_in_valid  = b_valid;
@@ -216,7 +211,7 @@ module mixer_core
     pcm_stream2patch #(.N (N_OUT), .P (P_OUT), .SW (SW)) u_out (
         .mclk (mclk), .rst_n (rst_n),
         .s_valid (f_valid), .s_ch (f_ch), .s_data (f_data),
-        .coef_addr (out_patch_addr), .coef_data (out_patch_data),
+        .coef_addr (out_patch_addr), .coef_swap (out_patch_swap), .coef_data (out_patch_data),
         .out_flat (out_flat), .valid_o (valid_o), .err_o (err_o));
 
 endmodule

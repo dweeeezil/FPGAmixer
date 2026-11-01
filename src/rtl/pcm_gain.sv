@@ -61,6 +61,7 @@ module pcm_gain
     // ----- coefficient read port -----
     output logic [CW-1:0]             coef_addr,
     output logic                      coef_rd,     // LF2: a real read (one per channel per frame)
+    output logic                      coef_swap,   // step 3 (Q2): where this block's bank may swap
     input  logic [GAIN_WIDTH-1:0]     coef_data,
 
     // ----- output stream -----
@@ -85,6 +86,9 @@ module pcm_gain
 
     assign coef_addr = in_ch;
     assign coef_rd   = in_valid;     // coef_addr is in_ch every cycle; a beat is the real read
+    // The bank swaps on the last beat: that read still sees the old bank, the
+    // next frame's channel 0 the new (LF1; the block states it, Q2)
+    assign coef_swap = in_valid && (in_ch == CW'(N - 1));
 
     // ----- data path (no reset) -----
     logic        [SW-1:0] s1;

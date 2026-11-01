@@ -1,63 +1,39 @@
 [
  {
-  "name": "in_mx swap on the global strobe",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign in_mx_swap     = b_valid && (b_ch == CWI'(N_IN  - 1));",
-  "new": "assign in_mx_swap     = frame_i;"
+  "name": "pcm_gain swaps on its first beat",
+  "file": "src/rtl/pcm_gain.sv",
+  "old": "assign coef_swap = in_valid && (in_ch == CW'(N - 1));",
+  "new": "assign coef_swap = in_valid && (in_ch == '0);"
  },
  {
-  "name": "bus_lvl swap on the global strobe",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign bus_lvl_swap   = c_valid && (c_ch == CWB'(N_BUS - 1));",
-  "new": "assign bus_lvl_swap   = frame_i;"
+  "name": "pcm_gain never swaps",
+  "file": "src/rtl/pcm_gain.sv",
+  "old": "assign coef_swap = in_valid && (in_ch == CW'(N - 1));",
+  "new": "assign coef_swap = 1'b0;"
  },
  {
-  "name": "bus_mx swap on the global strobe",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign bus_mx_swap    = d_valid && (d_ch == CWB'(N_BUS - 1));",
-  "new": "assign bus_mx_swap    = frame_i;"
+  "name": "pcm_matrix swaps on its first input beat",
+  "file": "src/rtl/pcm_matrix.sv",
+  "old": "assign coef_swap = start;",
+  "new": "assign coef_swap = in_valid && (in_ch == '0);"
  },
  {
-  "name": "out_lvl swap on the global strobe",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign out_lvl_swap   = e_valid && (e_ch == CWO'(N_OUT - 1));",
-  "new": "assign out_lvl_swap   = frame_i;"
+  "name": "pcm_matrix swaps on every input beat",
+  "file": "src/rtl/pcm_matrix.sv",
+  "old": "assign coef_swap = start;",
+  "new": "assign coef_swap = in_valid;"
  },
  {
-  "name": "out_patch swap on the global strobe",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign out_patch_swap = f_valid && (f_ch == CWO'(N_OUT - 1));",
-  "new": "assign out_patch_swap = frame_i;"
+  "name": "output patch swaps on its first beat",
+  "file": "src/rtl/pcm_stream2patch.sv",
+  "old": "assign coef_swap = s_valid && (s_ch == CW'(N - 1));",
+  "new": "assign coef_swap = s_valid && (s_ch == '0);"
  },
  {
-  "name": "in_lvl swap on the first beat",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign in_lvl_swap    = a_valid && (a_ch == CWI'(N_IN  - 1));",
-  "new": "assign in_lvl_swap    = a_valid && (a_ch == '0);"
- },
- {
-  "name": "in_mx swap on the first input beat",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign in_mx_swap     = b_valid && (b_ch == CWI'(N_IN  - 1));",
-  "new": "assign in_mx_swap     = b_valid && (b_ch == '0);"
- },
- {
-  "name": "out_patch swap on the first beat",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign out_patch_swap = f_valid && (f_ch == CWO'(N_OUT - 1));",
-  "new": "assign out_patch_swap = f_valid && (f_ch == '0);"
- },
- {
-  "name": "in_patch swap late (first input-level beat)",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign in_patch_swap  = frame_i;",
-  "new": "assign in_patch_swap  = a_valid && (a_ch == '0);"
- },
- {
-  "name": "EXPECTED EQUIVALENT: in_lvl swap on the global strobe",
-  "file": "src/rtl/mixer_core.sv",
-  "old": "assign in_lvl_swap    = a_valid && (a_ch == CWI'(N_IN  - 1));",
-  "new": "assign in_lvl_swap    = frame_i;"
+  "name": "input patch swaps late (its first beat)",
+  "file": "src/rtl/pcm_patch2stream.sv",
+  "old": "assign coef_swap = frame_i;",
+  "new": "assign coef_swap = s_valid && (s_ch == '0);"
  },
  {
   "name": "flat reader LATCH follows the vector live",

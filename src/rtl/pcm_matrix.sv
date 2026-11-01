@@ -85,6 +85,7 @@ module pcm_matrix
     // ----- coefficient read port -----
     output logic [AW-1:0]             coef_addr,
     output logic                      coef_rd,     // LF2: a real read (each word once per frame)
+    output logic                      coef_swap,   // step 3 (Q2): where this block's bank may swap
     input  logic [LANES*GAIN_WIDTH-1:0] coef_data,
 
     // ----- output stream -----
@@ -159,6 +160,9 @@ module pcm_matrix
 
     assign coef_addr = t;
     assign coef_rd   = run;          // t is stale between frames; a step is the real read
+    // The bank swaps where a frame's reads begin, on the last input beat
+    // (start): the frame's reads all follow it (LF1; the block states it, Q2)
+    assign coef_swap = start;
 
     // Stage 1: the sample read and the coefficient read (coef_data arrives
     // on this same edge), plus the step's control.

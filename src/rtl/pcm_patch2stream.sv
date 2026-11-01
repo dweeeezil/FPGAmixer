@@ -48,6 +48,7 @@ module pcm_patch2stream #(
     input  logic [P*SW-1:0] in_flat,    // packed: port p = [p*SW +: SW], signed
     // ----- source table read port -----
     output logic [CW-1:0]   coef_addr,
+    output logic            coef_swap,  // step 3 (Q2): where the table's bank may swap
     input  logic [PW-1:0]   coef_data,
     // ----- output stream -----
     output logic            s_valid,
@@ -72,6 +73,9 @@ module pcm_patch2stream #(
     logic [CW-1:0]   c1;        // ... for this channel
 
     assign coef_addr = rd_idx[CW-1:0];
+    // The reads of a frame start after the strobe that captures it, so the
+    // table swaps on the strobe (a read in that cycle still sees the old one)
+    assign coef_swap = frame_i;
 
     // The port a table entry names, or silence.
     function automatic logic [SW-1:0] pick(input logic [P*SW-1:0] ports,

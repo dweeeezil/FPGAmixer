@@ -54,6 +54,7 @@ module pcm_stream2patch #(
     input  logic [SW-1:0]   s_data,
     // ----- destination table read port -----
     output logic [CW-1:0]   coef_addr,
+    output logic            coef_swap,  // step 3 (Q2): where the table's bank may swap
     input  logic [PW-1:0]   coef_data,
     // ----- output -----
     output logic [P*SW-1:0] out_flat,   // packed: port p = [p*SW +: SW], signed
@@ -67,6 +68,8 @@ module pcm_stream2patch #(
     endgenerate
 
     assign coef_addr = s_ch;
+    // reads per beat: the table swaps on the last beat (LF1; stated here, Q2)
+    assign coef_swap = s_valid && (s_ch == CW'(N - 1));
 
     // stage 1: the beat, waiting for its table entry
     logic          v1;
