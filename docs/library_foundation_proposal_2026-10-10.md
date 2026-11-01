@@ -183,3 +183,43 @@ The spatial processor / binauralizer is a **section** (HD7): its own zone(s), it
 5. Optional: T3, 30 min (control changes under load; the protected path stays bit-exact).
 6. Expected and harmless: at power-on the mix fades in over ~70 ms (the user's Q2).
 After a pass: `lf2` replaces `p15e`, and the OSC standard's "a recall may click" note goes.
+
+## 12. Step 3 plan: the library repo, the template block, the submodule (2026-10-31, for the user's review)
+
+**Goal:** a library block can be written, simulated and mutation-tested in `HDL-DSP-Library` on its own, and FPGAmixer uses the library at a pinned commit (decisions HD3, HD5, LF5). Nothing audible changes; FPGAmixer's 18 TBs still pass, and its bitstream would be the same logic.
+
+**What moves to the library (with their TBs), out of FPGAmixer's `src/`:**
+- the coefficient primitives `coef_bank_ram.sv` (+ `constraints/coef_bank_ram.xdc`, scoped), `coef_flat_reader.sv`, `coef_smooth.sv`, `axil_coef_window.sv`;
+- the stream checker `pcm_stream_monitor.sv` (sim);
+- `tb_coef_bank_ram.sv`, and part A of `tb_coef_smooth.sv` (the smoother alone). Part B (through `pcm_gain` / `pcm_matrix`) stays in FPGAmixer, since those blocks stay (see Q4);
+- the two contracts as the library's own documents: the stream contract (`architecture_modules.md` §2.1, LF1 form) and the coefficient contract (§3: read port, swap on the block's frame boundary, `coef_rd`, smoothing).
+
+**The library repo's layout:** `rtl/` (primitives, later blocks), `sim/` (TBs, the monitor), `constraints/`, `template/` (the template block), `scripts/` (an XSim regression and a mutation runner, the same pattern as FPGAmixer's), `docs/` (the contracts, "how to write a block"), `README.md`.
+
+**The template block (`template/`, also built and tested):** a working example block to copy: a per-channel gain-like block, `lib_template`:
+- **RTL:** stream in → stream out (the LF1 contract: channel 0 marks a frame), one coefficient read port with `coef_addr`, **`coef_rd`** and **`coef_swap`** (see Q2), a package with its latency and occupancy and the `fits` check at elaboration;
+- **binding:** `lib_template_regs_axil` (ID, CONFIG, the bank over `axil_coef_window` + `coef_bank_ram`), the same pattern as `gain_regs_axil`;
+- **TB harness:** a bit-exact model, random coefficients and audio per frame, `pcm_stream_monitor` in `SPANS` mode, banks with `LATCH`, a run at several sizes, and a mutant list;
+- **server side:** a short contract document: what a block's backend must provide in FPGAmixer's OSC server (`describe()`: zone, modules, metadata, as `mixer_hw.py`'s backends do). Implemented with the first real block (step 4), not here.
+
+**FPGAmixer's side:**
+- the library as a git submodule at `src/lib/`, pinned to a commit;
+- the moved files deleted from `src/`;
+- `create_project.tcl` also globs `src/lib/rtl/*.sv` and takes the scoped XDC from `src/lib/constraints/`;
+- `xsim_regress.ps1` and `sim.mk` point at the moved files;
+- a Vivado elaboration check that the design is unchanged (same utilization ± 0); no new bitstream;
+- the two regressions green: the library's alone, FPGAmixer's with the submodule.
+
+**Questions for the user:**
+- **Q1, the first real block (step 4), which shapes the template a little:**
+  - **EQ** (parametric, biquads per channel): the most-used processor, no sidechain, and it exercises LF4 (filter coefficients smoothed, or a crossfade where that isn't safe).
+  - **Dynamics** (compressor / gate): needs the sidechain machinery (`pcm_frame_tap`, LF6 / LF7) as well.
+  - Recommended: **EQ first**, dynamics second.
+- **Q2, who knows when a block's bank swaps:**
+  - Today the core derives it from the stream (the input's last beat), which is right for blocks that read per beat or start on the last beat.
+  - Recommended: **each block exports its own `coef_swap`** (the template's default = its input's last beat), so a block with a different read schedule (an EQ reading its coefficients mid-frame, a delay line) states it instead of the core assuming it.
+  - `pcm_gain` / `pcm_matrix` would get it too; the core then wires the blocks' pulses instead of computing them.
+- **Q3, pushing the library repo to GitHub** (`dweeeezil/HDL-DSP-Library`, empty today): I'll make the first commits locally and ask before pushing; the submodule's URL then points at that repo. **Is the repo private?** It doesn't change the work, only what is published when pushed.
+- **Q4, `pcm_gain` and `pcm_matrix`:**
+  - Recommended: **they stay in FPGAmixer for now** (they are the core's own blocks and step 1/2 just changed them); they can move to the library later, once the template has proved itself.
+  - The alternative: move them now as the first library blocks.
