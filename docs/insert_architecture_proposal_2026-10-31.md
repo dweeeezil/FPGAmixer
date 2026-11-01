@@ -2,7 +2,7 @@
 
 **Context:** the library foundation's step 4 was to put a parametric EQ on the input channels as a fixed core stage (`library_foundation_proposal_2026-10-10.md` §13). **The user (2026-10-31):** *"DSP modules should exist off to the side, and channels should be routed through them when the controller 'adds' them to a channel."* Every insert pre-fader; any channel, any zone (inputs, buses, outputs); any order the user chooses; several of the same kind on one channel ("if a user wants two EQs, that should be possible"); **32 channels' worth per module type**; and when a type has no free slot, the server answers the controller with an error. This also does LF8 ("describe the chain as sections"), which the user asked to do first.
 
-**State:** proposal, for the user's review. Nothing built. The EQ prototype (4a) is unaffected: the EQ becomes the first pool.
+**State:** Q1–Q4 decided (§10). Step plan (§11) for the user's review. Nothing built. The EQ prototype (4a) is unaffected: the EQ becomes the first pool.
 
 ---
 
@@ -113,3 +113,59 @@ The package computes the chain's latency and `chain_fits` from the sections (eac
 - **Q2, the insert latency everywhere:** with K fixed, every channel carries the K frames even when nothing is inserted anywhere. The alternative is per-zone K (e.g. fewer on outputs) at the cost of a less uniform rule. Recommended: **the same K at all three insert points**, simple and predictable.
 - **Q3, the first pool to build the machinery with:** a trivial **gain pool** (the template block) first, then the EQ. Recommended. The alternative is building the routing directly around the EQ, which is fewer steps but debugs two new things at once.
 - **Q4, edits that move a processor in time (§4):** the server dips that channel for about 30 ms while it switches. Recommended. The alternative is to accept the one-sample click. A seamless version (running the old and new chains side by side and crossfading) would need twice the slots during an edit, so it isn't proposed.
+
+## 10. Decisions (the user, 2026-10-31)
+
+| | Decision |
+|---|---|
+| Q1 | **K = 8** inserts per channel at most |
+| Q2 | **The same K at all three insert points** |
+| Q3 | **A gain pool first** to prove the machinery, then the EQ |
+| Q4 | **Mid-chain edits dip the channel** (~30 ms) while the server switches |
+
+## 11. Step plan: the core as sections, the router, a gain pool (2026-10-31, for the user's review)
+
+Simulation first, like steps 1–3. No server change: with every return "dry" (the reset state) the mix is bit-identical to today's, only later.
+
+### 11.1 The pieces
+
+| Piece | Where | What it is |
+|---|---|---|
+| **insert ports on the core** | `mixer_core.sv` | Each zone's stream leaves the core at its insert point (**send**) and comes back (**return**) a stated INS_LAT cycles later (about 3). The core doesn't know what's out there. A plain loop-back (`pcm_insert_loop`) closes the ports in builds and TBs without a router. |
+| **sections (LF8)** | `mixer_core_pkg.sv` | The chain arithmetic grouped as the three sections of §6, each section's stages and latency listed once; the insert stages are part of it. `chain_latency` and `chain_fits` are built from the sections. |
+| **the router** | `insert_router.sv` + `insert_router_pkg.sv` (FPGAmixer: mixer architecture, not a DSP block) | The three history buffers, each pool's input stream (slot 0..31, one per cycle, from each slot's SOURCE), each pool's output buffer (double, by frame), and the three returns. Parameters: K, the slots per pool (32), the number of pools. |
+| **router registers** | `insert_router_regs_axil.sv` | One window for **every** table (all SOURCE entries, all RETURN entries), shadow + active, **one COMMIT**, swapping at the strobe: a whole edit lands in one frame. Read-only words state K, the slots, the pools and each pool's type ID, so the server learns the hardware instead of hard-coding it. |
+| **the gain pool** | `fpgamixer_top.sv` | The library's template block at N = 32, as it is: its bank (+ smoother) and its register window. Its identity (gain 1.0) is bit-exact. No new block RTL. |
+
+A pool is an ordinary library block: it gets a stream of 32 channels (its slots) once per frame and returns one. So any block written to the stream contract can become a pool. **The one new rule for a pool block:** it must finish its 32 slots within one frame (the router checks this at elaboration from the block's `occupancy`).
+
+### 11.2 Timing, exactly
+
+The pools run once per frame, right after the strobe. Each run reads the zones' **previous** frame and the pools' **previous** run, so the order of the pools and zones never matters. Two hand-offs, zone → pool and pool → zone, make the round trip one frame longer than the hops alone. So **each insert point delays its zone by K + 1 = 9 frames** (dry: the history at age 9; a chain of n: its head reads age K − n). Through all three insert points that is **0.56 ms**, not the 0.5 ms §3 estimated. See Q1.
+
+Inside the frame, the core's stream timing grows only by 3 × INS_LAT cycles (the K + 1 frames are in the content, not in the stream). At 20/20/20 that takes D from 251 to about 260, past one frame, so the latency-first lane chooser will likely spend **one more DSP** (4 + 5) to keep D within a frame. The package will state the exact number.
+
+The router refuses to elaborate if a zone's stream could still be running when the pools read it (true for chains that span frames, LF1). Today's 20/20/20 core fits. Spanning chains with inserts come later, if ever needed.
+
+### 11.3 Tests
+
+- **`tb_insert_router`** (new): two gain pools, random chains of up to K slots per channel on all three zones, in any order, repeating types, pool-to-pool hops both ways, all 32 slots of a pool used. A model computes every channel's expected sample, frame by frame, with saturation at every hop. Edits checked:
+  - front adds and removes: **bit-exact**;
+  - mid-chain edits: exactly the predicted one-sample slip, nothing else;
+  - a whole multi-entry edit changes in one frame (the COMMIT).
+- **`tb_mixer_core`**: the same 9 configurations with the loop-back; expectations unchanged except D.
+- **`tb_mixer_core_pkg`**: the new D's and lane picks, and the sections' arithmetic.
+- **`tb_top_windows`**: the router's and the gain pool's windows; settle times grow by 3 × 9 frames.
+- **Mutants** for the router (wrong age, a hop from the current run instead of the previous, a skipped COMMIT, a missed slot, a return off by one channel), as in steps 1–3.
+- The whole regression (FPGAmixer 17 + new, the library's 3).
+
+### 11.4 After this step
+
+The block design gets two windows (router, gain pool) on the second SmartConnect. Then the server step (§7) can drive real inserts. The EQ (4a prototype, 4b block) becomes the second pool.
+
+### 11.5 Questions for the user
+
+- **Q1, 9 frames per insert point (0.56 ms total), not 8:** keep **K = 8** and accept the extra frame, or take **K = 7** to keep 0.5 ms. Recommended: **K = 8 at 0.56 ms**; the difference is 62 µs against USB's 61 ms.
+- **Q2, the router outside the core:** the core only exports a send/return port per zone, and the router and pools sit in the platform layer. Recommended (the core stays generic, `modularity-first`). The alternative, the router inside `mixer_core`, saves the ports but makes the core know about pools.
+- **Q3, one router window, one COMMIT:** recommended, so a multi-step edit never shows half-done. The alternative is a window per table, which is smaller but needs ordering rules in the server.
+- **Q4, at the end of this step:** a Vivado synthesis + timing check (as for step 3; no image, nothing to flash) — recommended — or go straight on to the EQ and check both together.
