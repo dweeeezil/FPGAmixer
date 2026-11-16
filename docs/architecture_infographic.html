@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPGAmixer architecture</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --panel: #ffffff;
+    --region: #f1f1ec;
+    --ink: #1d1d1f;
+    --muted: #5f6368;
+    --line: #c4c4bd;
+    --audio: #1a6fd1;
+    --ctrl: #d9730d;
+    --clock: #1f8a4c;
+    --cable: #6b6b66;
+    --p1: #9db7d9;
+    --p2: #3b82d6;
+    --p3: #2aa198;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16171a;
+      --panel: #212328;
+      --region: #1b1d21;
+      --ink: #ececec;
+      --muted: #a0a4ab;
+      --line: #3d4046;
+      --audio: #5aa2f5;
+      --ctrl: #f0a050;
+      --clock: #4cc27f;
+      --cable: #9a9a94;
+      --p1: #55708f;
+      --p2: #4a8fe0;
+      --p3: #2fb3a8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 56px; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2 { font-size: 20px; margin: 44px 0 4px; }
+  .lede { color: var(--muted); margin: 0 0 8px; max-width: 70ch; }
+  .caption { color: var(--muted); margin: 0 0 14px; max-width: 75ch; font-size: 15px; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 22px 0 0; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 22px; line-height: 1.2; }
+  .stat span { color: var(--muted); font-size: 13px; }
+
+  .scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .scroll svg { display: block; min-width: 760px; width: 100%; height: auto; }
+
+  .key { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+  .key i { display: inline-block; width: 22px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 6px; }
+
+  /* svg text + shapes */
+  svg text { fill: var(--ink); font-family: inherit; }
+  .t  { font-size: 13px; font-weight: 600; }
+  .t2 { font-size: 11.5px; font-weight: 600; }
+  .s  { font-size: 11px; fill: var(--muted); }
+  .l  { font-size: 11.5px; }
+  .lb { font-size: 11.5px; font-weight: 600; }
+  .rg { font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; fill: var(--muted); }
+  .region { fill: var(--region); stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .region.solid { stroke-dasharray: none; }
+  .node { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+  .node.audio { stroke: var(--audio); }
+  .node.ctrl  { stroke: var(--ctrl); }
+  .node.clock { stroke: var(--clock); }
+  .node.strong { stroke-width: 2; }
+  .strip { fill: var(--region); }
+  .a-audio { stroke: var(--audio); stroke-width: 3; fill: none; }
+  .a-ctrl  { stroke: var(--ctrl);  stroke-width: 2.4; fill: none; }
+  .a-clock { stroke: var(--clock); stroke-width: 2.4; fill: none; }
+  .a-cable { stroke: var(--cable); stroke-width: 4; fill: none; }
+  .a-grey  { stroke: var(--cable); stroke-width: 1.5; fill: none; }
+  .a-tap   { stroke: var(--muted); stroke-width: 1.3; fill: none; stroke-dasharray: 3 3; }
+  .chip rect { fill: var(--panel); stroke-width: 1.4; }
+  .chip text { font-size: 11px; }
+
+  /* flow cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-top: 4px solid var(--line); border-radius: 8px; padding: 14px 16px 10px; }
+  .card.audio { border-top-color: var(--audio); }
+  .card.ctrl  { border-top-color: var(--ctrl); }
+  .card.clock { border-top-color: var(--clock); }
+  .card h3 { margin: 0 0 2px; font-size: 17px; }
+  .card .sub { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+  .card ol { margin: 0; padding-left: 22px; font-size: 14.5px; }
+  .card li { margin: 0 0 6px; }
+  .card code, .note code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: var(--region); padding: 1px 4px; border-radius: 3px; }
+  .card .why { font-size: 14px; color: var(--muted); border-top: 1px solid var(--line); margin: 10px 0 0; padding-top: 8px; }
+
+  .ports { display: flex; flex-wrap: wrap; gap: 14px 22px; margin-top: 4px; }
+  .grp { }
+  .grp .cells { display: flex; gap: 3px; }
+  .grp .cells span { width: 26px; height: 26px; border-radius: 4px; font-size: 11px; line-height: 26px; text-align: center; color: #fff; }
+  .grp .name { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .note { color: var(--muted); font-size: 14.5px; max-width: 80ch; }
+
+  .nav { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 16px 0 0; font-size: 14px; }
+  .nav a { color: var(--audio); text-decoration: none; }
+  .nav a:hover { text-decoration: underline; }
+  h2 { scroll-margin-top: 12px; }
+
+  .lane { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; fill: var(--muted); }
+  .badge circle { fill: var(--ink); }
+  .badge text { fill: var(--bg); font-size: 10.5px; font-weight: 700; text-anchor: middle; }
+  .seg-p { fill: var(--p1); }
+  .seg-l { fill: var(--p3); }
+  .seg-m { fill: var(--audio); }
+  .seg-s { fill: var(--region); stroke: var(--line); }
+  svg .tw { fill: var(--bg); font-size: 11px; font-weight: 600; }
+
+  .steps { list-style: none; padding: 0; margin: 14px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px 28px; font-size: 14.5px; }
+  .steps li { position: relative; padding-left: 32px; }
+  .steps li::before { content: attr(data-n); position: absolute; left: 0; top: 1px; width: 22px; height: 22px; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 700; text-align: center; line-height: 22px; }
+  .steps li.c::before { background: var(--ctrl); color: #fff; }
+
+  .frame { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0 4px; }
+  .frame span { flex: 1 1 88px; background: var(--panel); border: 1px solid var(--audio); border-radius: 5px; padding: 4px 6px; font-size: 12px; text-align: center; color: var(--muted); }
+  .frame span b { display: block; color: var(--audio); font-size: 13px; }
+
+  .mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 10px; }
+  .mini .m { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+  .mini .m.audio { border-left-color: var(--audio); }
+  .mini .m.ctrl  { border-left-color: var(--ctrl); }
+  .mini .m.clock { border-left-color: var(--clock); }
+  .mini .m h4 { margin: 0 0 3px; font-size: 15px; }
+  .mini .m p { margin: 0; color: var(--muted); }
+
+  .callout { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--audio); border-radius: 8px; padding: 12px 16px; margin: 16px 0 0; font-size: 15px; max-width: 85ch; }
+  .callout p { margin: 0 0 6px; }
+  .callout p:last-child { margin: 0; }
+
+  .card.neutral { border-top-color: var(--muted); }
+  .card .claim { margin: 0 0 8px; font-size: 14.5px; }
+  .card .proof { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--line); margin: 8px 0 4px; padding-top: 8px; }
+
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; margin-top: 16px; }
+  .split .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; font-size: 14.5px; }
+  .split h4 { margin: 0 0 6px; font-size: 15.5px; }
+  .split ul { margin: 0; padding-left: 20px; }
+  .split li { margin: 0 0 4px; }
+
+  /* larger text for the overview diagram */
+  svg .T  { font-size: 16px; font-weight: 700; }
+  svg .B  { font-size: 13.5px; fill: var(--muted); }
+  svg .BL { font-size: 13.5px; font-weight: 700; }
+  svg .RG { font-size: 13px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; fill: var(--muted); }
+
+  h3.sec { font-size: 19px; margin: 48px 0 6px; padding-top: 14px; border-top: 1px solid var(--line); scroll-margin-top: 12px; }
+  h4.mh { font-size: 16px; margin: 26px 0 8px; }
+  .status { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--ctrl); border-radius: 6px; padding: 8px 14px; margin: 0 0 10px; font-size: 14.5px; max-width: 85ch; }
+
+  .tbl { border-collapse: collapse; width: 100%; background: var(--panel); border: 1px solid var(--line); font-size: 14.5px; }
+  .tbl th, .tbl td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .tbl th { background: var(--region); font-size: 13px; color: var(--muted); }
+  .tbl tr:last-child td { border-bottom: 0; }
+
+  footer { margin-top: 44px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>FPGAmixer: how it fits together</h1>
+<p class="lede">A 20-input, 20-bus, 20-output digital matrix mixer on a Genesys ZU-3EG. A computer over USB, the network over AVB and a USB audio interface are three interchangeable "front doors" into one mixer core. The StudioRunner app controls it over OSC.</p>
+
+<nav class="nav">
+  <a href="#network">1 Network</a>
+  <a href="#board">2 Inside the board</a>
+  <a href="#glance">2.1 At a glance</a>
+  <a href="#dma">2.3 DMA</a>
+  <a href="#domains">2.4 PL clocks</a>
+  <a href="#chain">2.5 Chain and DSP inserts</a>
+  <a href="#timeshare">2.6 Time-sharing</a>
+  <a href="#inserts">2.7 Insert anatomy</a>
+  <a href="#why">3 Why an FPGA</a>
+</nav>
+
+
+<div class="stats">
+  <div class="stat"><b>20 · 20 · 20</b><span>inputs, buses, outputs</span></div>
+  <div class="stat"><b>48 kHz / 24-bit</b><span>one clock for the whole core</span></div>
+  <div class="stat"><b>≈ 20 µs</b><span>latency through the core (251 of 256 clock cycles per frame)</span></div>
+  <div class="stat"><b>3 × 8 ch</b><span>audio links between Linux and the FPGA</span></div>
+  <div class="stat"><b>3–4 ns</b><span>gPTP clock error (RMS) between two devices</span></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="network">1. The network: who talks to whom</h2>
+<p class="caption">Three kinds of cable reach the board. USB-C carries the Mac's sound card, USB-A carries a MOTU M2 audio interface, and Ethernet carries the network audio, the shared clock and the control traffic.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 540" role="img" aria-label="Network diagram: a Mac, the FPGAmixer board, a MOTU M2 and an Ethernet network joined by USB-C, USB-A and Ethernet cables">
+  <defs>
+    <marker id="n-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+    <marker id="n-grey" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--cable)"/></marker>
+  </defs>
+
+  <!-- regions -->
+  <rect class="region" x="10" y="10" width="240" height="285" rx="10"/>
+  <text class="rg" x="24" y="33">Computer (macOS)</text>
+  <rect class="region" x="390" y="10" width="220" height="285" rx="10"/>
+  <text class="rg" x="404" y="33">FPGAmixer board</text>
+  <rect class="region" x="750" y="10" width="240" height="285" rx="10"/>
+  <text class="rg" x="764" y="33">Studio gear</text>
+  <rect class="region" x="10" y="330" width="980" height="200" rx="10"/>
+  <text class="rg" x="976" y="353" text-anchor="end">Ethernet network</text>
+  <text class="s" x="976" y="369" text-anchor="end">a direct cable on the bench, an AVB switch in a bigger studio</text>
+
+  <!-- Mac contents -->
+  <rect class="node ctrl" x="24" y="48" width="212" height="66" rx="7"/>
+  <text class="t" x="36" y="72">StudioRunner app</text>
+  <text class="s" x="36" y="90">mixer UI: faders, matrices, meters</text>
+  <rect class="node audio" x="24" y="128" width="212" height="66" rx="7"/>
+  <text class="t" x="36" y="152">DAW / any audio app</text>
+  <text class="s" x="36" y="170">sees an 8 × 8 USB sound card</text>
+  <rect class="node audio" x="24" y="208" width="212" height="66" rx="7"/>
+  <text class="t" x="36" y="232">AVB stack / controller</text>
+  <text class="s" x="36" y="250">8 × 8 network audio, stream routing</text>
+
+  <!-- board contents -->
+  <rect class="node strong" x="404" y="52" width="192" height="92" rx="7"/>
+  <text class="t" x="416" y="76">PS: Linux on ARM</text>
+  <text class="s" x="416" y="95">bridges, OSC server, gPTP,</text>
+  <text class="s" x="416" y="110">AVB entity, saved settings</text>
+  <path class="a-grey" d="M500,146 V176" marker-end="url(#n-grey)"/>
+  <path class="a-grey" d="M500,176 V146" marker-end="url(#n-grey)" transform="translate(12,0)"/>
+  <rect class="node strong" x="404" y="178" width="192" height="100" rx="7"/>
+  <text class="t" x="416" y="202">PL: FPGA fabric</text>
+  <text class="s" x="416" y="221">20 × 20 × 20 mixer core</text>
+  <text class="s" x="416" y="236">levels, two matrices, peak meters</text>
+  <text class="s" x="416" y="251">the media clock</text>
+
+  <!-- studio gear -->
+  <rect class="node" x="764" y="48" width="212" height="40" rx="7"/>
+  <text class="t2" x="776" y="72">Mics, instruments</text>
+  <path class="a-grey" d="M870,90 V104" marker-end="url(#n-grey)"/>
+  <rect class="node audio" x="764" y="106" width="212" height="74" rx="7"/>
+  <text class="t" x="776" y="130">MOTU M2 interface</text>
+  <text class="s" x="776" y="149">class-compliant USB audio</text>
+  <text class="s" x="776" y="164">2 in / 2 out, its own clock</text>
+  <path class="a-grey" d="M870,182 V196" marker-end="url(#n-grey)"/>
+  <rect class="node" x="764" y="198" width="212" height="40" rx="7"/>
+  <text class="t2" x="776" y="222">Headphones, monitors</text>
+
+  <!-- USB-C -->
+  <path class="a-audio" d="M250,161 H390" marker-start="url(#n-aud)" marker-end="url(#n-aud)"/>
+  <text class="lb" x="320" y="146" text-anchor="middle">USB-C cable</text>
+  <text class="s" x="320" y="181" text-anchor="middle">8 in / 8 out</text>
+  <text class="s" x="320" y="195" text-anchor="middle">board = sound card</text>
+
+  <!-- USB-A -->
+  <path class="a-audio" d="M610,143 H764" marker-start="url(#n-aud)" marker-end="url(#n-aud)"/>
+  <text class="lb" x="687" y="128" text-anchor="middle">USB-A port</text>
+  <text class="s" x="687" y="163" text-anchor="middle">2 in / 2 out</text>
+  <text class="s" x="687" y="177" text-anchor="middle">the board is the host</text>
+
+  <!-- Ethernet -->
+  <rect class="node strong" x="390" y="400" width="220" height="56" rx="7"/>
+  <text class="t" x="500" y="424" text-anchor="middle">Ethernet / AVB switch</text>
+  <text class="s" x="500" y="441" text-anchor="middle">optional</text>
+  <path class="a-cable" d="M130,295 V428 H390"/>
+  <path class="a-cable" d="M500,295 V400"/>
+  <text class="lb" x="512" y="326">Gigabit Ethernet</text>
+  <path class="a-cable" d="M610,428 H750"/>
+  <rect class="node" x="750" y="396" width="226" height="64" rx="7"/>
+  <text class="t" x="762" y="420">Other AVB devices</text>
+  <text class="s" x="762" y="438">stage boxes, speakers, a second mixer</text>
+
+  <!-- what the cable carries -->
+  <text class="s" x="24" y="500">On every Ethernet cable:</text>
+  <g class="chip">
+    <rect x="160" y="487" width="150" height="20" rx="10" stroke="var(--audio)"/><text x="235" y="501" text-anchor="middle">AVB audio (IEEE 1722)</text>
+    <rect x="318" y="487" width="138" height="20" rx="10" stroke="var(--clock)"/><text x="387" y="501" text-anchor="middle">gPTP time (802.1AS)</text>
+    <rect x="464" y="487" width="130" height="20" rx="10" stroke="var(--ctrl)"/><text x="529" y="501" text-anchor="middle">AVDECC discovery</text>
+    <rect x="602" y="487" width="144" height="20" rx="10" stroke="var(--ctrl)"/><text x="674" y="501" text-anchor="middle">OSC control + meters</text>
+  </g>
+</svg>
+</div>
+<div class="key">
+  <span><i style="border-color:var(--audio)"></i>audio</span>
+  <span><i style="border-color:var(--ctrl)"></i>control</span>
+  <span><i style="border-color:var(--clock)"></i>clock</span>
+  <span><i style="border-color:var(--cable)"></i>shared physical cable</span>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="board">2. Inside the board</h2>
+<p class="caption">The FPGA chip holds two halves that work as one system. The <b>PS</b> (processing system) is a quad-core ARM running Linux. It speaks every protocol and keeps the settings. The <b>PL</b> (programmable logic) is the FPGA fabric. It mixes, meters and keeps the audio clock, in hardware, on one clock. This section starts with the whole picture, then zooms in one piece at a time.</p>
+
+<h3 class="sec" id="glance">2.1 The board at a glance</h3>
+<div class="scroll">
+<svg viewBox="0 0 1000 615" role="img" aria-label="The board at a glance: Linux bridges and services in the PS, three DMA audio links, register windows and a clock signal crossing to the PL, and the mixer chain in the PL">
+  <defs>
+    <marker id="g-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+    <marker id="g-ctl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ctrl)"/></marker>
+    <marker id="g-clk" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--clock)"/></marker>
+  </defs>
+
+  <!-- PS -->
+  <rect class="region" x="10" y="10" width="980" height="240" rx="10"/>
+  <text class="RG" x="24" y="36">PS · software · Linux on four ARM cores</text>
+
+  <rect class="node audio" x="20" y="56" width="210" height="130" rx="8"/>
+  <text class="T" x="34" y="84">USB host bridge</text>
+  <text class="B" x="34" y="108">MOTU M2, Type-A port</text>
+  <text class="B" x="34" y="128">resampled to our clock</text>
+  <text class="BL" x="34" y="170">link #3</text>
+
+  <rect class="node audio" x="245" y="56" width="210" height="130" rx="8"/>
+  <text class="T" x="259" y="84">USB device bridge</text>
+  <text class="B" x="259" y="108">the Mac, Type-C port</text>
+  <text class="B" x="259" y="128">steers the Mac's clock</text>
+  <text class="BL" x="259" y="170">link #1</text>
+
+  <rect class="node audio" x="470" y="56" width="210" height="130" rx="8"/>
+  <text class="T" x="484" y="84">AVB bridge</text>
+  <text class="B" x="484" y="108">network audio, Ethernet</text>
+  <text class="B" x="484" y="128">shares the gPTP clock</text>
+  <text class="BL" x="484" y="170">link #2</text>
+
+  <rect class="node ctrl" x="700" y="56" width="280" height="130" rx="8"/>
+  <text class="T" x="714" y="84">Control + clock services</text>
+  <text class="B" x="714" y="108">OSC server + saved settings</text>
+  <text class="B" x="714" y="128">AVDECC / MSRP entity</text>
+  <text class="B" x="714" y="148">gPTP + media-clock servo</text>
+
+  <!-- boundary arrows -->
+  <path class="a-audio" d="M125,186 V360" marker-start="url(#g-aud)" marker-end="url(#g-aud)"/>
+  <path class="a-audio" d="M350,186 V360" marker-start="url(#g-aud)" marker-end="url(#g-aud)"/>
+  <path class="a-audio" d="M575,186 V360" marker-start="url(#g-aud)" marker-end="url(#g-aud)"/>
+  <text class="B" x="137" y="282">8 channels each way,</text>
+  <text class="B" x="137" y="300">moved by DMA</text>
+  <text class="B" x="362" y="282">8 channels each way,</text>
+  <text class="B" x="362" y="300">moved by DMA</text>
+  <text class="B" x="587" y="282">8 channels each way,</text>
+  <text class="B" x="587" y="300">moved by DMA</text>
+  <path class="a-ctrl" d="M767,186 V360" marker-start="url(#g-ctl)" marker-end="url(#g-ctl)"/>
+  <text class="B" x="779" y="282">settings in,</text>
+  <text class="B" x="779" y="300">meters out</text>
+  <path class="a-clock" d="M912,186 V360" marker-start="url(#g-clk)" marker-end="url(#g-clk)"/>
+  <text class="B" x="924" y="282">time in,</text>
+  <text class="B" x="924" y="300">steering out</text>
+
+  <!-- PL -->
+  <rect class="region" x="10" y="320" width="980" height="285" rx="10"/>
+  <text class="RG" x="24" y="346">PL · hardware · FPGA fabric</text>
+
+  <rect class="node audio" x="20" y="360" width="660" height="50" rx="8"/>
+  <text class="T" x="34" y="382">3 × pcm_link</text>
+  <text class="B" x="34" y="401">DMA streams ↔ PCM frames; the only place audio changes clock</text>
+
+  <text class="RG" x="110" y="440">Mixer core · one clock · 256 ticks per frame</text>
+  <path class="a-audio" d="M80,410 V466" marker-end="url(#g-aud)"/>
+  <path class="a-audio" d="M620,466 V410" marker-end="url(#g-aud)"/>
+
+  <rect class="node audio" x="20" y="466" width="120" height="80" rx="8"/>
+  <text class="T" x="80" y="498" text-anchor="middle">Input stage</text>
+  <text class="B" x="80" y="522" text-anchor="middle">patch + levels</text>
+  <rect class="node audio strong" x="155" y="466" width="120" height="80" rx="8"/>
+  <text class="T" x="215" y="498" text-anchor="middle">Input matrix</text>
+  <text class="B" x="215" y="522" text-anchor="middle">20 × 20</text>
+  <rect class="node audio" x="290" y="466" width="120" height="80" rx="8"/>
+  <text class="T" x="350" y="498" text-anchor="middle">Bus levels</text>
+  <text class="B" x="350" y="522" text-anchor="middle">20 gains</text>
+  <rect class="node audio strong" x="425" y="466" width="120" height="80" rx="8"/>
+  <text class="T" x="485" y="498" text-anchor="middle">Bus matrix</text>
+  <text class="B" x="485" y="522" text-anchor="middle">20 × 20</text>
+  <rect class="node audio" x="560" y="466" width="120" height="80" rx="8"/>
+  <text class="T" x="620" y="498" text-anchor="middle">Output stage</text>
+  <text class="B" x="620" y="522" text-anchor="middle">levels + patch</text>
+  <path class="a-audio" d="M140,506 H153" marker-end="url(#g-aud)"/>
+  <path class="a-audio" d="M275,506 H288" marker-end="url(#g-aud)"/>
+  <path class="a-audio" d="M410,506 H423" marker-end="url(#g-aud)"/>
+  <path class="a-audio" d="M545,506 H558" marker-end="url(#g-aud)"/>
+  <text class="B" x="20" y="580">11 DSP slices, each shared over time: 4 + 4 for the matrices, 3 for the levels</text>
+
+  <rect class="node ctrl" x="700" y="360" width="135" height="80" rx="8"/>
+  <text class="T" x="714" y="388">Registers</text>
+  <text class="B" x="714" y="410">15 AXI4-Lite</text>
+  <text class="B" x="714" y="428">windows</text>
+  <rect class="node clock" x="845" y="360" width="135" height="80" rx="8"/>
+  <text class="T" x="859" y="388">Media clock</text>
+  <text class="B" x="859" y="410">makes mclk and</text>
+  <text class="B" x="859" y="428">follows gPTP</text>
+  <rect class="node ctrl" x="700" y="456" width="280" height="90" rx="8"/>
+  <text class="T" x="714" y="484">Peak meters</text>
+  <text class="B" x="714" y="508">read-only taps after each</text>
+  <text class="B" x="714" y="526">level stage, streamed to the app</text>
+</svg>
+</div>
+
+<div class="key">
+  <span><i style="border-color:var(--audio)"></i>audio</span>
+  <span><i style="border-color:var(--ctrl)"></i>settings and meters</span>
+  <span><i style="border-color:var(--clock)"></i>clock and time</span>
+</div>
+<p class="note" style="margin-top:12px"><b>Rule of thumb:</b> anything with a protocol state machine lives in the PS, and anything with a sample-clock deadline lives in the PL. The PL part is a chain of stages sharing one 12.288 MHz clock, so a frame is always exactly 256 ticks.</p>
+
+<h4 class="mh">The 20 I/O ports, and the patch</h4>
+<p class="note" style="margin-top:0">The core's 20 inputs and outputs are fixed to these ports. The <b>patch</b> (the OSC <code>source</code> and <code>destination</code> settings) decides which port each channel uses. Nothing is patched at first.</p>
+<div class="ports">
+  <div class="grp"><div class="cells" id="g1"></div><div class="name">ports 0–3: USB host, MOTU M2 (link #3)</div></div>
+  <div class="grp"><div class="cells" id="g2"></div><div class="name">ports 4–11: USB to the Mac (link #1)</div></div>
+  <div class="grp"><div class="cells" id="g3"></div><div class="name">ports 12–19: AVB network audio (link #2)</div></div>
+</div>
+
+<!-- ============================================================ -->
+<h3 class="sec" id="flows">2.2 Three paths through the system</h3>
+<p class="caption">Three kinds of information move through the system, each on its own path. The example follows a track played on the Mac and sent out over the network.</p>
+
+<div class="cards">
+  <div class="card audio">
+    <h3>Audio</h3>
+    <p class="sub">Example: a Mac track out to an AVB speaker</p>
+    <ol>
+      <li>The DAW plays 8 channels to the "board" sound card over <b>USB-C</b>.</li>
+      <li>The Linux <b>USB gadget</b> hands the samples to the USB bridge, which writes them into <b>link #1</b> by DMA.</li>
+      <li>In the PL, <code>pcm_link</code> moves them into the core clock domain onto ports 4–11.</li>
+      <li>The <b>source patch</b> assigns ports to channels. <b>Input levels → input matrix → bus levels → bus matrix → output levels</b> mix them.</li>
+      <li>The <b>destination patch</b> puts the result on ports 12–19, then <b>link #2</b> sends it to Linux.</li>
+      <li>The <b>AVB bridge</b> wraps it into IEEE 1722 packets and sends them on <b>Ethernet</b> to the listener.</li>
+    </ol>
+    <p class="why">Every front door runs the same way, so USB in → AVB out, AVB → AVB and USB → USB all go through the same core. The Mac → board → Mac USB round trip measures about 61 ms.</p>
+  </div>
+
+  <div class="card ctrl">
+    <h3>Control</h3>
+    <p class="sub">Example: drag a fader in StudioRunner</p>
+    <ol>
+      <li>The app finds the board by Bonjour and sends an <b>OSC</b> message over TCP 8000.</li>
+      <li>The <b>OSC server</b> checks it against the parameter model: ranges, names, linked groups.</li>
+      <li>A backend converts dB to a fixed-point gain and writes it into a <b>register window</b> over AXI4-Lite, then issues a COMMIT.</li>
+      <li>The PL swaps the whole new gain bank in on the <b>next frame strobe</b>, so no frame ever sees a half-written update.</li>
+      <li>The server saves the value to disk (crash-safe) and echoes it to every connected controller.</li>
+      <li>Meters travel back: peak registers in the PL → server → <b>UDP 8001</b> → the app's meters.</li>
+    </ol>
+    <p class="why">At boot the server replays the saved settings into the PL, so every setting survives a power cycle.</p>
+  </div>
+
+  <div class="card clock">
+    <h3>Clock</h3>
+    <p class="sub">Making the network and the core agree on time</p>
+    <ol>
+      <li>The Ethernet port timestamps gPTP packets in hardware, and <code>ptp4l</code> keeps the board's clock (the PHC) in step with the network's.</li>
+      <li>That clock's seconds tick is wired into the PL as a <b>1PPS</b> signal.</li>
+      <li>The PL <b>media-clock meter</b> counts how many core-clock cycles fit into one gPTP second.</li>
+      <li>A Linux <b>servo</b> turns the error into a rate and writes it to the <b>steering</b> block.</li>
+      <li>The steering nudges the MMCM's fine phase shift (up to ±88 ppm), so <code>mclk</code> follows gPTP time.</li>
+      <li>The Mac's USB clock is steered through the UAC2 feedback endpoint. The M2 is resampled. AVB needs neither.</li>
+    </ol>
+    <p class="why">The network disciplines the core's own clock, so the core never has to deal with a foreign one.</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h3 class="sec" id="dma">2.3 How audio crosses between PS and PL: DMA</h3>
+<p class="caption">There are three identical audio links, one per front door. Each moves 8 channels in each direction between Linux and the FPGA fabric. This is one link, both directions. The PL never waits for the CPU: it pulls a frame from memory when its own clock says one is due.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 460" role="img" aria-label="One PS to PL audio link: bridge app, DDR ring buffer, Audio Formatter DMA, async FIFO, frame assembler, mixer core, and the same path back">
+  <defs>
+    <marker id="d-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+    <marker id="d-ctl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--ctrl)"/></marker>
+  </defs>
+
+  <rect class="region" x="10" y="10" width="380" height="440" rx="10"/>
+  <text class="rg" x="24" y="33">PS side: Linux + DDR memory</text>
+  <rect class="region" x="410" y="10" width="580" height="440" rx="10"/>
+  <text class="rg" x="424" y="33">PL side: FPGA fabric</text>
+  <text class="lane" x="24" y="66">Playback: into the mixer</text>
+  <text class="lane" x="24" y="326">Capture: out of the mixer</text>
+
+  <!-- clock boundary -->
+  <path d="M685,94 V444" stroke="var(--muted)" stroke-width="1.3" stroke-dasharray="5 4" fill="none"/>
+  <text class="s" x="679" y="236" text-anchor="end">100 MHz</text>
+  <text class="s" x="679" y="250" text-anchor="end">AXI clock</text>
+  <text class="s" x="693" y="236">12.288 MHz</text>
+  <text class="s" x="693" y="250">mclk, the audio clock</text>
+
+  <!-- Audio Formatter container -->
+  <rect class="node strong" x="425" y="52" width="160" height="388" rx="8"/>
+  <text class="t" x="437" y="76">Audio Formatter</text>
+  <text class="s" x="437" y="91">AMD IP, one per link</text>
+
+  <!-- PS-side boxes: top lane -->
+  <rect class="node" x="20" y="90" width="160" height="80" rx="7"/>
+  <text class="t2" x="32" y="112">Bridge app</text>
+  <text class="s" x="32" y="128">userspace, C</text>
+  <text class="s" x="32" y="142">writes 192-frame</text>
+  <text class="s" x="32" y="156">periods of samples</text>
+  <rect class="node" x="215" y="90" width="150" height="80" rx="7"/>
+  <text class="t2" x="227" y="112">Ring buffer</text>
+  <text class="s" x="227" y="128">in DDR memory</text>
+  <text class="s" x="227" y="142">4 periods × 192</text>
+  <text class="s" x="227" y="156">frames, 8 channels</text>
+
+  <!-- formatter engines -->
+  <rect class="node audio" x="435" y="100" width="140" height="60" rx="6"/>
+  <text class="t2" x="447" y="122">MM2S engine</text>
+  <text class="s" x="447" y="138">DMA read master</text>
+  <text class="s" x="447" y="151">memory → stream</text>
+  <rect class="node ctrl" x="435" y="218" width="140" height="64" rx="6"/>
+  <text class="t2" x="447" y="240">Registers + IRQs</text>
+  <text class="s" x="447" y="256">AXI4-Lite</text>
+  <text class="s" x="447" y="270">at 0x8010_0000</text>
+  <rect class="node audio" x="435" y="350" width="140" height="60" rx="6"/>
+  <text class="t2" x="447" y="372">S2MM engine</text>
+  <text class="s" x="447" y="388">DMA write master</text>
+  <text class="s" x="447" y="401">stream → memory</text>
+
+  <!-- pcm_link: top lane -->
+  <text class="lb" x="640" y="80">pcm_link (our RTL)</text>
+  <rect class="node audio" x="640" y="95" width="90" height="70" rx="6"/>
+  <text class="t2" x="650" y="116">async FIFO</text>
+  <text class="s" x="650" y="131">100 MHz →</text>
+  <text class="s" x="650" y="144">mclk, Gray</text>
+  <text class="s" x="650" y="157">pointers</text>
+  <rect class="node audio" x="750" y="95" width="100" height="70" rx="6"/>
+  <text class="t2" x="760" y="116">assembler</text>
+  <text class="s" x="760" y="131">whole frame,</text>
+  <text class="s" x="760" y="144">else zeros</text>
+  <text class="s" x="760" y="157">TID checked</text>
+
+  <!-- pcm_link: bottom lane -->
+  <rect class="node audio" x="640" y="345" width="90" height="70" rx="6"/>
+  <text class="t2" x="650" y="366">async FIFO</text>
+  <text class="s" x="650" y="381">mclk →</text>
+  <text class="s" x="650" y="394">100 MHz, Gray</text>
+  <text class="s" x="650" y="407">pointers</text>
+  <rect class="node audio" x="750" y="345" width="100" height="70" rx="6"/>
+  <text class="t2" x="760" y="366">serializer</text>
+  <text class="s" x="760" y="381">captures 8 ch</text>
+  <text class="s" x="760" y="394">on the frame</text>
+  <text class="s" x="760" y="407">strobe</text>
+
+  <!-- mixer core -->
+  <rect class="node strong" x="875" y="90" width="105" height="325" rx="8"/>
+  <text class="t" x="927" y="240" text-anchor="middle">Mixer core</text>
+  <text class="s" x="927" y="258" text-anchor="middle">20 in → 20 out</text>
+  <text class="s" x="927" y="273" text-anchor="middle">on mclk</text>
+
+  <!-- PS-side boxes: bottom lane -->
+  <rect class="node" x="20" y="340" width="160" height="80" rx="7"/>
+  <text class="t2" x="32" y="362">Bridge app</text>
+  <text class="s" x="32" y="378">reads periods of</text>
+  <text class="s" x="32" y="392">captured audio</text>
+  <rect class="node" x="215" y="340" width="150" height="80" rx="7"/>
+  <text class="t2" x="227" y="362">Ring buffer</text>
+  <text class="s" x="227" y="378">in DDR memory</text>
+  <text class="s" x="227" y="392">(capture side)</text>
+
+  <!-- kernel driver -->
+  <rect class="node ctrl" x="20" y="214" width="160" height="72" rx="7"/>
+  <text class="t2" x="32" y="236">ALSA card driver</text>
+  <text class="s" x="32" y="252">in the kernel: sets up</text>
+  <text class="s" x="32" y="266">the formatter, takes IRQs</text>
+
+  <!-- top lane arrows -->
+  <path class="a-audio" d="M180,130 H215" marker-end="url(#d-aud)"/>
+  <path class="a-audio" d="M365,130 H435" marker-end="url(#d-aud)"/>
+  <text class="s" x="400" y="148" text-anchor="middle">AXI4</text>
+  <text class="s" x="400" y="161" text-anchor="middle">via HPC0</text>
+  <path class="a-audio" d="M575,130 H640" marker-end="url(#d-aud)"/>
+  <text class="s" x="607" y="148" text-anchor="middle">AXI-</text>
+  <text class="s" x="607" y="161" text-anchor="middle">Stream</text>
+  <path class="a-audio" d="M730,130 H750" marker-end="url(#d-aud)"/>
+  <path class="a-audio" d="M850,130 H875" marker-end="url(#d-aud)"/>
+
+  <!-- bottom lane arrows (right to left) -->
+  <path class="a-audio" d="M875,380 H850" marker-end="url(#d-aud)"/>
+  <path class="a-audio" d="M750,380 H730" marker-end="url(#d-aud)"/>
+  <path class="a-audio" d="M640,380 H575" marker-end="url(#d-aud)"/>
+  <text class="s" x="607" y="398" text-anchor="middle">AXI-</text>
+  <text class="s" x="607" y="411" text-anchor="middle">Stream</text>
+  <path class="a-audio" d="M435,380 H365" marker-end="url(#d-aud)"/>
+  <text class="s" x="400" y="398" text-anchor="middle">AXI4</text>
+  <text class="s" x="400" y="411" text-anchor="middle">via HPC0</text>
+  <path class="a-audio" d="M215,380 H180" marker-end="url(#d-aud)"/>
+
+  <!-- control + interrupt -->
+  <path class="a-ctrl" d="M180,236 H435" marker-end="url(#d-ctl)"/>
+  <text class="s" x="307" y="228" text-anchor="middle">buffer address, period size, start</text>
+  <path class="a-ctrl" d="M435,264 H180" stroke-dasharray="6 4" marker-end="url(#d-ctl)"/>
+  <text class="s" x="307" y="282" text-anchor="middle">interrupt after every period</text>
+
+  <!-- step badges -->
+  <g class="badge">
+    <circle cx="197" cy="112" r="9"/><text x="197" y="116">1</text>
+    <circle cx="400" cy="112" r="9"/><text x="400" y="116">2</text>
+    <circle cx="607" cy="112" r="9"/><text x="607" y="116">3</text>
+    <circle cx="730" cy="95" r="9"/><text x="730" y="99">4</text>
+    <circle cx="862" cy="112" r="9"/><text x="862" y="116">5</text>
+    <circle cx="862" cy="362" r="9"/><text x="862" y="366">6</text>
+    <circle cx="730" cy="345" r="9"/><text x="730" y="349">7</text>
+    <circle cx="400" cy="362" r="9"/><text x="400" y="366">8</text>
+    <circle cx="197" cy="362" r="9"/><text x="197" y="366">9</text>
+  </g>
+</svg>
+</div>
+
+<ol class="steps">
+  <li data-n="1"><b>The app writes a period.</b> The bridge hands 192 frames (4 ms) of 8-channel audio to the ALSA card. They land in a ring buffer in ordinary DDR memory.</li>
+  <li data-n="2"><b>The formatter reads it by DMA.</b> Its master port goes through a SmartConnect into the PS's cache-coherent port (HPC0), so it sees what the CPU just wrote with no cache flushing.</li>
+  <li data-n="3"><b>Memory becomes a stream.</b> One AXI-Stream beat per channel sample: the 24-bit sample in a 32-bit word, plus a TID that carries the channel number. It is paced by the audio clock, not by the CPU.</li>
+  <li data-n="4"><b>An async FIFO crosses clocks.</b> Pointers are Gray-coded and synchronised with two flip-flops, so the 100 MHz side and the 12.288 MHz side never see a half-updated pointer.</li>
+  <li data-n="5"><b>The assembler builds a frame.</b> It collects TID 0…7, and on each frame strobe hands the core a complete 8-channel frame. If none is ready it hands over zeros, never stale or partial samples.</li>
+  <li data-n="6"><b>The core's output is captured.</b> On the next strobe the serializer takes all 8 output channels at once. If the FIFO can't take a whole frame, the frame is dropped and counted.</li>
+  <li data-n="7"><b>FIFO back to 100 MHz.</b> The same Gray-pointer crossing, in the other direction.</li>
+  <li data-n="8"><b>The formatter writes by DMA.</b> Its S2MM engine puts the stream into the capture ring in DDR.</li>
+  <li data-n="9"><b>The app reads a period.</b> The kernel driver programmed the formatter over AXI4-Lite and gets one interrupt per period, about 250 a second, instead of 48,000.</li>
+</ol>
+
+<h4 class="mh">What one frame looks like on the stream</h4>
+<div class="frame">
+  <span><b>beat 0</b>TID 0 · sample</span><span><b>beat 1</b>TID 1 · sample</span><span><b>beat 2</b>TID 2 · sample</span><span><b>beat 3</b>TID 3 · sample</span>
+  <span><b>beat 4</b>TID 4 · sample</span><span><b>beat 5</b>TID 5 · sample</span><span><b>beat 6</b>TID 6 · sample</span><span><b>beat 7</b>TID 7 · sample</span>
+</div>
+<p class="note" style="margin-top:4px">Each beat is a 32-bit word with the 24-bit sample in bits 27:4, the layout of an AES3 sub-frame, and the channel number in TID. A beat with an unexpected TID makes the assembler throw the partial frame away and wait for TID 0, so a lost beat costs one frame but never swaps channels.</p>
+
+<div class="callout">
+  <p><b>Why DMA, if the audio is so small?</b> A link moves only about 1.5 MB/s each way (8 channels × 4 bytes × 48,000), so bandwidth is not the point.</p>
+  <p>DMA <b>decouples timing</b>. The hardware pulls each frame on its own clock. Linux only has to keep a 16 ms ring topped up and take one interrupt per 4 ms period. The core never waits for a scheduler, and a slow CPU moment shows up as a counted underrun, never as a wrong sample. Figures are for the USB bridge's buffer geometry (4 periods × 192 frames).</p>
+</div>
+
+<h4 class="mh">Four ways the PS and PL talk</h4>
+<div class="mini">
+  <div class="m audio"><h4>DMA: audio samples</h4><p>Audio Formatter masters → SmartConnect → PS port HPC0 → DDR. Three links, 8 channels each way. Bulk streaming, no CPU work per sample.</p></div>
+  <div class="m ctrl"><h4>Registers: settings and meters</h4><p>The CPU does plain loads and stores into 4 KB windows at 0x8000_0000 and up, over the PS's LPD master and two cascaded SmartConnects. One window per block.</p></div>
+  <div class="m ctrl"><h4>Interrupts</h4><p>Each formatter raises one interrupt per direction into the PS's interrupt controller, once per period. That is how Linux knows a buffer is ready.</p></div>
+  <div class="m clock"><h4>Wires: clocks and time</h4><p>The 100 MHz fabric clock goes PS → PL. The GEM's hardware gPTP time counter (94 bits) goes PS → PL as plain signals, so the PL can timestamp its own frames.</p></div>
+</div>
+
+<!-- ============================================================ -->
+<h3 class="sec" id="domains">2.4 How the PL is organised: two clocks, five crossings</h3>
+<p class="caption">The fabric runs on two clocks. The PS-facing side runs on a 100 MHz AXI clock. The whole mixer runs on one slow audio clock, so one frame is always exactly 256 ticks. Everything that has to pass between them goes through one of five named crossing patterns, each with its own scoped timing constraint.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 450" role="img" aria-label="PL clock domains: the 100 MHz AXI domain and the 12.288 MHz audio domain, with five crossings between them">
+  <defs>
+    <marker id="e-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+    <marker id="e-ctl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ctrl)"/></marker>
+    <marker id="e-clk" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--clock)"/></marker>
+  </defs>
+
+  <rect class="region" x="10" y="10" width="380" height="430" rx="10"/>
+  <text class="rg" x="24" y="33">AXI domain</text>
+  <text class="s" x="24" y="49">pl_clk0 · 100 MHz · faces the PS</text>
+  <rect class="region" x="610" y="10" width="380" height="430" rx="10"/>
+  <text class="rg" x="624" y="33">Audio domain</text>
+  <text class="s" x="624" y="49">mclk · 12.288 MHz · one clock for the whole core</text>
+  <text class="rg" x="500" y="33" text-anchor="middle">Crossings</text>
+  <text class="s" x="500" y="49" text-anchor="middle">named patterns</text>
+
+  <!-- connector lines (behind the gate boxes) -->
+  <path class="a-audio" d="M376,103 H624" marker-start="url(#e-aud)" marker-end="url(#e-aud)"/>
+  <path class="a-ctrl"  d="M376,175 H624" marker-end="url(#e-ctl)"/>
+  <path class="a-ctrl"  d="M376,247 H624" marker-start="url(#e-ctl)"/>
+  <path class="a-clock" d="M376,319 H624" marker-end="url(#e-clk)"/>
+  <path class="a-clock" d="M376,391 H624" marker-start="url(#e-clk)" marker-end="url(#e-clk)"/>
+
+  <!-- left column -->
+  <rect class="node audio" x="24" y="75" width="352" height="56" rx="7"/>
+  <text class="t2" x="36" y="97">Audio Formatters × 3</text>
+  <text class="s" x="36" y="115">DMA ↔ AXI-Stream, 8 channels each way</text>
+  <rect class="node ctrl" x="24" y="147" width="352" height="56" rx="7"/>
+  <text class="t2" x="36" y="169">Register windows</text>
+  <text class="s" x="36" y="187">AXI4-Lite slaves: shadow bank + COMMIT</text>
+  <rect class="node ctrl" x="24" y="219" width="352" height="56" rx="7"/>
+  <text class="t2" x="36" y="241">Status windows</text>
+  <text class="s" x="36" y="259">read-only counters and meters</text>
+  <rect class="node clock" x="24" y="291" width="352" height="56" rx="7"/>
+  <text class="t2" x="36" y="313">PS gPTP time counter</text>
+  <text class="s" x="36" y="331">runs on the PS's own 250 MHz clock</text>
+  <rect class="node clock" x="24" y="363" width="352" height="56" rx="7"/>
+  <text class="t2" x="36" y="385">media_clock_steer</text>
+  <text class="s" x="36" y="403">turns a rate into phase-shift commands</text>
+
+  <!-- right column -->
+  <rect class="node audio" x="624" y="75" width="352" height="56" rx="7"/>
+  <text class="t2" x="636" y="97">pcm_link frame logic × 3</text>
+  <text class="s" x="636" y="115">24-bit PCM, whole frames on the strobe</text>
+  <rect class="node audio strong" x="624" y="147" width="352" height="56" rx="7"/>
+  <text class="t2" x="636" y="169">Mixer core: 11 DSP48E2 slices</text>
+  <text class="s" x="636" y="187">reads its gains from the RAM banks</text>
+  <rect class="node ctrl" x="624" y="219" width="352" height="56" rx="7"/>
+  <text class="t2" x="636" y="241">Peak meters + link counters</text>
+  <text class="s" x="636" y="259">accumulate every frame</text>
+  <rect class="node clock" x="624" y="291" width="352" height="56" rx="7"/>
+  <text class="t2" x="636" y="313">Media-clock meter</text>
+  <text class="s" x="636" y="331">counts mclk cycles per gPTP second</text>
+  <rect class="node clock" x="624" y="363" width="352" height="56" rx="7"/>
+  <text class="t2" x="636" y="385">MMCM makes mclk</text>
+  <text class="s" x="636" y="403">25 MHz × 58 ÷ 118 = 12.288 MHz</text>
+
+  <!-- gates -->
+  <rect class="node" x="420" y="75" width="160" height="56" rx="7"/>
+  <text class="t2" x="500" y="92" text-anchor="middle">Audio samples</text>
+  <text class="s" x="500" y="106" text-anchor="middle">async FIFO, 2 per link</text>
+  <text class="s" x="500" y="119" text-anchor="middle">Gray pointers, 2-flop sync</text>
+  <rect class="node" x="420" y="147" width="160" height="56" rx="7"/>
+  <text class="t2" x="500" y="164" text-anchor="middle">Settings</text>
+  <text class="s" x="500" y="178" text-anchor="middle">dual-port RAM, 2 banks</text>
+  <text class="s" x="500" y="191" text-anchor="middle">swap on a frame strobe</text>
+  <rect class="node" x="420" y="219" width="160" height="56" rx="7"/>
+  <text class="t2" x="500" y="236" text-anchor="middle">Status + meters</text>
+  <text class="s" x="500" y="250" text-anchor="middle">whole-bank snapshot,</text>
+  <text class="s" x="500" y="263" text-anchor="middle">all words from one edge</text>
+  <rect class="node" x="420" y="291" width="160" height="56" rx="7"/>
+  <text class="t2" x="500" y="308" text-anchor="middle">gPTP 1PPS (1 bit)</text>
+  <text class="s" x="500" y="322" text-anchor="middle">2-flop synchroniser</text>
+  <text class="s" x="500" y="335" text-anchor="middle">from the 250 MHz timer</text>
+  <rect class="node" x="420" y="363" width="160" height="56" rx="7"/>
+  <text class="t2" x="500" y="380" text-anchor="middle">Clock steering</text>
+  <text class="s" x="500" y="394" text-anchor="middle">commands timed at 100 MHz</text>
+  <text class="s" x="500" y="407" text-anchor="middle">LOCKED back: 2-flop sync</text>
+</svg>
+</div>
+<div class="key">
+  <span><i style="border-color:var(--audio)"></i>audio</span>
+  <span><i style="border-color:var(--ctrl)"></i>settings, status, meters</span>
+  <span><i style="border-color:var(--clock)"></i>clock and time</span>
+</div>
+
+<div class="mini" style="margin-top:16px">
+  <div class="m"><h4>The core never sees a foreign clock</h4><p>Every front door bridges its own clock before audio reaches the core: Linux steers the Mac's USB clock, resamples the M2, and the AVB bridge needs neither. The only audio crossing in the PL is the pair of FIFOs per link.</p></div>
+  <div class="m"><h4>Why 12.288 MHz</h4><p>It is 256 × 48 kHz, so a frame is exactly 256 ticks and every block can be scheduled by counting cycles. It is made from the board's 25 MHz clock, and about 11 ppm fast until steering trims it.</p></div>
+  <div class="m"><h4>Crossings are checked, not hoped for</h4><p>Each pattern has its own timing constraint scoped to the module, so every new instance is covered. The build fails on negative slack or any methodology critical warning.</p></div>
+</div>
+
+<!-- ============================================================ -->
+<h3 class="sec" id="chain">2.5 The mixer chain, and where DSP inserts plug in</h3>
+<p class="caption">The core is a chain of seven stages. Every stage speaks the same stream format, reads its settings from its own RAM bank and states its latency. Because every stage looks the same from outside, a new stage can be dropped between two others without rewiring them. That is the plan for EQ, dynamics and delay.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 285" role="img" aria-label="The seven-stage mixer chain with DSP slice counts, three peak-meter taps and three planned DSP insert slots">
+  <defs>
+    <marker id="c-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+  </defs>
+  <text class="lb" x="15" y="22">Today's chain (solid) and the planned DSP insert points (dashed)</text>
+
+  <!-- meter taps -->
+  <text class="s" x="217" y="52" text-anchor="middle">▼ peak-meter tap</text>
+  <text class="s" x="505" y="52" text-anchor="middle">▼ peak-meter tap</text>
+  <text class="s" x="793" y="52" text-anchor="middle">▼ peak-meter tap</text>
+
+  <!-- stages -->
+  <rect class="node audio" x="15" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="73" y="84" text-anchor="middle">Source</text><text class="t" x="73" y="100" text-anchor="middle">patch</text><text class="s" x="73" y="124" text-anchor="middle">port → channel</text>
+  <rect class="node audio" x="159" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="217" y="84" text-anchor="middle">Input</text><text class="t" x="217" y="100" text-anchor="middle">levels</text><text class="s" x="217" y="124" text-anchor="middle">1 DSP slice</text>
+  <rect class="node audio strong" x="303" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="361" y="84" text-anchor="middle">Input</text><text class="t" x="361" y="100" text-anchor="middle">matrix</text><text class="s" x="361" y="124" text-anchor="middle">4 slices · 20×20</text>
+  <rect class="node audio" x="447" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="505" y="84" text-anchor="middle">Bus</text><text class="t" x="505" y="100" text-anchor="middle">levels</text><text class="s" x="505" y="124" text-anchor="middle">1 DSP slice</text>
+  <rect class="node audio strong" x="591" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="649" y="84" text-anchor="middle">Bus</text><text class="t" x="649" y="100" text-anchor="middle">matrix</text><text class="s" x="649" y="124" text-anchor="middle">4 slices · 20×20</text>
+  <rect class="node audio" x="735" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="793" y="84" text-anchor="middle">Output</text><text class="t" x="793" y="100" text-anchor="middle">levels</text><text class="s" x="793" y="124" text-anchor="middle">1 DSP slice</text>
+  <rect class="node audio" x="879" y="60" width="116" height="80" rx="7"/>
+  <text class="t" x="937" y="84" text-anchor="middle">Dest.</text><text class="t" x="937" y="100" text-anchor="middle">patch</text><text class="s" x="937" y="124" text-anchor="middle">channel → port</text>
+
+  <!-- arrows -->
+  <path class="a-audio" d="M131,100 H157" marker-end="url(#c-aud)"/>
+  <path class="a-audio" d="M275,100 H301" marker-end="url(#c-aud)"/>
+  <path class="a-audio" d="M419,100 H445" marker-end="url(#c-aud)"/>
+  <path class="a-audio" d="M563,100 H589" marker-end="url(#c-aud)"/>
+  <path class="a-audio" d="M707,100 H733" marker-end="url(#c-aud)"/>
+  <path class="a-audio" d="M851,100 H877" marker-end="url(#c-aud)"/>
+
+  <!-- insert points -->
+  <g stroke="var(--ctrl)" stroke-width="2" stroke-dasharray="5 4" fill="none">
+    <path d="M289,100 V170"/><path d="M577,100 V170"/><path d="M865,100 V170"/>
+  </g>
+  <g fill="var(--ctrl)"><circle cx="289" cy="100" r="5"/><circle cx="577" cy="100" r="5"/><circle cx="865" cy="100" r="5"/></g>
+
+  <rect class="node ctrl" style="stroke-dasharray:6 4" x="184" y="170" width="210" height="84" rx="8"/>
+  <text class="t" x="199" y="195">Input DSP insert</text>
+  <text class="s" x="199" y="215">EQ · dynamics · delay, per channel</text>
+  <text class="s" x="199" y="233">planned, not built yet</text>
+  <rect class="node ctrl" style="stroke-dasharray:6 4" x="472" y="170" width="210" height="84" rx="8"/>
+  <text class="t" x="487" y="195">Bus DSP insert</text>
+  <text class="s" x="487" y="215">EQ · dynamics · delay, per bus</text>
+  <text class="s" x="487" y="233">planned, not built yet</text>
+  <rect class="node ctrl" style="stroke-dasharray:6 4" x="760" y="170" width="210" height="84" rx="8"/>
+  <text class="t" x="775" y="195">Output DSP insert</text>
+  <text class="s" x="775" y="215">EQ · dynamics · delay, per output</text>
+  <text class="s" x="775" y="233">planned, not built yet</text>
+</svg>
+</div>
+
+<ul class="note" style="margin-top:14px; padding-left:20px">
+  <li><b>The levels are already the first slice of the DSP chain.</b> The roadmap's order, input DSP → bus matrix → bus DSP → output matrix → output DSP, is the order of these stages, and each level stage sits at one of the three insert points. The exact placement of each insert is not final.</li>
+  <li><b>Today the chain is full.</b> The seven stages use 251 of the 255 ticks a frame allows, so an EQ or compressor has no room until the core may span more than one frame (see 2.7).</li>
+  <li><b>Meters are passive.</b> The peak-meter taps copy a stream outside the chain, so they cannot change the audio or the timing.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h3 class="sec" id="timeshare">2.6 Time-sharing: 11 DSP slices, about 860 multiplies per frame</h3>
+<p class="caption">A DSP slice is a hardware multiply-accumulate unit. A fully parallel design gives every crosspoint its own slice, but each would work once per frame and idle for the other 255 ticks. A 20 × 20 matrix would also need 400 slices, more than the whole chip's 360. The core instead lets each slice work through a list of multiplies during every frame, at the audio clock alone and with no faster clock.</p>
+
+<div class="stats">
+  <div class="stat"><b>400 → 4</b><span>slices for one 20 × 20 matrix, parallel vs time-shared</span></div>
+  <div class="stat"><b>≈ 0.4 %</b><span>use of a slice that multiplies once per frame (1 tick in 256)</span></div>
+  <div class="stat"><b>≈ 250</b><span>multiplies one slice can do in a frame at 12.288 MHz</span></div>
+  <div class="stat"><b>144 → 1</b><span>slices when the first matrix (12 × 12) went time-shared; LUTs −19 %, flip-flops −35 %</span></div>
+</div>
+
+<h4 class="mh">A time-shared matrix</h4>
+<div class="scroll">
+<svg viewBox="0 0 1000 310" role="img" aria-label="Four DSP lanes sharing one sample stream through the A-cascade, each reading its own gain from a coefficient RAM, with results descaled and saturated into one output stream">
+  <defs>
+    <marker id="t-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+    <marker id="t-ctl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--ctrl)"/></marker>
+  </defs>
+  <text class="s" x="215" y="28">each lane finishes one output every 20 ticks, and the lanes finish one tick apart</text>
+
+  <rect class="node audio" x="20" y="85" width="140" height="100" rx="8"/>
+  <text class="t" x="34" y="112">Sample buffer</text>
+  <text class="s" x="34" y="132">20 samples × 24 bit</text>
+  <text class="s" x="34" y="148">one read per tick,</text>
+  <text class="s" x="34" y="164">input 0, 1, 2 … 19</text>
+  <path class="a-audio" d="M160,120 H213" marker-end="url(#t-aud)"/>
+
+  <rect class="node audio strong" x="215" y="70" width="130" height="100" rx="8"/>
+  <text class="t" x="229" y="96">DSP lane 0</text>
+  <text class="s" x="229" y="116">P = P + A × B</text>
+  <text class="s" x="229" y="132">outputs 0, 4, 8 …</text>
+  <text class="s" x="229" y="152">sample passes on →</text>
+  <rect class="node audio strong" x="365" y="70" width="130" height="100" rx="8"/>
+  <text class="t" x="379" y="96">DSP lane 1</text>
+  <text class="s" x="379" y="116">P = P + A × B</text>
+  <text class="s" x="379" y="132">outputs 1, 5, 9 …</text>
+  <text class="s" x="379" y="152">sample passes on →</text>
+  <rect class="node audio strong" x="515" y="70" width="130" height="100" rx="8"/>
+  <text class="t" x="529" y="96">DSP lane 2</text>
+  <text class="s" x="529" y="116">P = P + A × B</text>
+  <text class="s" x="529" y="132">outputs 2, 6, 10 …</text>
+  <text class="s" x="529" y="152">sample passes on →</text>
+  <rect class="node audio strong" x="665" y="70" width="130" height="100" rx="8"/>
+  <text class="t" x="679" y="96">DSP lane 3</text>
+  <text class="s" x="679" y="116">P = P + A × B</text>
+  <text class="s" x="679" y="132">outputs 3, 7, 11 …</text>
+  <text class="s" x="679" y="152">last in the chain</text>
+  <path class="a-audio" d="M345,120 H363" marker-end="url(#t-aud)"/>
+  <path class="a-audio" d="M495,120 H513" marker-end="url(#t-aud)"/>
+  <path class="a-audio" d="M645,120 H663" marker-end="url(#t-aud)"/>
+
+  <!-- result bus -->
+  <path class="a-audio" d="M280,70 V44 H905 V85" marker-end="url(#t-aud)"/>
+  <path class="a-audio" d="M430,70 V44 M580,70 V44 M730,70 V44"/>
+  <rect class="node audio" x="840" y="85" width="140" height="85" rx="8"/>
+  <text class="t" x="854" y="112">Descale +</text>
+  <text class="t" x="854" y="128">saturate</text>
+  <text class="s" x="854" y="150">once per output</text>
+  <path class="a-audio" d="M910,170 V212" marker-end="url(#t-aud)"/>
+  <text class="s" x="910" y="232" text-anchor="middle">one output per tick,</text>
+  <text class="s" x="910" y="246" text-anchor="middle">channels in order</text>
+
+  <!-- coefficient RAM -->
+  <rect class="node ctrl" x="215" y="232" width="580" height="58" rx="8"/>
+  <text class="t" x="229" y="256">Coefficient RAM, two banks</text>
+  <text class="s" x="229" y="275">one word = the four lanes' gains for this tick, each delayed to match its lane</text>
+  <path class="a-ctrl" d="M280,232 V172" marker-end="url(#t-ctl)"/>
+  <path class="a-ctrl" d="M430,232 V172" marker-end="url(#t-ctl)"/>
+  <path class="a-ctrl" d="M580,232 V172" marker-end="url(#t-ctl)"/>
+  <path class="a-ctrl" d="M730,232 V172" marker-end="url(#t-ctl)"/>
+</svg>
+</div>
+
+<ul class="note" style="margin-top:14px; padding-left:20px">
+  <li><b>Output-major lanes.</b> Lane <i>l</i> computes outputs <i>l</i>, <i>l</i>+4, <i>l</i>+8 … For each output it sweeps all 20 inputs, one multiply-accumulate per tick. The DSP's own 48-bit accumulator holds the exact sum.</li>
+  <li><b>One read feeds every lane.</b> All lanes sweep the same input one tick apart, so the sample buffer needs a single read port. The sample is handed from lane to lane through the DSP's A-cascade.</li>
+  <li><b>Same maths as before.</b> Q2.16 gains and 24-bit samples, summed exactly, then shifted and saturated once. The time-shared matrix is bit-identical to the original parallel one, checked against the same reference model.</li>
+  <li><b>Uneven sizes just work.</b> When the outputs don't divide evenly by the lanes, the spare lane slots run with gain 0 and their results are discarded.</li>
+</ul>
+
+<h4 class="mh">A time-shared level stage</h4>
+<div class="scroll">
+<svg viewBox="0 0 1000 175" role="img" aria-label="The level stage pipeline: one DSP slice handles one channel per tick, each beat leaving exactly four ticks after it arrived">
+  <defs>
+    <marker id="l-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+  </defs>
+  <text class="lb" x="20" y="22">One DSP slice serves all 20 channels of a level stage</text>
+  <rect class="node audio" x="20"  y="36" width="225" height="62" rx="7"/>
+  <text class="s" x="32" y="54">tick +1</text><text class="t" x="32" y="71">Register sample</text><text class="s" x="32" y="88">gain read from RAM by channel</text>
+  <rect class="node audio" x="265" y="36" width="225" height="62" rx="7"/>
+  <text class="s" x="277" y="54">tick +2</text><text class="t" x="277" y="71">A ← sample, B ← gain</text><text class="s" x="277" y="88">operands enter the DSP slice</text>
+  <rect class="node audio strong" x="510" y="36" width="225" height="62" rx="7"/>
+  <text class="s" x="522" y="54">tick +3</text><text class="t" x="522" y="71">Multiply</text><text class="s" x="522" y="88">24-bit × 18-bit product</text>
+  <rect class="node audio" x="755" y="36" width="225" height="62" rx="7"/>
+  <text class="s" x="767" y="54">tick +4</text><text class="t" x="767" y="71">Descale + saturate</text><text class="s" x="767" y="88">24-bit out, clipped, never wrapped</text>
+  <path class="a-audio" d="M245,67 H263" marker-end="url(#l-aud)"/>
+  <path class="a-audio" d="M490,67 H508" marker-end="url(#l-aud)"/>
+  <path class="a-audio" d="M735,67 H753" marker-end="url(#l-aud)"/>
+
+  <text class="s" x="20" y="124">Beats arrive one per tick, channel 0 to 19. The slice is busy every tick, and every beat leaves exactly 4 ticks after it entered.</text>
+  <g class="chip">
+    <rect x="20"  y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="41"  y="150" text-anchor="middle">ch 0</text>
+    <rect x="68"  y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="89"  y="150" text-anchor="middle">ch 1</text>
+    <rect x="116" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="137" y="150" text-anchor="middle">ch 2</text>
+    <rect x="164" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="185" y="150" text-anchor="middle">ch 3</text>
+    <rect x="212" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="233" y="150" text-anchor="middle">ch 4</text>
+    <rect x="260" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="281" y="150" text-anchor="middle">ch 5</text>
+    <rect x="308" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="329" y="150" text-anchor="middle">ch 6</text>
+    <rect x="356" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="377" y="150" text-anchor="middle">ch 7</text>
+    <rect x="404" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="425" y="150" text-anchor="middle">ch 8</text>
+    <rect x="452" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="473" y="150" text-anchor="middle">ch 9</text>
+    <rect x="500" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="521" y="150" text-anchor="middle">ch 10</text>
+    <rect x="548" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="569" y="150" text-anchor="middle">ch 11</text>
+    <rect x="596" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="617" y="150" text-anchor="middle">ch 12</text>
+    <rect x="644" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="665" y="150" text-anchor="middle">ch 13</text>
+    <rect x="692" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="713" y="150" text-anchor="middle">ch 14</text>
+    <rect x="740" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="761" y="150" text-anchor="middle">ch 15</text>
+    <rect x="788" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="809" y="150" text-anchor="middle">ch 16</text>
+    <rect x="836" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="857" y="150" text-anchor="middle">ch 17</text>
+    <rect x="884" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="905" y="150" text-anchor="middle">ch 18</text>
+    <rect x="932" y="134" width="42" height="24" rx="5" stroke="var(--audio)"/><text x="953" y="150" text-anchor="middle">ch 19</text>
+  </g>
+</svg>
+</div>
+<p class="note" style="margin-top:10px">Because every beat leaves exactly four ticks after it arrives, a level stage never changes the order or the spacing of the stream. That fixed delay is what lets a stage be added anywhere in the chain and have its latency simply added to the total.</p>
+
+<h4 class="mh">One frame, tick by tick</h4>
+<div class="scroll">
+<svg viewBox="0 0 1000 225" role="img" aria-label="Timeline of one 256-cycle frame: source patch, input levels, input matrix, bus levels, bus matrix, output levels and destination patch, with the input matrix's four DSP lanes zoomed">
+  <text class="lb" x="30" y="22">One frame = 256 ticks of the 12.288 MHz clock = 20.8 µs</text>
+
+  <!-- tiny-stage labels above -->
+  <path d="M114.5,50 V70" stroke="var(--muted)" stroke-width="1"/>
+  <text class="s" x="114.5" y="46" text-anchor="middle">input levels +4</text>
+  <path d="M525.7,50 V70" stroke="var(--muted)" stroke-width="1"/>
+  <text class="s" x="525.7" y="46" text-anchor="middle">bus levels +4</text>
+  <path d="M944,50 V70" stroke="var(--muted)" stroke-width="1"/>
+  <text class="s" x="990" y="46" text-anchor="end">output levels +4 · patch +2 · slack 5</text>
+
+  <!-- the bar -->
+  <rect class="seg-p" x="30"    y="70" width="77.1"  height="40"/>
+  <rect class="seg-l" x="107.1" y="70" width="14.7"  height="40"/>
+  <rect class="seg-m" x="121.8" y="70" width="396.6" height="40"/>
+  <rect class="seg-l" x="518.4" y="70" width="14.7"  height="40"/>
+  <rect class="seg-m" x="533.1" y="70" width="396.5" height="40"/>
+  <rect class="seg-l" x="929.6" y="70" width="14.7"  height="40"/>
+  <rect class="seg-p" x="944.3" y="70" width="7.4"   height="40"/>
+  <rect class="seg-s" x="951.7" y="70" width="18.3"  height="40"/>
+  <text class="tw" style="fill:var(--ink)" x="68.5"  y="94" text-anchor="middle">Source patch</text>
+  <text class="tw" x="320"   y="94" text-anchor="middle">Input matrix · 108 ticks</text>
+  <text class="tw" x="731.4" y="94" text-anchor="middle">Bus matrix · 108 ticks</text>
+
+  <!-- ticks below -->
+  <text class="s" x="30"    y="126">0 (strobe)</text>
+  <text class="s" x="121.8" y="126" text-anchor="middle">25</text>
+  <text class="s" x="518.4" y="126" text-anchor="middle">133</text>
+  <text class="s" x="990"   y="126" text-anchor="end">▲ D = 251: the output is ready</text>
+
+  <!-- zoom -->
+  <path d="M121.8,112 V146 M518.4,112 V146" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>
+  <text class="s" x="30" y="159">DSP lane 0</text>
+  <text class="s" x="30" y="175">DSP lane 1</text>
+  <text class="s" x="30" y="191">DSP lane 2</text>
+  <text class="s" x="30" y="207">DSP lane 3</text>
+  <g class="seg-m">
+    <rect x="121.8" y="150" width="73.4" height="12"/><rect x="195.2" y="150" width="73.4" height="12" style="fill-opacity:.5"/><rect x="268.7" y="150" width="73.4" height="12"/><rect x="342.1" y="150" width="73.4" height="12" style="fill-opacity:.5"/><rect x="415.6" y="150" width="73.4" height="12"/>
+    <rect x="125.5" y="166" width="73.4" height="12"/><rect x="198.9" y="166" width="73.4" height="12" style="fill-opacity:.5"/><rect x="272.4" y="166" width="73.4" height="12"/><rect x="345.8" y="166" width="73.4" height="12" style="fill-opacity:.5"/><rect x="419.2" y="166" width="73.4" height="12"/>
+    <rect x="129.1" y="182" width="73.4" height="12"/><rect x="202.6" y="182" width="73.4" height="12" style="fill-opacity:.5"/><rect x="276" y="182" width="73.4" height="12"/><rect x="349.5" y="182" width="73.4" height="12" style="fill-opacity:.5"/><rect x="422.9" y="182" width="73.4" height="12"/>
+    <rect x="132.8" y="198" width="73.4" height="12"/><rect x="206.3" y="198" width="73.4" height="12" style="fill-opacity:.5"/><rect x="279.7" y="198" width="73.4" height="12"/><rect x="353.1" y="198" width="73.4" height="12" style="fill-opacity:.5"/><rect x="426.6" y="198" width="73.4" height="12"/>
+  </g>
+  <text class="tw" style="font-size:9.5px" x="125" y="159">out 0</text>
+  <text class="tw" style="font-size:9.5px" x="198.6" y="159">out 4</text>
+  <text class="tw" style="font-size:9.5px" x="272" y="159">out 8</text>
+  <text class="tw" style="font-size:9.5px" x="345.5" y="159">out 12</text>
+  <text class="tw" style="font-size:9.5px" x="419" y="159">out 16</text>
+  <text class="l" x="540" y="168">Input matrix, zoomed: 20 outputs ÷ 4 lanes</text>
+  <text class="l" x="540" y="184">= 5 passes of 20 multiply-accumulates each.</text>
+  <text class="s" x="540" y="202">Lane l makes outputs l, l+4, l+8 … One input sample is read</text>
+  <text class="s" x="540" y="216">per tick and handed lane to lane, one tick apart.</text>
+</svg>
+</div>
+
+<ul class="note" style="margin-top:14px; padding-left:20px">
+  <li><b>Latencies simply add.</b> Each stage starts when its input beats arrive: 21 + 4 + 108 + 4 + 108 + 4 + 2 = <b>251 ticks</b>, with 5 to spare before the next frame.</li>
+  <li><b>About 860 multiply-accumulates per frame</b> (two 400-crosspoint matrices plus 60 level multiplies) on 11 slices, all clocked at only 12.288 MHz.</li>
+  <li><b>The output is one atomic update.</b> All 20 outputs move to the links on a single clock edge at tick 251, so the links always capture a consistent frame.</li>
+</ul>
+
+<h4 class="mh">How many slices does a size need?</h4>
+<table class="tbl">
+  <thead><tr><th>Core size</th><th>DSP slices</th><th>Latency D</th><th>What it shows</th></tr></thead>
+  <tbody>
+    <tr><td>12 × 12 × 12</td><td>6 (1 + 2 matrix lanes, 3 levels)</td><td>254 ticks</td><td>Just fits inside the frame</td></tr>
+    <tr><td><b>20 × 20 × 20 (today)</b></td><td><b>11</b> (4 + 4, 3 levels)</td><td><b>251 ticks</b></td><td>The fewest slices that fit</td></tr>
+    <tr><td>20 × 20 × 20, one lane more</td><td>12 (4 + 5, 3 levels)</td><td>232 ticks</td><td>Trade one slice for 19 ticks</td></tr>
+    <tr><td>28 × 28 × 28</td><td>23 (10 + 10, 3 levels)</td><td>235 ticks</td><td>A third link's worth of extra channels</td></tr>
+  </tbody>
+</table>
+<p class="note" style="margin-top:10px">The lane counts are not chosen by hand. A function evaluated when the design is built picks the fewest slices that still finish inside the frame, and refuses a size that cannot fit. Add a stage that lengthens the chain and it adds lanes by itself. Area and time are a dial you turn in one place.</p>
+
+<!-- ============================================================ -->
+<h3 class="sec" id="inserts">2.7 Anatomy of a DSP insert</h3>
+<p class="status"><b>Planned, not built.</b> The direction is decided (roadmap Phase 7 and decisions HD2 to HD7 of 2026-10-10). The details below are the proposal (LF1 to LF8, 2026-10-10) and are still open to change.</p>
+<p class="caption">An insert is one more stage in the chain, built from a single template. Everything around it already exists: the stream format, the coefficient RAM, the register window and the meters. What the plan adds is two changes to the core's rules, and a smoother between the settings and the maths.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 1000 345" role="img" aria-label="Anatomy of a DSP insert: the stream passes through the DSP block, its coefficients come from a register window, a RAM bank and a smoother, and an optional sidechain is read from a frame tap">
+  <defs>
+    <marker id="i-aud" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--audio)"/></marker>
+    <marker id="i-ctl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--ctrl)"/></marker>
+  </defs>
+
+  <!-- coefficient path -->
+  <rect class="node ctrl" x="20" y="18" width="190" height="56" rx="7"/>
+  <text class="t" x="32" y="41">Register window</text>
+  <text class="s" x="32" y="59">AXI4-Lite, from the OSC server</text>
+  <rect class="node ctrl" x="245" y="18" width="190" height="56" rx="7"/>
+  <text class="t" x="257" y="41">coef_bank_ram</text>
+  <text class="s" x="257" y="59">2 banks, swapped per frame</text>
+  <rect class="node ctrl" x="470" y="18" width="190" height="56" rx="7"/>
+  <text class="t" x="482" y="41">coef_smooth</text>
+  <text class="s" x="482" y="59">about 1.3 ms: no clicks</text>
+  <path class="a-ctrl" d="M210,46 H243" marker-end="url(#i-ctl)"/>
+  <path class="a-ctrl" d="M435,46 H468" marker-end="url(#i-ctl)"/>
+  <path class="a-ctrl" d="M565,74 V133" marker-end="url(#i-ctl)"/>
+
+  <!-- the insert -->
+  <rect class="region" x="240" y="100" width="470" height="162" rx="10"/>
+  <text class="s" x="254" y="120">Insert block, from the library template</text>
+  <rect class="node audio strong" x="330" y="135" width="280" height="110" rx="8"/>
+  <text class="t" x="344" y="160">The DSP</text>
+  <text class="s" x="344" y="180">biquad EQ · compressor · delay RAM</text>
+  <text class="s" x="344" y="198">at most 256 ticks of work per frame</text>
+  <text class="s" x="344" y="216">latency stated in ticks, checked</text>
+  <text class="s" x="344" y="234">when the design is built</text>
+
+  <!-- stream in / out -->
+  <path class="a-audio" d="M20,190 H328" marker-end="url(#i-aud)"/>
+  <text class="s" x="20" y="176">stream in</text>
+  <text class="s" x="20" y="208">one beat per channel,</text>
+  <text class="s" x="20" y="222">plus a frame marker</text>
+  <path class="a-audio" d="M610,190 H990" marker-end="url(#i-aud)"/>
+  <text class="s" x="722" y="176">stream out</text>
+  <text class="s" x="722" y="208">plus the marker, delayed</text>
+  <text class="s" x="722" y="222">by this block's latency</text>
+
+  <!-- sidechain -->
+  <rect class="node audio" x="330" y="285" width="280" height="52" rx="7"/>
+  <text class="t" x="344" y="308">pcm_frame_tap</text>
+  <text class="s" x="344" y="326">a stream held in RAM, one frame old</text>
+  <path class="a-audio" d="M470,285 V247" marker-end="url(#i-aud)"/>
+  <text class="s" x="480" y="274">reads sidechain[c]</text>
+  <text class="s" x="20" y="303">optional key source: an input</text>
+  <text class="s" x="20" y="319">channel or a bus, picked like source</text>
+  <path class="a-audio" d="M245,311 H328" marker-end="url(#i-aud)"/>
+</svg>
+</div>
+
+<div class="split">
+  <div class="col">
+    <h4>Two rules change</h4>
+    <ul>
+      <li><b>"Inside one frame" becomes "keeps up with the frame rate".</b> A stage may spill into the next frame as long as it does at most 256 ticks of work per frame. Latency becomes a stated number of ticks, about 20.8 µs per extra frame.</li>
+      <li><b>Each block swaps its settings at its own frame start.</b> The frame marker travels down the chain with the stream, so every frame sees one whole bank in every block, however late it runs.</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h4>The template every insert starts from</h4>
+    <ul>
+      <li>Stream in and out, a coefficient read port, a stated latency</li>
+      <li>A register window, RAM bank and smoother, the same pattern as today's blocks</li>
+      <li>A bit-exact model, random-audio testbench and stream monitor</li>
+      <li>A mutation harness that proves the tests can fail</li>
+      <li>A server-side backend that describes its OSC zone</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h4>Also planned</h4>
+    <ul>
+      <li><b>Sidechains:</b> a second input chosen like a channel's source, read one frame late through the frame tap</li>
+      <li><b>Mute:</b> a fade to −90 dB through the smoother, not a click</li>
+      <li><b>Retrofit:</b> smoothing today's levels and matrices to remove clicks on fader moves</li>
+      <li><b>Spatial / binaural:</b> its own section of the chain, not an insert</li>
+      <li>The library lives in its own repo, pinned here as a submodule</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout">
+  <p><b>Why time-sharing matters here.</b> The Phase 9 design notes estimate that 64 channels of 8-band EQ (5 multiplies per band) would take about 10 DSP slices of the chip's 360. That is a budget estimate, not a build, but it shows why the chain is built to take more stages.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why">3. Why an FPGA for audio hardware?</h2>
+<p class="caption">What this project actually demonstrates, with the evidence from the design. The honest version includes what the FPGA is not good at.</p>
+
+<div class="cards">
+  <div class="card audio">
+    <h3>Latency you can state in clock cycles</h3>
+    <p class="claim">The mixing core finishes every frame in exactly 251 ticks of the audio clock, about 20 µs. It is the same on frame one and frame ten billion. No scheduler, cache or interrupt sits in the audio path.</p>
+    <p class="proof">Testbenches check each block's timing to the cycle. For context, the delay you hear today is mostly Linux and USB buffering (about 61 ms USB round trip). The PL's own share is 20 µs.</p>
+  </div>
+  <div class="card audio">
+    <h3>Hardware reused in time, with room to spare</h3>
+    <p class="claim">A parallel 20 × 20 matrix would need 400 multipliers, more than the chip's 360. Time-sharing at the audio clock does the whole chain, about 860 multiplies per frame, on 11 DSP slices, about 3 %.</p>
+    <p class="proof">Making the first matrix time-shared cut it from 144 slices to 1 and removed 19 % of the LUTs. Growing to 28 × 28 × 28 costs 23 slices, so the planned EQ, dynamics and delay library has room. Channel counts are parameters, not rewrites.</p>
+  </div>
+  <div class="card clock">
+    <h3>You own the clock itself</h3>
+    <p class="claim">The audio clock is generated inside the FPGA and nudged in 12 ps steps (the MMCM's dynamic phase shift) by a loop that follows network time, by up to ±88 ppm. Two devices agree to 3 to 4 ns RMS over gPTP.</p>
+    <p class="proof">The PL counts its own clock cycles against the gPTP second from the PS's hardware time counter. Mixers without that access usually have to resample to match a network clock.</p>
+  </div>
+  <div class="card neutral">
+    <h3>Bit-exact and provable</h3>
+    <p class="claim">The arithmetic is fixed-point (Q2.16 gains, 24-bit saturating), so a software model gives the identical answer. 20 testbenches compare every output sample against a reference model.</p>
+    <p class="proof">A 6-hour loopback null test pushed 2.4 billion samples through USB and AVB, both directions, with zero differences.</p>
+  </div>
+  <div class="card ctrl">
+    <h3>Updates land whole</h3>
+    <p class="claim">Each stage's gains sit in double-buffered RAM. A commit swaps the entire bank on one frame strobe, so no frame ever mixes old and new settings. A snapshot recall writes each bank once and commits it once, however many crosspoints change.</p>
+    <p class="proof">Meters are read-only taps on the same streams, so they cannot disturb the audio or its timing.</p>
+  </div>
+  <div class="card neutral">
+    <h3>The hardware can change shape</h3>
+    <p class="claim">On one board the design went from a 4 × 4 analog matrix, to 12 × 12 with USB, to 20 × 20 × 20 with a bus layer, levels, meters, an I/O patch and AVB. The Pmod front door was replaced by a USB interface.</p>
+    <p class="proof">Each step was new RTL and a new bitstream, with no change to the board.</p>
+  </div>
+</div>
+
+<div class="split">
+  <div class="col">
+    <h4>In the PL: anything with a sample-clock deadline</h4>
+    <ul>
+      <li>Mixing: levels, matrices, patching</li>
+      <li>Peak metering</li>
+      <li>The audio clock and its steering</li>
+      <li>Timestamping against gPTP time</li>
+      <li>Atomic settings updates</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h4>In the PS: anything with a protocol state machine</h4>
+    <ul>
+      <li>USB device and host, UAC2</li>
+      <li>AVB talker/listener, AVDECC, MSRP</li>
+      <li>The OSC server, saved settings, snapshots</li>
+      <li>The gPTP daemon and the clock servo (about 1 Hz)</li>
+      <li>Sample-rate conversion for the M2</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h4>What it costs</h4>
+    <ul>
+      <li>Each hardware change is a synthesis and timing run, not a recompile</li>
+      <li>Clock crossings are designed and constrained by hand</li>
+      <li>Fixed-point maths and a fixed cycle budget per frame</li>
+      <li>Protocol stacks are far easier in Linux, which is why the design is a hybrid</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  Built from <code>README.md</code>, <code>docs/architecture_modules.md</code>, <code>docs/FPGAmixer_Architecture_Roadmap.md</code>, <code>docs/phase8_status_2026-09-25.md</code> (the DMA link), <code>docs/phase9_status_2026-09-26.md</code> (time-sharing), <code>docs/library_foundation_proposal_2026-10-10.md</code> (DSP inserts, a proposal), and the RTL (<code>pcm_link.sv</code>, <code>pcm_gain.sv</code>, <code>async_fifo.sv</code>, <code>mixer_core_pkg.sv</code>) as of the p15e hardening baseline (image <code>p15e-hardening-20261026</code>). Everything is built and benched except the DSP inserts (2.5 and 2.7), which are planned.
+</footer>
+
+</main>
+<script>
+  // Port strip: 4 + 8 + 8 cells, numbered.
+  (function () {
+    function fill(id, from, count, color) {
+      var el = document.getElementById(id);
+      for (var i = 0; i < count; i++) {
+        var s = document.createElement('span');
+        s.textContent = from + i;
+        s.style.background = color;
+        el.appendChild(s);
+      }
+    }
+    fill('g1', 0, 4, 'var(--p1)');
+    fill('g2', 4, 8, 'var(--p2)');
+    fill('g3', 12, 8, 'var(--p3)');
+  })();
+</script>
+</body>
+</html>
