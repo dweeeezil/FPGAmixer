@@ -445,4 +445,24 @@ This image carries three untested layers: `lf2` (smoothing), `lf8` (inserts) and
 
 **Next:** `eq2`, the same build with the fixed block. The SDT is `eq1`'s with the new bitstream (no address change). Then §7.6 again.
 
+### 7.8 `eq2` (2026-11-18): the same build with the fixed block
+
+**Vivado `eq2`** (FPGAmixer `2686457`, library `cd7f200`):
+- WNS 3.522 ns, WHS 0.010 ns, 0 failing paths, 0 critical warnings, methodology PASS;
+- 42 DSPs, 33 BRAM tiles, 30,290 LUTs (eq1: 30,317);
+- the EQ's `in_buf` is now **32 × 24** in the RAM report (eq1: 32 × 30, the fault); `buf01` and `buf10` 32 × 35 as before.
+
+**The SDT:** `build/sdt` = eq1's (kept as `build/sdt.eq1`, on the VM `~/edf/sdt.eq1`) with only two changes:
+- the bitstream `fpgamixer_eq2.bit` from the XSA, MD5 `a52beadd…`;
+- `pl.dtsi`'s `firmware-name` `fpgamixer_eq2.bit.bin`, CRLF kept.
+
+The XSA's six `psu_init` files are byte-identical to eq1's, and its `ps_sys.hwh` address map is the same.
+
+**The image:** `build/sd/eq2-eqfix-20261118.wic.xz`, 109,382,580 bytes, MD5 `a3bb6e17007a0b92fafe25b9242abf82`, `xz -t` OK. Built on `edfvm` with the layer at `2686457`: 15,107 tasks, all succeeded, 7 min, the same warnings as eq1. Checked inside:
+- `boot.bin`'s bitstream (FSBL → PL) and the deployed `.bit` are `a52beadd…`, the same as eq2's;
+- the rootfs `VERSION` is `2686457`; the EQ software, `mixer_inserts.py` and `queue.py` are present; p15e's fixes are present (`REQ_NUMBER=8`, PAUSE off, the journal mount);
+- both DTBs have `M_AXI_EQPOOL@80012000`, `M_AXI_INSERT` and `firmware-name` `fpgamixer_eq2.bit.bin`.
+
+**Bench:** §7.6 as written, on `eq2`. Step 4 (a flat EQ in the T1 path, bit-exact) is the direct check of this fix.
+
 **After a pass** (of `eq2`): it replaces `p15e` as the image in use. A response spot check (a known sine through a known band, read on the meters) is optional, if a tone source is at hand.
