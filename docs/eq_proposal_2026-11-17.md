@@ -424,4 +424,25 @@ This image carries three untested layers: `lf2` (smoothing), `lf8` (inserts) and
    - `lf2`'s checks: fast fader moves, −∞ and back, a snapshot recall: no clicks.
 6. **Persistence:** `sudo reboot`; the EQ and its settings are back.
 
-**After a pass:** `eq1` replaces `p15e` as the image in use. A response spot check (a known sine through a known band, read on the meters) is optional, if a tone source is at hand.
+### 7.7 `eq1` on the board: every negative sample +full scale (2026-11-18)
+
+**The user:** adding an EQ insert to a channel raised its level by more than 12 dB and clipped it hard. The EQ had its defaults: 8 flat peaks.
+
+**Why it couldn't be the server or the app:** with every band flat (m = 1, 0, 0) the output is the input exactly, whatever the a's. And the server writes nothing for a default EQ: its driver starts every band at FLAT, so the hardware ran on its reset bank, which simulation shows bit-exact.
+
+**The cause: Vivado synthesis.** The library's TB, run against the block's synthesized netlist (out of context, `write_verilog -mode funcsim`), failed with 12,785 errors where the RTL passes. In phase 0 (flat), every negative input came out 0x7FFFFF and every positive one exact. The input buffer `in_buf` held each sample sign-extended to 35 bits and shifted left 4. Vivado 2026.1 stored it as 32 × 30 bits (its RAM report shows it) and lost the sign extension. A minimal module with just that RAM reproduces it: −4,026,768 comes back as +1,069,715,056. XSim, the language standard, and the same expression in a register all give the right value, so this is a synthesis bug. A negative sample entered the EQ as a huge positive one and saturated. The user's guess ("a bit depth issue") was close: it is the sign bits.
+
+**The fix (library `cd7f200`):** `in_buf` holds the raw 24-bit samples, widened as band 0 reads them. Results:
+- the RTL and the netlist are both bit-exact (14,336 samples, 448 frames, 5 phases);
+- mutants 19/19, with one new mutant for this fault;
+- FPGAmixer's regression all PASS, `topwin` included.
+
+**New in the library:** `scripts/netsim.ps1` runs a block's TB against its synthesized netlist. It is step 9 of `docs/writing_a_block.md`, with the rule "store raw samples in RAMs, widen them on the way out".
+
+**The rest of eq1 checked:** every other RAM in the eq1 synthesis has its declared width, apart from two:
+- the insert router's RETURN tables (14 of 18 bits): the age field isn't read for RETURN entries, so the trim is correct;
+- the link FIFOs: raw unsigned words, on hardware since earlier phases.
+
+**Next:** `eq2`, the same build with the fixed block. The SDT is `eq1`'s with the new bitstream (no address change). Then §7.6 again.
+
+**After a pass** (of `eq2`): it replaces `p15e` as the image in use. A response spot check (a known sine through a known band, read on the meters) is optional, if a tone source is at hand.
