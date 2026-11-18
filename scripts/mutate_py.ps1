@@ -9,6 +9,11 @@ $work = Join-Path $env:TEMP "fpgamixer-mutpy"
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
 New-Item -ItemType Directory $work | Out-Null
 Copy-Item -Recurse "$repo\tools" "$work\tools"
+# the library's reference models (test_mixer_eq compares against them through ..\src\lib\model)
+if (Test-Path "$repo\src\lib\model") {
+    New-Item -ItemType Directory -Force "$work\src\lib" | Out-Null
+    Copy-Item -Recurse "$repo\src\lib\model" "$work\src\lib\model"
+}
 
 function Run-Tests {
     Push-Location "$work\tools"
