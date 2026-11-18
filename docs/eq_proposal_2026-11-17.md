@@ -389,3 +389,32 @@ The block is done and generic; step C makes it the second insert type. Nothing i
 33 of 216 tiles is 15 %. If BRAM ever gets tight, the smoothers' current values could move to LUT-RAM.
 
 **Blocked: the SDT.** `sdtgen.exe` is now refused by Windows Device Guard ("blocked by your organization's Device Guard policy"), twice. It ran for `lf8` on 2026-11-01. Not worked around: it is the user's security policy.
+
+**The SDT, derived (the user, 2026-11-17: "Derive them from lf8"):** `build/sdt` = `sdt.lf8` with only what `sdtgen` would change for one more window:
+- **The bitstream:** `fpgamixer_eq1.bit`, taken from the `eq1` XSA (MD5 `aac88b73…` = the XSA's).
+- **`psu_init.*`:** taken from the `eq1` XSA, all six byte-identical to `lf8`'s (no PS change).
+- **`pl.dtsi`:** `firmware-name` `fpgamixer_eq1.bit.bin`.
+- **`pcw.dtsi`:** the `M_AXI_EQPOOL@80012000` node (reg `0x2000`), after `M_AXI_GPOOL`'s, in its form.
+- **`system-top.dts`:** the window's line in each of the four `ranges` lists, in address order, size `0x2000`.
+
+The method was checked first: a full `diff -r` of `sdt.lf2` → `sdt.lf8` shows exactly these three files and the bitstream changing for `lf8`'s two windows; `extracted/` and `include/` are identical. The XSA's `ps_sys.hwh` confirms the window at 0x8001_2000 … 0x8001_3FFF. If the tree were wrong, `gen-machine-conf` would fail, or the server would refuse the window (no device-tree node): it fails safe.
+
+### 7.6 Bench session `eq1` (the user; the board at `ssh amd-edf@10.0.0.2`)
+
+This image carries three untested layers: `lf2` (smoothing), `lf8` (inserts) and the EQ. So the gate comes first. A reflash wipes the mix and the on-board snapshots: save what's needed first.
+
+1. **Flash, boot.** If the Ethernet LEDs go dark after a second, do a full power-off for ~10 s. Restore the mix and the channel-20 path.
+2. **Board check:**
+   - `sudo python3 /usr/lib/fpgamixer/mixer_hw.py inserts` prints the router (`K 8, 2 pool(s) x 32 slots, 9 frames per insert point`), `gain pool, 32 slots, Q2.16` and `EQ, 32 slots x 8 bands, a Q.24, m Q.18`;
+   - `journalctl -b -u fpgamixer-osc | grep Inserts` shows `pools gain (32), eq (32)`.
+3. **The gate:** T1 USB → USB, AVB → AVB, USB → AVB, 5 min each: all PASS, bit-exact.
+4. **An EQ in the path, flat:** insert `eq` on the channel-20 path (input 20; OSC index 19); T1 USB → USB, 5 min: **PASS, bit-exact**.
+5. **By ear**, an EQ on a channel you listen to:
+   - a +12 dB peak swept fast across the range: smooth, no zipper noise;
+   - boost and cut; a low and a high shelf; a high-pass at ~200 Hz; a low-pass;
+   - **change a sounding band's type**: about 0.2 s later the new type, no bump;
+   - `eq_on` off and on: a smooth fade;
+   - `lf2`'s checks: fast fader moves, −∞ and back, a snapshot recall: no clicks.
+6. **Persistence:** `sudo reboot`; the EQ and its settings are back.
+
+**After a pass:** `eq1` replaces `p15e` as the image in use. A response spot check (a known sine through a known band, read on the meters) is optional, if a tone source is at hand.
