@@ -255,3 +255,33 @@ A library block from the template, generic: S slots × B bands, no knowledge of 
 **Not in step B:** the router's second pool, the window in the block design, the server's `mixer_eq.py` and the type-change-through-flat sequence. Those are step C.
 
 **Question for the user:** none of substance. The one visible consequence is the 8 KB window and its address (above). Unless you object, step B is built as planned and I check in with the results before step C.
+
+**Decided (the user, 2026-11-17):** build step B as planned.
+
+### 6.1 Step B built (2026-11-17; the library, local, not pushed)
+
+**What was built** (`HDL-DSP-Library/blocks/svf_eq/`):
+- `lib_svf_eq_pkg.sv`: the formats, the schedule (`LANE_LAT` 12, `D1` 13, the period), `lat_first`/`lat_last`, `fits`, `coef_index`, the flat section's coefficients;
+- `lib_svf_eq.sv`: two lanes alternating bands, error feedback, the output straight from lane 1's last band;
+- `lib_svf_eq_regs_axil.sv`: ID `0x4551_5001`; an 8 KB window (1,536 coefficients); `coef_bank_ram` with `LANES` = 6 and `PORTS` = 2; reset all flat;
+- `tb_lib_svf_eq.sv`.
+
+Model side (`model/`): `eq_vectors.py` writes the TB's vectors from `FixedBand`. The library's regression runs it first (a new pre-step), and the mutation runner now also copies `blocks/` and `model/`.
+
+**Checked:**
+- **Bit-exact:** 14,336 samples over 448 frames. The phases:
+  - flat (output = input);
+  - random designs of every type;
+  - extremes;
+  - random designs again, two of the coefficient phases loaded in the middle of a frame's input beats, so the swap point is tested;
+  - 384 frames of overload: a full-scale 2 kHz square into seven +15 dB boosts and a Q 10 low-pass, with every saturation in the path hit (the generator checks that the model saturates `v0 − ic2`: 44,537 times).
+- **Timing:** the output stream contiguous and ascending, first beat exactly `lat_first`, last exactly `lat_last` (160 cycles after the last input; the pool budget is 221).
+- **Reads:** each lane reads each of its sections exactly once per frame.
+- **Mutants:** 18 / 18 killed. The first run left two alive, both TB gaps, both closed:
+  - "no saturation on v3": the vectors never overloaded the chain; the stress phase was added;
+  - "the bank swaps on the first input beat": coefficients only ever changed between frames; mid-frame loads were added.
+- **A TB bug found on the way:** its `meta` array was sized for 4 phases, so the 5th was never loaded. Fixed: sized from the phase count.
+- **Out-of-context synthesis** (`scripts/synth_ooc.tcl`, xczu3eg, routed): **28 DSP48E2, as planned**; 4 BRAM tiles, 1,605 LUTs (306 as memory), 2,245 registers. WNS 3.74 ns at 100 MHz (the block runs on mclk, 12.3 MHz).
+- The library regression is 4 / 4 (coefram, smooth, template, svf_eq); the model's tests 15 / 15.
+
+**Next: step C** (FPGAmixer). The second pool in the router; the 8 KB window at 0x8001_2000; the smoothers in the top; the server's `mixer_eq.py`, the EQ pool type and type changes through flat; the tests; a Vivado check; the image.
