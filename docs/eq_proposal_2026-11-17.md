@@ -353,3 +353,39 @@ The block is done and generic; step C makes it the second insert type. Nothing i
 - **Q3, build the image and bench right after step C.** Recommended, as with the inserts.
 
 **Decided (the user, 2026-11-17):** Q1 yes (type changes through flat, ~0.2 s), Q2 yes (recall switches types directly), Q3 yes (image and bench right after step C).
+
+### 7.5 Step C built (2026-11-17; local, not pushed)
+
+**Checked:**
+- FPGAmixer regression **18 / 18**. `regs` failed once with "child exe not found" (Defender) and passed on rerun.
+- `tb_top_windows`: the EQ window's ID, CONFIG and its last register (8 KB); an EQ inserted flat is **bit-exact**; a +6.02 dB low shelf at 1 kHz on input 13's DC gives **exactly 0x1C0000 = 2 × 0x0E0000**, the model's value, through the real smoothers.
+- Python: 243 tests on Windows, 304 on Linux (the VM), with:
+  - `test_mixer_eq` (the copy vs the library model, 875 settings word for word; the plans; the driver on a fake clock);
+  - `EqInserts` (TCP end to end);
+  - `test_mixer_hw` with the 8 KB window.
+- **Two bugs found and fixed before commit:**
+  - `band_steps` issued no-op writes;
+  - the driver's re-plan after a wait would repeat its "new filter, flat mix" step forever.
+- **Mutants:** `eq_server.json` **10 / 11**. The 11th, "filters keep the gain", is equivalent: `design()` ignores gain for high- and low-pass. The first run also let "the high shelf's m1 sign" survive: the Python mutation runner didn't copy the library's model, so the word-for-word test skipped itself. Fixed (`mutate_py.ps1` copies `src/lib/model`); killed.
+
+**Vivado `eq1`:** WNS 4.145 ns, WHS 0.010 ns, 0 failing, 0 critical warnings, methodology PASS. Against `lf8`:
+
+| | lf8 | eq1 | |
+|---|---|---|---|
+| LUTs | 26,067 | 30,317 | +4,250 |
+| registers | 38,267 | 40,857 | +2,590 |
+| BRAM tiles | 13.5 | 33 | **+19.5** |
+| DSPs | 13 | 42 | +29 (the EQ 28, its window 1) |
+
+**BRAM: more than §7.1's "about +4"**, which counted only the block. By module (the hierarchical report):
+
+| Module | BRAM tiles |
+|---|---|
+| the EQ block | 4 |
+| its window (the shadow and 2 × 6 lane RAMs) | 7.5 |
+| its two smoothers | 6 |
+| the router's history copies and the table bank's fifth port | +2 |
+
+33 of 216 tiles is 15 %. If BRAM ever gets tight, the smoothers' current values could move to LUT-RAM.
+
+**Blocked: the SDT.** `sdtgen.exe` is now refused by Windows Device Guard ("blocked by your organization's Device Guard policy"), twice. It ran for `lf8` on 2026-11-01. Not worked around: it is the user's security policy.
