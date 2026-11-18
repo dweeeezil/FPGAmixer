@@ -285,3 +285,69 @@ Model side (`model/`): `eq_vectors.py` writes the TB's vectors from `FixedBand`.
 - The library regression is 4 / 4 (coefram, smooth, template, svf_eq); the model's tests 15 / 15.
 
 **Next: step C** (FPGAmixer). The second pool in the router; the 8 KB window at 0x8001_2000; the smoothers in the top; the server's `mixer_eq.py`, the EQ pool type and type changes through flat; the tests; a Vivado check; the image.
+
+## 7. Step C plan: the EQ in FPGAmixer and the server (2026-11-17, for the user's review)
+
+The block is done and generic; step C makes it the second insert type. Nothing in the core or the router's logic changes: the router was built for `NP` pools.
+
+### 7.1 The FPGA side
+
+- **Submodule:** `src/lib` moves to the library's `12f553c`. The Vivado project and both regression scripts pick up `src/lib/blocks/svf_eq/` (its TB stays out, like the template's).
+- **Top** (`fpgamixer_top`):
+  - `NPOOL` 2: pool 1 is `lib_svf_eq` (32 slots, 8 bands);
+  - its binding `lib_svf_eq_regs_axil`, and a `coef_smooth` on each of its two read ports (W 26, 256 words, 6 lanes, the same `SMOOTH_K`);
+  - without the PS: two flat readers over the all-flat bank;
+  - the router's `POOL_LAT` becomes the larger of the two pools' (the EQ's 160). The router's rule is then 4 + 31 + 160 = 195 ≤ 256.
+- **Router tables:** 60 + 2 × 32 = 124 entries (still one 4 KB window), with 5 read ports on its bank.
+- **Block design:** `M_AXI_EQPOOL` on `ctrl_smc2` at **0x8001_2000, 8 KB**. The window loop learns a per-port range (today every window is 4 KB). The device tree gains its node.
+- **Simulation:**
+  - the BD stub gets master 12;
+  - `tb_top_windows` checks the EQ window's ID and CONFIG;
+  - a flat EQ inserted on a channel must be bit-exact;
+  - a low shelf at 1 kHz, +6.02 dB, on a channel with the TB's DC input must give that channel ×2 at the output, to the coefficients' 0.004 dB. The coefficient codes come from the model, so the TB has no design maths of its own.
+  - The regression stays green (`tb_insert_router` uses its own behavioural pools, so it doesn't change).
+- **Vivado check:** about +28 DSPs (13 → 41 of 360) and about +4 BRAM tiles; timing must hold.
+
+### 7.2 The server
+
+- **`tools/mixer_eq.py`** (new; pure Python, no OSC, no hardware):
+  - the design formulas and `EQ_FMT`'s quantization, a copy of the library's model;
+  - a slot's 41 parameters → 8 × 6 coefficient words;
+  - `eq_on` 0, or a band's `on` 0, → that band flat (m = 1, 0, 0);
+  - the high-pass and low-pass ignore gain.
+- **`tools/test_mixer_eq.py`** checks the copy against the library's model **through the submodule** (`src/lib/model`), word for word over a grid of settings, so the two can't drift. It runs on the PC.
+- **`mixer_hw.py`:**
+  - `EqPoolHW` (ID `0x4551_5001`; CONFIG checked: 32 slots, 8 bands, AF 24, MF 18);
+  - windows get a size (this one 8 KB; every other still 4 KB);
+  - `POOLS` becomes `(("gain", "gainpool"), ("eq", "eqpool"))`, the router's pool order.
+- **The server:**
+  - the pool type `eq` with the modules of §3. The enum `eq_bandN_type` carries `optionLabels` (Peak, Low shelf, High shelf, High-pass, Low-pass). The defaults are the identity, which the insert router's bit-exact front edits rely on.
+  - An `EqPoolDriver` writes a slot's changed bands (6 words each, one COMMIT).
+- **Type changes go through flat** (§5, finding 4): when a band's `type` changes, an EQ worker (like the insert worker: outside the ordering lock, values read from the store when each step runs):
+  1. the old filter with the flat mix;
+  2. wait ~0.1 s;
+  3. the new filter with the flat mix;
+  4. wait ~0.1 s;
+  5. the band's stored values.
+
+  The echo is immediate as always, and the sound follows about 0.2 s later. Other parameter changes are written at once, except to a band whose type change is under way (its last step writes them).
+- **Groups, snapshots, persistence:** nothing new. The insert code is generic over pool types. A recall writes types directly (Q2).
+- **The recipe:** `fpgamixer-osc` installs `mixer_eq.py` (the explicit file list; learned with `mixer_inserts.py`).
+- **Tests:**
+  - server tests over TCP: insert an EQ, set a band (echo, config, refusal on a free slot), groups link band parameters, a snapshot round trip;
+  - the type-change sequence on fake hardware, in order;
+  - `test_mixer_hw` for the window (on the Linux VM).
+- **Docs:** the controller spec gains the `eq` type's module table. It's additive: a controller written to the spec already shows it with generic controls.
+
+### 7.3 Then: bitstream, image, bench (yours)
+
+- the gate (null tests);
+- **bit-exact with an EQ inserted flat** on the channel-20 path;
+- **by ear:** sweep a band fast, boost and cut, the shelves, high-pass and low-pass, a type change (no bump, about 0.2 s), no zipper noise or clicks;
+- a response spot check on the meters (a known band setting, a sine).
+
+### 7.4 Questions for the user
+
+- **Q1, a type change waits about 0.2 s before the new type sounds** (the click-free path through flat). Recommended. The alternative is an instant switch, which can bump up to +13 dB on the way for unlike types.
+- **Q2, snapshot recalls switch types directly**, with no wait: a recall changes the whole mix at once anyway. Recommended. The alternative is that recall also goes through flat for every band whose type changes (+0.2 s for those bands).
+- **Q3, build the image and bench right after step C.** Recommended, as with the inserts.
