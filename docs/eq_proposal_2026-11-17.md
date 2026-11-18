@@ -399,6 +399,13 @@ The block is done and generic; step C makes it the second insert type. Nothing i
 
 The method was checked first: a full `diff -r` of `sdt.lf2` → `sdt.lf8` shows exactly these three files and the bitstream changing for `lf8`'s two windows; `extracted/` and `include/` are identical. The XSA's `ps_sys.hwh` confirms the window at 0x8001_2000 … 0x8001_3FFF. If the tree were wrong, `gen-machine-conf` would fail, or the server would refuse the window (no device-tree node): it fails safe.
 
+**The image (2026-11-18):** `build/sd/eq1-eq-20261118.wic.xz`, 109,380,320 bytes, MD5 `ac365a9d81c0040fec4bc2a7721d852b`, `xz -t` OK. Built on `edfvm` from the derived SDT and the layer at `e33b62f`: 15,107 tasks, all succeeded, no warnings beyond `lf8`'s. Checked inside the image:
+- the deployed bitstream's MD5 is `aac88b73…`, the same as eq1's;
+- the rootfs `VERSION` is `e33b62f`;
+- `mixer_eq.py`, `mixer_inserts.py`, the server's `EqPoolDriver`, `mixer_hw.py`'s `eqpool` window and `queue.py` are present;
+- p15e's fixes are present: the gadget's `REQ_NUMBER=8`, PAUSE off, the journal mount;
+- `system.dtb` and `u-boot.dtb` both have `M_AXI_EQPOOL@80012000` (reg `0x2000`) beside `M_AXI_INSERT`.
+
 ### 7.6 Bench session `eq1` (the user; the board at `ssh amd-edf@10.0.0.2`)
 
 This image carries three untested layers: `lf2` (smoothing), `lf8` (inserts) and the EQ. So the gate comes first. A reflash wipes the mix and the on-board snapshots: save what's needed first.
