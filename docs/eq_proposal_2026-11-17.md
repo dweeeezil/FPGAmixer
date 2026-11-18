@@ -351,3 +351,5 @@ The block is done and generic; step C makes it the second insert type. Nothing i
 - **Q1, a type change waits about 0.2 s before the new type sounds** (the click-free path through flat). Recommended. The alternative is an instant switch, which can bump up to +13 dB on the way for unlike types.
 - **Q2, snapshot recalls switch types directly**, with no wait: a recall changes the whole mix at once anyway. Recommended. The alternative is that recall also goes through flat for every band whose type changes (+0.2 s for those bands).
 - **Q3, build the image and bench right after step C.** Recommended, as with the inserts.
+
+**Decided (the user, 2026-11-17):** Q1 yes (type changes through flat, ~0.2 s), Q2 yes (recall switches types directly), Q3 yes (image and bench right after step C).

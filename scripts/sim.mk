@@ -57,8 +57,12 @@ MXSIM    := $(SIM)/matrix_packed_sim.sv
 LTPL     := src/lib/template
 ROUTER   := $(RTL)/insert_router_pkg.sv $(RTL)/insert_router.sv
 
+# 2026-11-17: the EQ block, pool 1
+LEQ      := src/lib/blocks/svf_eq
+
 CORE_RTL := $(MIXCORE) $(LRTL)/coef_flat_reader.sv $(LRTL)/coef_smooth.sv \
             $(ROUTER) $(LTPL)/lib_template_pkg.sv $(LTPL)/lib_template.sv \
+            $(LEQ)/lib_svf_eq_pkg.sv $(LEQ)/lib_svf_eq.sv \
             $(RTL)/reset_sync.sv $(RTL)/audio_clocking.sv
 
 .PHONY: all matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat router topwin clean
@@ -208,7 +212,8 @@ topwin: | $(BUILD)
 		$(CORE_RTL) $(LRTL)/coef_bank_ram.sv $(LRTL)/axil_coef_window.sv \
 		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/pcm_peak.sv \
 		$(RTL)/peak_regs_axil.sv $(RTL)/patch_regs_axil.sv \
-		$(RTL)/insert_router_regs_axil.sv $(LTPL)/lib_template_regs_axil.sv $(RTL)/fpgamixer_top.sv \
+		$(RTL)/insert_router_regs_axil.sv $(LTPL)/lib_template_regs_axil.sv \
+		$(LEQ)/lib_svf_eq_regs_axil.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
 	@$(VVP) $(BUILD)/tb_top_windows.vvp
 

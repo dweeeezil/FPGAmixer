@@ -953,6 +953,8 @@ VGROUP = {"type": "int", "min": 0, "max": 64, "default": 0, "group": "link"}   #
 NAME = {"type": "string", "default": "", "maxLength": 32}                       # Phase 14
 PORT_LABELS = ([f"Analog {i}" for i in range(1, 5)] + [f"USB {i}" for i in range(1, 9)]
                + [f"AVB {i}" for i in range(1, 9)])                            # Phase 15, CS4
+EQ_MODULES = ["eq_on"] + [f"eq_band{n}_{p}" for n in range(1, 9)
+                          for p in ("on", "type", "freq", "gain", "q")]           # the EQ (2026-11-17)
 PATCH = {"type": "enum", "default": 0.0, "group": "patch",
          "options": [float(v) for v in range(21)], "optionLabels": ["None"] + PORT_LABELS}
 
@@ -982,7 +984,7 @@ class Config(ServerCase):
         self.assertEqual(set(d), {"schemaVersion", "deviceName", "firmware", "sampleRate", "zones",
                                   "modules", "system", "values", "capabilities", "inserts"})
         self.assertEqual(d["capabilities"], ["snapshots", "inserts"])      # Phase 14; LF8
-        self.assertEqual(d["inserts"], {"maxPerChannel": 8, "types": ["gain"], "delayFrames": 9})
+        self.assertEqual(d["inserts"], {"maxPerChannel": 8, "types": ["gain", "eq"], "delayFrames": 9})
         ch = {"count": 4, "modules": ["level", "inserts", "vgroup", "name"]}   # vgroup, name: Phase 14
         mx = {"rows": 4, "cols": 4, "modules": ["level"]}
         self.assertEqual(d["zones"], {"inputChannel": dict(ch, modules=["level", "source", "inserts",
@@ -990,11 +992,16 @@ class Config(ServerCase):
                                       "inputMatrix": mx, "busChannel": ch, "busMatrix": mx,
                                       "outputChannel": dict(ch, modules=["level", "destination", "inserts",
                                                                          "vgroup", "name"]),  # Phase 15
-                                      "gain": {"count": 32, "modules": ["gain_level"], "kind": "pool"}})
+                                      "gain": {"count": 32, "modules": ["gain_level"], "kind": "pool"},
+                                      "eq": {"count": 32, "modules": EQ_MODULES, "kind": "pool"}})
         self.assertEqual(list(d["zones"]), ["inputChannel", "inputMatrix", "busChannel",
-                                            "busMatrix", "outputChannel", "gain"])   # signal flow, then pools
+                                            "busMatrix", "outputChannel", "gain", "eq"])   # signal flow, then pools
         self.assertEqual(set(d["modules"]), {"level", "vgroup", "name", "source", "destination",
-                                             "inserts", "gain_level"})
+                                             "inserts", "gain_level"} | set(EQ_MODULES))
+        self.assertEqual(d["modules"]["eq_band1_type"]["optionLabels"],
+                         ["Peak", "Low shelf", "High shelf", "High-pass", "Low-pass"])
+        self.assertEqual((d["modules"]["eq_band5_freq"]["default"], d["modules"]["eq_band5_freq"]["unit"]),
+                         (1200.0, "Hz"))
         self.assertEqual(d["modules"]["inserts"], {"type": "string", "default": "", "maxLength": 255,
                                                    "group": "inserts", "linked": True})
         self.assertEqual(d["modules"]["gain_level"]["default"], 0.0)       # identity
@@ -2113,7 +2120,7 @@ class Inserts(Phase15Case):
         a, b = self.pair()
         self.ins(a, "inputChannel", 1, "gain")
         self.drain(b)
-        for text, reason in (("eq", "no insert type 'eq'"), ("gain:", "is not"), ("gain:32", "slots 0..31"),
+        for text, reason in (("dyn", "no insert type 'dyn'"), ("gain:", "is not"), ("gain:32", "slots 0..31"),
                              ("gain:0 gain:0", "twice"), ("gain:5", "free"), (" ".join(["gain"] * 9), "at most 8")):
             a.send_message("/mixer/set/inputChannel/0/inserts", [text])
             self.assertIn(reason, self.error(a, "inputChannel/0/inserts"), text)
@@ -2226,6 +2233,55 @@ class Inserts(Phase15Case):
         a.send_message("/mixer/snapshot/apply", [json.dumps(doc)])
         self.assertIn("must name their slots", self.error(a, "snapshot/apply"))
         self.assertEqual(self.get(a, "inputChannel/0/inserts"), "")
+
+
+class EqInserts(Phase15Case):
+    """The EQ (2026-11-17): the second insert type, 41 modules per slot,
+    defaults = flat; generic insert rules (slots, groups, snapshots) apply."""
+
+    def test_insert_echoes_all_41_parameters_at_their_defaults(self):
+        a = self.tcp()
+        sets = self.echoes(a, "/mixer/set/busChannel/1/inserts", "eq")
+        self.assertEqual(sets[0], ("set/busChannel/1/inserts", "eq:0"))
+        params = dict(sets[1:])
+        self.assertEqual(len(params), 41)
+        self.assertEqual([p for p, _v in sets[1:]], [f"set/eq/0/{m}" for m in EQ_MODULES])   # module order
+        self.assertEqual((params["set/eq/0/eq_on"], params["set/eq/0/eq_band1_freq"],
+                          params["set/eq/0/eq_band8_freq"], params["set/eq/0/eq_band4_q"]),
+                         (1.0, 30.0, 15000.0, 1.0))
+
+    def test_band_parameters_set_clamp_store_and_refuse_a_free_slot(self):
+        a = self.tcp()
+        self.echoes(a, "/mixer/set/inputChannel/2/inserts", "gain eq")
+        self.assertEqual(self.echoes(a, "/mixer/set/eq/0/eq_band3_gain", 30.0),
+                         [("set/eq/0/eq_band3_gain", 15.0)])                    # clamped
+        self.assertEqual(self.echoes(a, "/mixer/set/eq/0/eq_band3_type", 2.0),
+                         [("set/eq/0/eq_band3_type", 2.0)])
+        a.send_message("/mixer/set/eq/0/eq_band3_type", [7.0])
+        self.assertIn("not one of", self.error(a, "eq/0/eq_band3_type"))
+        self.assertEqual(self.config(a)["values"]["eq/0/eq_band3_gain"], 15.0)
+        a.send_message("/mixer/set/eq/1/eq_on", [0.0])
+        self.assertEqual(self.error(a, "eq/1/eq_on"), "eq:1 isn't inserted on any channel")
+
+    def test_grouped_channels_link_band_parameters(self):
+        a = self.tcp()
+        for ch in (0, 1):
+            self.echoes(a, f"/mixer/set/outputChannel/{ch}/vgroup", 3)
+        self.echoes(a, "/mixer/set/outputChannel/0/inserts", "eq")
+        self.assertEqual(self.get(a, "outputChannel/1/inserts"), "eq:1")
+        self.assertEqual(self.echoes(a, "/mixer/set/eq/1/eq_band2_freq", 120.0),
+                         [("set/eq/1/eq_band2_freq", 120.0), ("set/eq/0/eq_band2_freq", 120.0)])
+
+    def test_snapshot_round_trip(self):
+        a = self.tcp()
+        self.echoes(a, "/mixer/set/busChannel/0/inserts", "eq")
+        self.echoes(a, "/mixer/set/eq/0/eq_band5_type", 1.0)
+        a.send_message("/mixer/snapshot/save", ["EQ"])
+        a.read_message()
+        self.echoes(a, "/mixer/set/eq/0/eq_band5_type", 3.0)
+        a.send_message("/mixer/snapshot/load", ["EQ"])
+        self.drain(a)
+        self.assertEqual(self.get(a, "eq/0/eq_band5_type"), 1.0)
 
 
 class InsertsFromState(Phase15Case):

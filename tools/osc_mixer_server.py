@@ -203,6 +203,7 @@ import mixer_meters  # noqa: E402
 import mixer_snapshots  # noqa: E402
 import mixer_inserts  # noqa: E402
 from mixer_inserts import INSERTS_MODULE, InsertRefused  # noqa: E402
+import mixer_eq  # noqa: E402
 
 DEVICE_NAME_KEY = "system/deviceName"  # as sent; requests may add a trailing slash
 
@@ -420,10 +421,120 @@ class GainPoolDriver:
     def __init__(self, hw):
         self.hw = hw
 
-    def write(self, params):
-        """{slot: {module: value}} -> {slot: {module: applied}}, one COMMIT."""
+    def write(self, params, direct=False):
+        """{slot: {module: value}} -> {slot: {module: applied}}, one COMMIT
+        (a gain glides safely on its own: direct changes nothing)."""
         got = self.hw.set_bank_db({s: m["gain_level"] for s, m in params.items()})
         return {s: {"gain_level": float32(v)} for s, v in got.items()}
+
+
+def eq_pool_type(slots, index=1):
+    """The parametric EQ (docs/eq_proposal_2026-11-17.md): 41 modules per
+    slot (mixer_eq), whose defaults are the identity (8 Peaks at 0 dB)."""
+    specs = mixer_eq.module_specs(ModuleSpec)
+    return mixer_inserts.PoolType("eq", slots, specs,
+                                  {name: spec.default_value() for name, spec in specs.items()}, index)
+
+
+class EqPoolDriver:
+    """Writes EQ slots to their window (mixer_hw.EqPoolHW): a slot's
+    parameters -> its 8 bands' coefficient words (mixer_eq), only the bands
+    that changed, one COMMIT per write. A band's change follows
+    mixer_eq.band_steps: the first write at once, each further one
+    FLAT_WAIT_S later, from a scheduler thread. When a wait is over the band
+    is planned again, from what the hardware holds to the slot's values in
+    the store at that moment, so a change that arrived meanwhile isn't lost
+    and still goes through flat if it needs to. A band being changed takes
+    no other write until its plan is done. direct=True (a recall; the user,
+    2026-11-17, Q2) writes the new words at once."""
+
+    def __init__(self, hw, slots, now=None):
+        import heapq
+        import time as _t
+        self._heapq = heapq
+        self.hw = hw
+        self.now = now or _t.monotonic
+        self.backend = None                      # the PoolBackend (set by build_inserts)
+        self.cur = {(s, b): mixer_eq.FLAT for s in range(slots) for b in range(mixer_eq.BANDS)}
+        self.akind = {key: 0 for key in self.cur}   # the type of the filter (a's) in the hardware
+        self.busy = {}                           # (slot, band) -> the words still to write
+        self.heap = []
+        self.cv = threading.Condition()
+
+    def start(self):
+        threading.Thread(target=self._loop, name="eq-flat", daemon=True).start()
+
+    def _put(self, words, s, b, w, kind_new, new):
+        for j, x in enumerate(w):
+            words[mixer_eq.word_index(s, b, j)] = x
+        self.cur[(s, b)] = tuple(w)
+        if tuple(w[:3]) == tuple(new[:3]):
+            self.akind[(s, b)] = kind_new
+
+    def _plan(self, words, s, b, new, kind):
+        key = (s, b)
+        steps = mixer_eq.band_steps(self.cur[key], self.akind[key], new, kind)
+        while steps and tuple(steps[0]) == self.cur[key]:    # already there (a plan made after a wait)
+            steps.pop(0)
+        if not steps:
+            self.busy.pop(key, None)
+            return
+        self._put(words, s, b, steps[0], kind, new)
+        if len(steps) > 1:
+            self.busy[key] = steps[1:]
+            self._heapq.heappush(self.heap, (self.now() + mixer_eq.FLAT_WAIT_S, s, b))
+        else:
+            self.busy.pop(key, None)
+
+    def write(self, params, direct=False):
+        """{slot: {module: value}} -> the same (the values are the user's; the
+        words are this driver's business)."""
+        words = {}
+        with self.cv:
+            for s, p in params.items():
+                for b, (new, kind) in enumerate(mixer_eq.bands_of(p)):
+                    key = (s, b)
+                    if direct:
+                        self.busy.pop(key, None)
+                        if tuple(new) != self.cur[key]:
+                            self._put(words, s, b, new, kind, new)
+                    elif key not in self.busy:
+                        self._plan(words, s, b, new, kind)
+            if words:
+                self.hw.set_words(words)
+            self.cv.notify()
+        return params
+
+    def run_due(self, now):
+        """Every wait that is over: the band's next write, or (its last) a new
+        plan from the store's values. Called by the thread; tests call it."""
+        words = {}
+        with self.cv:
+            while self.heap and self.heap[0][0] <= now:
+                _t, s, b = self._heapq.heappop(self.heap)
+                key = (s, b)
+                rest = self.busy.get(key)
+                if not rest:
+                    continue
+                if len(rest) > 1:                    # a middle step: the new filter, still flat
+                    self._put(words, s, b, rest[0], self.akind[key], rest[0])
+                    self.busy[key] = rest[1:]
+                    self._heapq.heappush(self.heap, (now + mixer_eq.FLAT_WAIT_S, s, b))
+                    continue
+                self.busy.pop(key)                   # the last: plan again from the store
+                p = self.backend.params_of(s, self.backend.state) if self.backend else {}
+                new, kind = mixer_eq.bands_of(p)[b]
+                self._plan(words, s, b, new, kind)
+            if words:
+                self.hw.set_words(words)
+
+    def _loop(self):
+        while True:
+            with self.cv:
+                wait = (self.heap[0][0] - self.now()) if self.heap else None
+                if wait is None or wait > 0:
+                    self.cv.wait(timeout=wait)
+            self.run_due(self.now())
 
 
 class PoolBackend:
@@ -448,9 +559,10 @@ class PoolBackend:
     def apply(self, index, module, value):
         return self.apply_many({(index, module): value})[(index, module)]
 
-    def apply_many(self, changes):
+    def apply_many(self, changes, direct=False):
         """The changed modules over each slot's stored others, one COMMIT;
-        pending slots stay at identity in the hardware (the worker writes them)."""
+        pending slots stay at identity in the hardware (the worker writes them).
+        direct: a recall (no gliding through flat, for drivers that do)."""
         got = dict(changes)
         if self.driver is None:
             return got
@@ -460,7 +572,7 @@ class PoolBackend:
                 by_slot.setdefault(int(index), {})[module] = v
         if by_slot:
             full = {s: dict(self.params_of(s, self.state), **m) for s, m in by_slot.items()}
-            applied = self.driver.write(full)
+            applied = self.driver.write(full, direct=direct)
             for (index, module) in changes:
                 if int(index) in applied:
                     got[(index, module)] = applied[int(index)][module]
@@ -923,8 +1035,9 @@ def build_inserts(use_hw, backends, enabled=True):
         return None
     n = {z: backends[z].n for z in LEVEL_ZONES}
     if not use_hw:
-        pools = {"gain": gain_pool_type(INSERT_SLOTS, SIM_MAX_DB)}
-        drivers = {"gain": None}
+        pools = {"gain": gain_pool_type(INSERT_SLOTS, SIM_MAX_DB, 0),
+                 "eq": eq_pool_type(INSERT_SLOTS, 1)}
+        drivers = {"gain": None, "eq": None}
         k = INSERT_K
     else:
         import mixer_hw
@@ -943,14 +1056,24 @@ def build_inserts(use_hw, backends, enabled=True):
             log(f"PL window '{name}' at 0x{w.base:08x}: {w.describe()}")
             if w.n != router.slots:
                 raise RuntimeError(f"{w.describe()}: the router says {router.slots} slots")
-            if typ != "gain":
+            if typ == "gain":
+                pools[typ] = gain_pool_type(w.n, q_ceiling_db(w.gain_width, w.gain_frac), index)
+                drivers[typ] = GainPoolDriver(w)
+            elif typ == "eq":
+                if (w.bands, w.af, w.mf) != (mixer_eq.BANDS, mixer_eq.AF, mixer_eq.MF):
+                    raise RuntimeError(f"{w.describe()}: mixer_eq is {mixer_eq.BANDS} bands, "
+                                       f"Q.{mixer_eq.AF} / Q.{mixer_eq.MF}")
+                pools[typ] = eq_pool_type(w.n, index)
+                drivers[typ] = EqPoolDriver(w, w.n)
+            else:
                 raise RuntimeError(f"no driver for insert type {typ!r}")
-            pools[typ] = gain_pool_type(w.n, q_ceiling_db(w.gain_width, w.gain_frac), index)
-            drivers[typ] = GainPoolDriver(w)
         k = router.k
         ROUTER = router
     for typ, ptype in pools.items():
         backends[typ] = PoolBackend(ptype, drivers[typ])
+        if isinstance(drivers[typ], EqPoolDriver):
+            drivers[typ].backend = backends[typ]
+            drivers[typ].start()
     for b in channel:
         b.inserts = True
     if ROUTER is not None:
@@ -1613,7 +1736,10 @@ def recall_snapshot(fitted, skipped, label, state, registry, via):
         stored = {}
         for zone, changes in by_zone.items():
             backend = BACKENDS.get(zone)
-            applied = backend.apply_many(changes) if backend is not None else dict(changes)
+            if isinstance(backend, PoolBackend):     # a recall switches EQ types at once (Q2)
+                applied = backend.apply_many(changes, direct=True)
+            else:
+                applied = backend.apply_many(changes) if backend is not None else dict(changes)
             for (index, module), value in applied.items():
                 stored[f"{zone}/{index}/{module}"] = value
         rejected = state.set_many(stored) if stored else {}

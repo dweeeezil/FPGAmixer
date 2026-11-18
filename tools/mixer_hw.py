@@ -117,6 +117,7 @@ class RegWindow:
     """One axil_coef_window, mapped from /dev/mem."""
 
     ID = None  # subclasses set the ID they expect
+    SIZE = WINDOW_SIZE   # bytes mapped; the EQ's window is 8 KB (2026-11-17)
 
     def __init__(self, base, dev="/dev/mem"):
         self.base = base
@@ -128,7 +129,7 @@ class RegWindow:
                 f"Refusing to touch the bus, since an access there would hang it.")
         fd = os.open(dev, os.O_RDWR | os.O_SYNC)
         try:
-            self._mm = mmap.mmap(fd, WINDOW_SIZE, mmap.MAP_SHARED,
+            self._mm = mmap.mmap(fd, self.SIZE, mmap.MAP_SHARED,
                                  mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
         finally:
             os.close(fd)
@@ -404,6 +405,34 @@ class GainPoolHW(RegWindow):
         return code_to_db(self.read_coef(slot), self.gain_frac)
 
 
+class EqPoolHW(RegWindow):
+    """The parametric EQ (the library's lib_svf_eq_regs_axil, 2026-11-17): an
+    8 KB window. CONFIG = [31:24] slots, [23:16] bands, [15:8] AF, [7:0] MF;
+    COEF[k] at 0x100 + 4k, k = (slot * bands + band) * 6 + j (j = a1 a2 a3
+    m0 m1 m2), 26-bit signed. The words come from mixer_eq."""
+
+    ID = 0x4551_5001
+    SIZE = 0x2000
+
+    def __init__(self, base, dev="/dev/mem"):
+        super().__init__(base, dev)
+        self.n = (self.config >> 24) & 0xFF
+        self.bands = (self.config >> 16) & 0xFF
+        self.af = (self.config >> 8) & 0xFF
+        self.mf = self.config & 0xFF
+
+    def describe(self):
+        return f"EQ, {self.n} slots x {self.bands} bands, a Q.{self.af}, m Q.{self.mf}"
+
+    def set_words(self, words):
+        """words: {k: signed int}; one COMMIT."""
+        n = self.n * self.bands * 6
+        for k in words:
+            if not 0 <= k < n:
+                raise IndexError(f"coefficient {k} outside {n}")
+        self.write_coefs(dict(words))
+
+
 class PeakHW(RegWindow):
     """A peak-meter window (src/rtl/peak_regs_axil.sv, Phase 13): per-channel
     peak magnitudes of one zone. CONFIG = [31:24] channels, [23:16] TAP (0
@@ -640,13 +669,15 @@ WINDOWS = {
     # LF8 (2026-10-31): the insert router and its pools
     "insert":    (0x8000_F000, InsertRouterHW),
     "gainpool":  (0x8001_0000, GainPoolHW),
+    # 2026-11-17: the EQ, 8 KB (0x8001_2000 .. 0x8001_3FFF)
+    "eqpool":    (0x8001_2000, EqPoolHW),
 }
 
 # The pools, in the router's pool order (fpgamixer_top: POOL_GAIN = 0): an
 # explicit copy, like IO_PORTS. (insert type, window). The router's CONFIG
 # must say this many pools; the router and every pool window are present
 # together (an LF8 bitstream) or not at all.
-POOLS = (("gain", "gainpool"),)
+POOLS = (("gain", "gainpool"), ("eq", "eqpool"))
 
 # The patch's windows: present together (a Phase 15 bitstream) or not at all.
 PATCH = ("inpatch", "outpatch")

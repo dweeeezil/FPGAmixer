@@ -330,7 +330,7 @@ Optional (config `capabilities` contains `"inserts"`). DSP processors live in **
   - top-level `"inserts": { "maxPerChannel": K, "types": [...], "delayFrames": n }`;
   - one zone per type, named by it, `{ "count": <slots>, "modules": [...], "kind": "pool" }`, indexed by slot like a channel zone (a controller accepts unknown zone names that say `"kind": "pool"`);
   - the channel zones list the module `inserts` (`string`, `linked`).
-  - A processor module's `default` is its identity (no effect on the audio). Today: type `gain`, module `gain_level` (dB, default 0).
+  - A processor module's `default` is its identity (no effect on the audio). Today: type `gain`, module `gain_level` (dB, default 0); and type `eq` (since 17 Nov 2026), an 8-band parametric EQ: `eq_on`, and per band `eq_bandN_on`, `_type` (Peak, Low shelf, High shelf, High-pass, Low-pass), `_freq`, `_gain`, `_q`, all flat by default (the controller spec, §13).
 - **`inserts`** is the chain in signal order: entries `<type>:<slot>` separated by spaces; `""` = none. Canonical form (echo, get, config, snapshots): every entry with its slot, one space apart.
 - **A set replaces the whole chain:**
   - an entry with a slot keeps that insert (it must be this channel's);
@@ -445,3 +445,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
   - the type `gain` (`gain_level`).
 
   Additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/insert_architecture_proposal_2026-10-31.md` (§12: the whole-list set, `gain` exposed, free slots refused, inserts follow groups); the controller's spec is `docs/inserts_controller_spec_2026-10-31.md`.
+- **17 Nov 2026:** *Inserts*: the type `eq` (41 modules; the controller spec, §13). Additive, `schemaVersion` stays 1.

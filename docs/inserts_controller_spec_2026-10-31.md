@@ -10,7 +10,7 @@
 python3 osc_mixer_server.py --tcp-port 8000 --udp-port 8001
 ```
 
-Today the only processor type is **`gain`** (a trim in dB). EQ, dynamics etc. will arrive as further types, the same way. A controller written to this spec picks them up without changes, except for any processor-specific UI.
+The processor types today are **`gain`** (a trim in dB) and, since 2026-11-17, **`eq`** (an 8-band parametric EQ, §13). Dynamics etc. will arrive as further types, the same way. A controller written to this spec picks them up without changes, except for any processor-specific UI.
 
 ---
 
@@ -21,7 +21,7 @@ A mixer with inserts adds four things to the config reply (`/<name>/get/system/c
 ```json
 {
   "capabilities": ["snapshots", "inserts"],
-  "inserts": { "maxPerChannel": 8, "types": ["gain"], "delayFrames": 9 },
+  "inserts": { "maxPerChannel": 8, "types": ["gain", "eq"], "delayFrames": 9 },
   "zones": {
     "inputChannel":  { "count": 20, "modules": ["level", "source", "inserts", "vgroup", "name"] },
     "busChannel":    { "count": 20, "modules": ["level", "inserts", "vgroup", "name"] },
@@ -233,3 +233,36 @@ A channel hidden by `system/inputCount` (etc.) keeps its chain and its slots (as
 -> /FOH/set/gain/0/gain_level 1.0                          gain:0 is free now
 <- /FOH/error gain/0/gain_level "gain:0 isn't inserted on any channel"
 ```
+
+## 13. The `eq` type (2026-11-17)
+
+An 8-band parametric EQ. Every band can be any of five types. Its pool zone is `eq` (32 slots), with 41 modules per slot, all in `group` `eq`, all `linked`:
+
+| Module | Type | Range | Default |
+|---|---|---|---|
+| `eq_on` | bool | | 1 |
+| `eq_bandN_on` (N = 1 … 8) | bool | | 1 |
+| `eq_bandN_type` | enum, `optionLabels` | 0 Peak, 1 Low shelf, 2 High shelf, 3 High-pass, 4 Low-pass | 0 (Peak) |
+| `eq_bandN_freq` | float, Hz | 20 … 20,000 | 30, 80, 200, 500, 1,200, 3,000, 7,000, 15,000 (bands 1 … 8) |
+| `eq_bandN_gain` | float, dB | −15 … +15 | 0 |
+| `eq_bandN_q` | float | 0.1 … 10 | 1.0 |
+
+The config lists them in that order (`eq_on`, then band 1's five, band 2's, …), as the insert's echo does.
+
+- **The defaults are flat**: every band a Peak at 0 dB. A new EQ changes nothing until a band moves, and the output with every band at 0 dB, or `eq_on` 0, or a band's `on` 0, is the input exactly.
+- **Peak:**
+  - `gain` at `freq`;
+  - `q` is the width (higher is narrower).
+- **Low and high shelf:**
+  - `gain` below or above `freq`, half of it at `freq`;
+  - `q` is the corner's shape (0.71 the plain shelf, higher with a resonance at the corner).
+- **High-pass and low-pass:**
+  - 12 dB per octave;
+  - `gain` is ignored;
+  - `q` 0.71 is Butterworth, higher resonant;
+  - for 24 dB per octave, use two bands.
+- **Changing a band's type** sounds about 0.2 s later: the mixer fades the band to flat, swaps the filter silently, and fades in the new type, so there is never a bump. The echo comes at once, as always. Other changes (frequency, gain, Q, on/off) glide over a few ms. A snapshot recall switches types at once.
+- **Latency:** an EQ insert adds none beyond the insert point's fixed `delayFrames`.
+- **A controller's EQ view:**
+  - the curve can be drawn from the parameters with the standard formulas: Simper's trapezoidal SVF, the same as the mixer's;
+  - the mixer has no curve or meter of its own for the EQ.

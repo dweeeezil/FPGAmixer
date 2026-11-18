@@ -24,10 +24,10 @@ from mixer_params import float32
 DB_6 = float32(-6.0206)
 
 
-def make_window_file(ident=0x4D585001, config=0x04041210):
+def make_window_file(ident=0x4D585001, config=0x04041210, size=None):
     fd, path = tempfile.mkstemp(prefix="regwin-")
     with os.fdopen(fd, "wb") as f:
-        f.write(bytearray(mixer_hw.WINDOW_SIZE))
+        f.write(bytearray(size or mixer_hw.WINDOW_SIZE))
         f.seek(0)
         f.write(struct.pack("<II", ident, config))
     return path
@@ -495,7 +495,7 @@ class InsertWindows(unittest.TestCase):
     (GainPoolHW), and the server's build_inserts over fake windows (on top
     of the bus layer and the patch, as an LF8 bitstream has them)."""
 
-    ROUTER_ID, POOL_ID = 0x49525001, 0x54505001
+    ROUTER_ID, POOL_ID, EQ_ID = 0x49525001, 0x54505001, 0x45515001
 
     def setUp(self):
         self.paths = {"matrix": make_window_file(config=BusLayer.MATRIX_20),
@@ -505,8 +505,9 @@ class InsertWindows(unittest.TestCase):
                       "outlevel": make_window_file(BusLayer.GAIN_ID, 0x14021210),
                       "inpatch": make_window_file(Patch.PATCH_ID, 0x14140005),
                       "outpatch": make_window_file(Patch.PATCH_ID, 0x14140105),
-                      "insert": make_window_file(self.ROUTER_ID, 0x08200109),   # K 8, 32 slots, 1 pool, 9 frames
-                      "gainpool": make_window_file(self.POOL_ID, 0x20001210)}  # 32 slots, Q2.16
+                      "insert": make_window_file(self.ROUTER_ID, 0x08200209),   # K 8, 32 slots, 2 pools, 9 frames
+                      "gainpool": make_window_file(self.POOL_ID, 0x20001210),  # 32 slots, Q2.16
+                      "eqpool": make_window_file(self.EQ_ID, 0x20081812, size=0x2000)}  # 32 x 8, Q.24 / Q.18, 8 KB
         import osc_mixer_server as srv
         srv.log = lambda m: None
         self.srv = srv
@@ -528,7 +529,7 @@ class InsertWindows(unittest.TestCase):
 
     def test_headers_tables_and_pool(self):
         r = mixer_hw.InsertRouterHW(0, dev=self.paths["insert"])
-        self.assertEqual((r.k, r.slots, r.pools, r.delay_frames), (8, 32, 1, 9))
+        self.assertEqual((r.k, r.slots, r.pools, r.delay_frames), (8, 32, 2, 9))
         r.set_tables({0: 0x2_0_0_05, 61: 0x1_1_7_0A})
         self.assertEqual(reg(self.paths["insert"], 0x100), 0x20005)
         self.assertEqual(r.read_entry(61), 0x1170A)
@@ -545,21 +546,35 @@ class InsertWindows(unittest.TestCase):
 
     def test_build_inserts_from_the_windows(self):
         b, ins = self.build_ins(self.paths)
-        self.assertEqual((ins.k, list(ins.pools), ins.pools["gain"].slots), (8, ["gain"], 32))
+        self.assertEqual((ins.k, list(ins.pools), ins.pools["gain"].slots), (8, ["gain", "eq"], 32))
+        self.assertEqual((ins.pools["eq"].index, len(ins.pools["eq"].modules)), (1, 41))
         self.assertTrue(b["busChannel"].inserts)
         self.assertIn("inserts", b["busChannel"].describe()[0].modules)
         self.assertIsInstance(b["gain"], self.srv.PoolBackend)
+        self.assertIsInstance(b["eq"].driver, self.srv.EqPoolDriver)
+
+    def test_the_eq_window_is_8_kb(self):
+        import mixer_eq
+        w = mixer_hw.EqPoolHW(0, dev=self.paths["eqpool"])
+        self.assertEqual((w.n, w.bands, w.af, w.mf), (32, 8, 24, 18))
+        last = 32 * 8 * 6 - 1
+        w.set_words({0: mixer_eq.FLAT[0], last: -5})
+        self.assertEqual(reg(self.paths["eqpool"], 0x100), mixer_eq.FLAT[0])
+        self.assertEqual(reg(self.paths["eqpool"], 0x100 + 4 * last, signed=True), -5)   # past the first 4 KB
+        self.assertEqual(reg(self.paths["eqpool"], mixer_hw.REG_CTRL) & 1, 1)
+        with self.assertRaises(IndexError):
+            w.set_words({last + 1: 0})
 
     def test_no_router_no_inserts_and_a_wrong_pool_count_refused(self):
-        paths = {k: v for k, v in self.paths.items() if k not in ("insert", "gainpool")}
+        paths = {k: v for k, v in self.paths.items() if k not in ("insert", "gainpool", "eqpool")}
         b, ins = self.build_ins(paths)
         self.assertIsNone(ins)
         self.assertNotIn("gain", b)
         os.unlink(self.paths["insert"])
-        self.paths["insert"] = make_window_file(self.ROUTER_ID, 0x08200209)   # 2 pools
+        self.paths["insert"] = make_window_file(self.ROUTER_ID, 0x08200309)   # 3 pools
         with self.assertRaises(RuntimeError) as cm:
             self.build_ins(self.paths)
-        self.assertIn("mixer_hw.POOLS lists 1", str(cm.exception))
+        self.assertIn("mixer_hw.POOLS lists 2", str(cm.exception))
 
 
 @unittest.skipIf(os.name == "nt", "mmap with Linux flags")

@@ -62,6 +62,7 @@ module tb_top_windows;
     localparam int INS_K  = 8;
     localparam int INS_PT = delay_frames(INS_K);       // per insert point
     localparam int INS_FR = 3 * INS_PT;                // input -> output
+    localparam int EQ_NCOEF = 32 * 8 * 6;              // the EQ's coefficients (8 KB window)
 
     logic sysclk = 0;
     always #4 sysclk = ~sysclk;
@@ -116,9 +117,10 @@ module tb_top_windows;
     localparam int INMTR = 5, BUSMTR = 6, OUTMTR = 7;                    // Phase 13
     localparam int INPATCH = 8, OUTPATCH = 9;                             // Phase 15
     localparam int INSERT = 10, GPOOL = 11;                               // LF8
-    string name [12] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
+    localparam int EQPOOL = 12;                                           // the EQ (2026-11-17)
+    string name [13] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
                          "input meter", "bus meter", "output meter", "input patch", "output patch",
-                         "insert router", "gain pool"};
+                         "insert router", "gain pool", "EQ"};
 
     function automatic logic [31:0] mag(input logic [SW-1:0] x);       // as pcm_peak
         if (x == 24'h800000) return 32'h7F_FFFF;
@@ -187,7 +189,11 @@ module tb_top_windows;
         rd(OUTPATCH, 32'h000, r); check("output patch ID",     r, 32'h5054_5001);
         rd(OUTPATCH, 32'h004, r); check("output patch CONFIG", r, 32'h1414_0105);
         rd(INSERT, 32'h000, r); check("insert router ID",     r, 32'h4952_5001);
-        rd(INSERT, 32'h004, r); check("insert router CONFIG", r, 32'h0820_0109);  // K 8, S 32, NP 1, 9 frames
+        rd(INSERT, 32'h004, r); check("insert router CONFIG", r, 32'h0820_0209);  // K 8, S 32, NP 2, 9 frames
+        rd(EQPOOL, 32'h000, r); check("EQ ID",                r, 32'h4551_5001);
+        rd(EQPOOL, 32'h004, r); check("EQ CONFIG",            r, 32'h2008_1812);  // 32 slots, 8 bands, AF 24, MF 18
+        rd(EQPOOL, 32'h100 + 4 * (EQ_NCOEF - 3), r);                              // the last section's m0:
+        check("EQ last coefficient register (8 KB window) reads flat", r, 32'h0004_0000);
         rd(GPOOL,  32'h000, r); check("gain pool ID",         r, 32'h5450_5001);
         rd(GPOOL,  32'h004, r); check("gain pool CONFIG",     r, 32'h2000_1210);  // 32 slots, Q2.16
 
@@ -320,6 +326,30 @@ module tb_top_windows;
         rd(INSERT, lv(11), r);     check("RETURN in 11 reads back", r, 32'(ent_slot(0, 3)));
         rd(INSERT, lv(60 + 2), r); check("SOURCE slot 2 reads back", r, 32'(ent_zone(ZONE_IN, 11, INS_K - 2)));
 
+        $display("-- the EQ (2026-11-17): inserted flat it is bit-exact; a low shelf doubles a DC input");
+        // EQ slot 0 on input channel 13: SOURCE pool 1 slot 0 is entry 60 + 32 + 0
+        wr(INSERT, lv(92),  32'(ent_zone(ZONE_IN, 13, head_age(INS_K, 1))));
+        wr(INSERT, lv(13),  32'(ent_slot(1, 0)));
+        commit(INSERT);
+        settle();
+        @(negedge u_dut.mclk);
+        check("EQ flat on in 13: port 13 unchanged", 32'(u_dut.io_out[13*SW +: SW]), 32'(exp_out[13]));
+        // band 0 of slot 0 a low shelf, 1 kHz, +6.02 dB, Q 0.7071: the codes from
+        // model/svf_eq.py quantize(design("lowshelf", 1000, 6.0206, 0.7071), EQ_FMT);
+        // the model's output for in 13's DC (0x0E0000) settles at exactly 0x1C0000
+        wr(EQPOOL, 32'h100 + 4 * 0, 32'd15520330);       // a1
+        wr(EQPOOL, 32'h100 + 4 * 1, 32'd855407);         // a2
+        wr(EQPOOL, 32'h100 + 4 * 2, 32'd47146);          // a3
+        wr(EQPOOL, 32'h100 + 4 * 3, 32'd262144);         // m0
+        wr(EQPOOL, 32'h100 + 4 * 4, 32'd153562);         // m1
+        wr(EQPOOL, 32'h100 + 4 * 5, 32'd262144);         // m2
+        commit(EQPOOL);
+        settle();
+        repeat (100) @(posedge u_dut.u_core.valid_o);    // the shelf's own settling at DC
+        @(negedge u_dut.mclk);
+        check("EQ low shelf +6 dB on in 13: port 13 doubled", 32'(u_dut.io_out[13*SW +: SW]), 32'h1C_0000);
+        rd(EQPOOL, 32'h100 + 4 * 4, r); check("EQ m1 reads back", r, 32'd153562);
+
         check("frame strobes at 256-cycle spacing", 32'(frame_errors), 0);
         if (strobes < 10) begin $display("  FAIL only %0d frame strobes", strobes); errors++; end
         if (u_dut.u_ps.bus_errors != 0) begin
@@ -332,7 +362,7 @@ module tb_top_windows;
     end
 
     initial begin
-        #25ms;                         // LF8: every settle is 27 frames longer
+        #40ms;                         // LF8: every settle is 27 frames longer; the EQ adds two
         $display("FAIL: tb_top_windows TIMEOUT");
         $finish;
     end

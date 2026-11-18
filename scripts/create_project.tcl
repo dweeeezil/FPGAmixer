@@ -133,10 +133,12 @@ foreach d {src/rtl src/sim src/lib/rtl src/lib/sim constraints scripts} {
 # ------ Gather sources ------
 # The library's primitives (submodule HDL-DSP-Library at src/lib, library
 # step 3) are RTL like ours; its TBs stay out. Since LF8 (2026-10-31) the
-# template block is RTL too: it is the gain pool (lib_template*, not its TB).
+# template block is RTL too: it is the gain pool (lib_template*, not its TB);
+# since 2026-11-17 the EQ block (blocks/svf_eq, not its TB) is pool 1.
 set rtl_files [concat [glob -nocomplain src/rtl/*.sv] [glob -nocomplain src/lib/rtl/*.sv] \
-                      [glob -nocomplain src/lib/template/lib_template*.sv]]
-set rtl_files [lsearch -all -inline -not -glob $rtl_files *tb_lib_template.sv]
+                      [glob -nocomplain src/lib/template/lib_template*.sv] \
+                      [glob -nocomplain src/lib/blocks/svf_eq/lib_svf_eq*.sv]]
+set rtl_files [lsearch -all -inline -not -glob $rtl_files *tb_lib_*.sv]
 
 # Sim files: everything in src/sim (and the library's sim/) EXCEPT the
 # sim-only IP stub.
@@ -723,7 +725,7 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     set smc2 [create_bd_cell -type ip \
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc2]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {4 + ($include_link3 ? 1 : 0)}]] $smc2
+        CONFIG.NUM_MI [expr {5 + ($include_link3 ? 1 : 0)}]] $smc2
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc2/aclk]
     connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $smc2/aresetn]
     connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] \
@@ -731,12 +733,15 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     puts "INFO: ctrl_smc2 on ctrl_smc [format "M%02d" $mi]"
     incr mi
 
-    # LF8 (2026-10-31): the insert router's tables and the gain pool
-    set ports2 {M_AXI_INPATCH 0x8000D000 M_AXI_OUTPATCH 0x8000E000
-                M_AXI_INSERT 0x8000F000 M_AXI_GPOOL 0x80010000}
-    if {$include_link3} { lappend ports2 M_AXI_LINK3STAT 0x8000C000 }
+    # LF8 (2026-10-31): the insert router's tables and the gain pool;
+    # 2026-11-17: the EQ pool, 8 KB (1,536 coefficients), on an 8 KB boundary.
+    # Each entry: port, offset, range.
+    set ports2 {M_AXI_INPATCH 0x8000D000 4K M_AXI_OUTPATCH 0x8000E000 4K
+                M_AXI_INSERT 0x8000F000 4K M_AXI_GPOOL 0x80010000 4K
+                M_AXI_EQPOOL 0x80012000 8K}
+    if {$include_link3} { lappend ports2 M_AXI_LINK3STAT 0x8000C000 4K }
     set mi2 0
-    foreach {port offset} $ports2 {
+    foreach {port offset range} $ports2 {
         set p [create_bd_intf_port -mode Master \
             -vlnv xilinx.com:interface:aximm_rtl:1.0 $port]
         set_property -dict [list \
@@ -746,11 +751,11 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
             CONFIG.FREQ_HZ    $pl_clk0_hz \
         ] $p
         connect_bd_intf_net [get_bd_intf_pins $smc2/[format "M%02d_AXI" $mi2]] $p
-        assign_bd_address -offset $offset -range 4K \
+        assign_bd_address -offset $offset -range $range \
             -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
             [get_bd_addr_segs $port/Reg]
         puts "INFO: $port = [get_property OFFSET [get_bd_addr_segs \
-zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on ctrl_smc2 [format "M%02d" $mi2]"
+zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] ($range) on ctrl_smc2 [format "M%02d" $mi2]"
         set_property CONFIG.ASSOCIATED_BUSIF \
             "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:$port" \
             [get_bd_ports ctrl_aclk]

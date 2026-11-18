@@ -27,11 +27,13 @@
 //                  u_inpatch_regs / u_outpatch_regs (the I/O patch)
 //                  LF8: M_AXI_INSERT -> insert_router_regs_axil
 //                  u_insert_regs (the routing tables), M_AXI_GPOOL ->
-//                  lib_template_regs_axil u_gpool_regs (the gain pool)
+//                  lib_template_regs_axil u_gpool_regs (the gain pool);
+//                  M_AXI_EQPOOL (8 KB) -> lib_svf_eq_regs_axil u_eqpool_regs (the EQ)
 //                  (without the PS: coef_flat_readers over the reset banks;
 //                  no inserts)
 //   inserts (LF8): the core's insert ports -> insert_router u_router ->
-//                  pools (pool 0: lib_template u_pool_gain, 32 slots)
+//                  pools (pool 0: lib_template u_pool_gain, 32 slots;
+//                  pool 1: lib_svf_eq u_pool_eq, 32 slots x 8 bands)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK3): PS -> M_AXI_LINK3STAT -> pcm_link_stat_regs
@@ -233,16 +235,27 @@ module fpgamixer_top #(
 
     // ----- inserts (LF8, docs/insert_architecture_proposal_2026-10-31.md) -----
     // The core's three insert ports close on the insert router, which feeds
-    // the processor pools: today one, a gain pool (the library's template
-    // block at 32 slots). K = 8 inserts per channel at most (the user, Q1):
-    // every channel at every insert point is 9 frames late, inserted or not.
+    // the processor pools: pool 0 a gain pool (the library's template block
+    // at 32 slots), pool 1 the parametric EQ (lib_svf_eq: 32 slots x 8
+    // bands; docs/eq_proposal_2026-11-17.md). K = 8 inserts per channel at
+    // most (the user, Q1): every channel at every insert point is 9 frames
+    // late, inserted or not. The pool order is mixer_hw.POOLS'.
     localparam int INS_K  = 8;
     localparam int SLOTS  = 32;                   // per pool (the user: "32 channels worth")
-    localparam int NPOOL  = 1;
+    localparam int NPOOL  = 2;
     localparam int SLW    = $clog2(SLOTS);
     localparam int N_TAB  = 3 * N + NPOOL * SLOTS;
     localparam int TAW    = $clog2(N_TAB);
     localparam int POOL_GAIN = 0;                 // pool index of the gain pool
+    localparam int POOL_EQ   = 1;                 // ... and of the EQ
+    localparam int EQ_B      = 8;                 // bands (the user, 2026-11-09)
+    localparam int EQ_CW     = lib_svf_eq_pkg::CW;
+    localparam int EQ_NC     = lib_svf_eq_pkg::NC;
+    localparam int EQ_CAW    = $clog2(SLOTS * EQ_B);
+    localparam int EQ_NCOEF  = SLOTS * EQ_B * EQ_NC;
+    // the routers' rule takes the slowest pool's latency (the EQ's)
+    localparam int POOL_LAT  = (lib_svf_eq_pkg::lat_last(SLOTS, EQ_B) > lib_template_pkg::LAT)
+                               ? lib_svf_eq_pkg::lat_last(SLOTS, EQ_B) : lib_template_pkg::LAT;
     logic                 ins_in_sv,  ins_in_rv,  ins_bus_sv, ins_bus_rv, ins_out_sv, ins_out_rv;
     logic [CW-1:0]        ins_in_sc,  ins_in_rc,  ins_out_sc, ins_out_rc;
     logic [$clog2(N_BUS)-1:0] ins_bus_sc, ins_bus_rc;
@@ -263,6 +276,22 @@ module fpgamixer_top #(
         return g;
     endfunction
     localparam logic [SLOTS*GW-1:0] POOL_GAINS = unity_slots();   // every slot identity
+    // the EQ's two coefficient ports (one per lane): bank (eq_bk_*) -> a
+    // coef_smooth each -> block
+    logic [2*EQ_CAW-1:0]       eq_addr;
+    logic [2*EQ_NC*EQ_CW-1:0]  eq_data, eq_bk_data;
+    logic [1:0]                eq_rd;
+    logic                      eq_swap, eq_err;
+    function automatic logic [EQ_NCOEF*EQ_CW-1:0] eq_flat_bank();   // every section flat
+        logic [EQ_NCOEF*EQ_CW-1:0] c = '0;
+        for (int sec = 0; sec < SLOTS * EQ_B; sec++) begin
+            c[(sec*EQ_NC + 0)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::A1_FLAT;
+            c[(sec*EQ_NC + 1)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::A2_FLAT;
+            c[(sec*EQ_NC + 2)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::A3_FLAT;
+            c[(sec*EQ_NC + 3)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::M0_ONE;
+        end
+        return c;
+    endfunction
 
 `ifdef INCLUDE_PS
     // ps_sys_wrapper (the BD) exports M_AXI_CTRL (AXI4-Lite, through a
@@ -376,6 +405,14 @@ module fpgamixer_top #(
     logic        gpl_awvalid, gpl_awready, gpl_wvalid, gpl_wready;
     logic        gpl_bvalid, gpl_bready, gpl_arvalid, gpl_arready;
     logic        gpl_rvalid, gpl_rready;
+    // the EQ (2026-11-17): M_AXI_EQPOOL 0x8001_2000, 8 KB (1,536 coefficients) eqp_*
+    logic [31:0] eqp_awaddr, eqp_araddr, eqp_wdata, eqp_rdata;
+    logic [2:0]  eqp_awprot, eqp_arprot;
+    logic [3:0]  eqp_wstrb;
+    logic [1:0]  eqp_bresp, eqp_rresp;
+    logic        eqp_awvalid, eqp_awready, eqp_wvalid, eqp_wready;
+    logic        eqp_bvalid, eqp_bready, eqp_arvalid, eqp_arready;
+    logic        eqp_rvalid, eqp_rready;
 
 `ifdef INCLUDE_LINK
     // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
@@ -783,6 +820,25 @@ module fpgamixer_top #(
         .M_AXI_GPOOL_rresp      (gpl_rresp),
         .M_AXI_GPOOL_rvalid     (gpl_rvalid),
         .M_AXI_GPOOL_rready     (gpl_rready),
+        .M_AXI_EQPOOL_awaddr    (eqp_awaddr),
+        .M_AXI_EQPOOL_awprot    (eqp_awprot),
+        .M_AXI_EQPOOL_awvalid   (eqp_awvalid),
+        .M_AXI_EQPOOL_awready   (eqp_awready),
+        .M_AXI_EQPOOL_wdata     (eqp_wdata),
+        .M_AXI_EQPOOL_wstrb     (eqp_wstrb),
+        .M_AXI_EQPOOL_wvalid    (eqp_wvalid),
+        .M_AXI_EQPOOL_wready    (eqp_wready),
+        .M_AXI_EQPOOL_bresp     (eqp_bresp),
+        .M_AXI_EQPOOL_bvalid    (eqp_bvalid),
+        .M_AXI_EQPOOL_bready    (eqp_bready),
+        .M_AXI_EQPOOL_araddr    (eqp_araddr),
+        .M_AXI_EQPOOL_arprot    (eqp_arprot),
+        .M_AXI_EQPOOL_arvalid   (eqp_arvalid),
+        .M_AXI_EQPOOL_arready   (eqp_arready),
+        .M_AXI_EQPOOL_rdata     (eqp_rdata),
+        .M_AXI_EQPOOL_rresp     (eqp_rresp),
+        .M_AXI_EQPOOL_rvalid    (eqp_rvalid),
+        .M_AXI_EQPOOL_rready    (eqp_rready),
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -1030,6 +1086,25 @@ module fpgamixer_top #(
         .s_axi_rvalid  (gpl_rvalid), .s_axi_rready (gpl_rready),
         .mclk (mclk), .frame_i (gp_swap),
         .coef_addr (gp_bk_addr), .coef_data (gp_bk_data)
+    );
+
+    // ... and the EQ's 1,536 coefficients (reset: every section flat), two
+    // read ports on one bank
+    lib_svf_eq_regs_axil #(.S (SLOTS), .B (EQ_B), .ADDR_WIDTH (13))
+    u_eqpool_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (eqp_awaddr[12:0]), .s_axi_awvalid (eqp_awvalid),
+        .s_axi_awready (eqp_awready),
+        .s_axi_wdata   (eqp_wdata),  .s_axi_wstrb  (eqp_wstrb),
+        .s_axi_wvalid  (eqp_wvalid), .s_axi_wready (eqp_wready),
+        .s_axi_bresp   (eqp_bresp),  .s_axi_bvalid (eqp_bvalid),
+        .s_axi_bready  (eqp_bready),
+        .s_axi_araddr  (eqp_araddr[12:0]), .s_axi_arvalid (eqp_arvalid),
+        .s_axi_arready (eqp_arready),
+        .s_axi_rdata   (eqp_rdata),  .s_axi_rresp  (eqp_rresp),
+        .s_axi_rvalid  (eqp_rvalid), .s_axi_rready (eqp_rready),
+        .mclk (mclk), .frame_i (eq_swap),
+        .coef_addr (eq_addr), .coef_data (eq_bk_data)
     );
 
 `ifdef INCLUDE_LINK
@@ -1298,6 +1373,13 @@ module fpgamixer_top #(
         .mclk (mclk), .frame_i (gp_swap), .coefs_flat (POOL_GAINS),
         .rd_addr (gp_bk_addr), .rd_data (gp_bk_data)
     );
+    // ... and the EQ flat, one reader per lane
+    for (genvar l = 0; l < 2; l++) begin : g_eq_flat
+        coef_flat_reader #(.W (EQ_CW), .N_ROWS (EQ_NCOEF), .ROW_LEN (1), .LANES (EQ_NC)) u_eq_flat (
+            .mclk (mclk), .frame_i (eq_swap), .coefs_flat (eq_flat_bank()),
+            .rd_addr (eq_addr[l*EQ_CAW +: EQ_CAW]), .rd_data (eq_bk_data[l*EQ_NC*EQ_CW +: EQ_NC*EQ_CW])
+        );
+    end
     assign link_rx  = '0;
     assign link2_rx = '0;
     assign link3_rx = '0;
@@ -1325,7 +1407,7 @@ module fpgamixer_top #(
     // ----- inserts (LF8): the router, off the core's insert ports, and its pools -----
     insert_router #(
         .N_I (N), .N_B (N_BUS), .N_O (N), .SW (SW), .K (INS_K), .S (SLOTS), .NP (NPOOL),
-        .POOL_LAT (lib_template_pkg::LAT),
+        .POOL_LAT (POOL_LAT),
         .SEND_LAST_I (mixer_core_pkg::ins_in_send_last(N)),
         .SEND_LAST_B (mixer_core_pkg::ins_bus_send_last(N, N_BUS, L1)),
         .SEND_LAST_O (mixer_core_pkg::ins_out_send_last(N, N_BUS, N, L1, L2))
@@ -1355,6 +1437,25 @@ module fpgamixer_top #(
     coef_smooth #(.W (GW), .DEPTH (SLOTS), .LANES (1), .K (SMOOTH_K)) u_sm_gpool (
         .mclk (mclk), .rd_addr (gp_addr), .rd_en (gp_rd), .rd_data (gp_data),
         .bk_addr (gp_bk_addr), .bk_data (gp_bk_data));
+
+    // pool 1: the parametric EQ (lib_svf_eq; docs/eq_proposal_2026-11-17.md),
+    // its two lanes' coefficients smoothed (the a form glides safely, step A)
+    logic [2*EQ_CAW-1:0] eq_blk_addr;
+    lib_svf_eq #(.S (SLOTS), .B (EQ_B)) u_pool_eq (
+        .mclk (mclk), .rst_n (rst_n),
+        .in_valid (pool_in_v[POOL_EQ]), .in_ch (pool_in_c[POOL_EQ*SLW +: SLW]),
+        .in_data (pool_in_d[POOL_EQ*SW +: SW]),
+        .coef_addr (eq_blk_addr), .coef_rd (eq_rd), .coef_swap (eq_swap), .coef_data (eq_data),
+        .out_valid (pool_out_v[POOL_EQ]), .out_ch (pool_out_c[POOL_EQ*SLW +: SLW]),
+        .out_data (pool_out_d[POOL_EQ*SW +: SW]),
+        .err_o (eq_err)
+    );
+    for (genvar l = 0; l < 2; l++) begin : g_sm_eq
+        coef_smooth #(.W (EQ_CW), .DEPTH (SLOTS * EQ_B), .LANES (EQ_NC), .K (SMOOTH_K)) u_sm_eq (
+            .mclk (mclk), .rd_addr (eq_blk_addr[l*EQ_CAW +: EQ_CAW]), .rd_en (eq_rd[l]),
+            .rd_data (eq_data[l*EQ_NC*EQ_CW +: EQ_NC*EQ_CW]),
+            .bk_addr (eq_addr[l*EQ_CAW +: EQ_CAW]), .bk_data (eq_bk_data[l*EQ_NC*EQ_CW +: EQ_NC*EQ_CW]));
+    end
 
     // ----- PCM core -----
     // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->
