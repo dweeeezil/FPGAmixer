@@ -204,4 +204,54 @@ Everything is pure Python, run on the PC.
 - **27 fraction bits + error feedback**, 28 DSPs. Recommended: −143 dBFS in the worst case is far below any converter on the bench (the M2's are around −115 to −120), and every other case is at the 24-bit floor.
 - The alternative: **31 fraction bits**, 42 DSPs, at the 24-bit floor in every case.
 
-**Next, after Q5: step B** (the RTL block `lib_svf_eq` in the library), bit-exact against `FixedBand` with `EQ_FMT`.
+**Decided (the user, 2026-11-17): Q5, 27 fraction bits + error feedback, 28 DSPs** (`EQ_FMT` as it stands).
+
+## 6. Step B plan: the block `lib_svf_eq` (2026-11-17, for the user's review)
+
+A library block from the template, generic: S slots × B bands, no knowledge of FPGAmixer. It is bit-exact against `model/svf_eq.py`'s `FixedBand` with `EQ_FMT`.
+
+**The pool contract** (`insert_router`): a stream of S channels (the slots) in, one out, each frame. It must finish its run inside the frame: its last output at most 221 cycles after its last input at S = 32.
+
+**The schedule: two lanes, alternating bands.**
+- Lane 0 runs the even bands (1, 3, 5, 7 in the UI's numbering), lane 1 the odd ones, each one section per cycle, fully pipelined (about 15 cycles deep, P).
+- Lane 0 does band 1 for slots 0 … 31, lane 1 follows P cycles behind with band 2 for the same slots, then lane 0 does band 3, and so on.
+- A band's slot result goes through a 32-entry buffer to the other lane's next band.
+- Lane 1's band-8 results come out in slot order, one per cycle, so they **are** the output stream: no output buffer.
+- The period per band pair is max(32, 2P) cycles. The last output is about 4 × 32 + 2P ≈ 160 cycles after the last input, inside the 221.
+- **So an EQ insert adds no latency** beyond the router's fixed 9 frames.
+
+**Each lane:**
+- 7 multiplies, 14 DSP48E2: four 26 × 35 for the filter, three 25 × 35 for the mix;
+- the error-feedback remainders added into the two filter sums;
+- one rounding per sum, saturation, as `FixedBand`;
+- its states (ic1, ic2, e1, e2: 118 bits per section, 128 sections) in a simple dual-port RAM (about one BRAM).
+
+**The coefficients:**
+- 6 per section, register index k = (slot × B + band) × 6 + j, j = a1, a2, a3, m0, m1, m2, each a 26-bit signed word;
+- the bank (`coef_bank_ram`) with `LANES` = 6, so one read returns a section's six, and `PORTS` = 2, one per lane, on one handshake (the library change made for the router);
+- a `coef_smooth` on each port (the lanes read disjoint sections);
+- `coef_swap` on the last input beat, so a frame's reads all see one bank, as in the template.
+
+**The window** (`lib_svf_eq_regs_axil`):
+- ID `0x4551_5001` ("EQ");
+- CONFIG: slots, bands, coefficient width;
+- 1,536 coefficients, so **8 KB**, not the usual 4 KB. In step C that means the block design gives this one window an 8 KB range (the address map has room at 0x8001_2000 … 0x8001_3FFF; the plan's 0x8001_1000 moves to 0x8001_2000, so it starts on an 8 KB boundary).
+
+**Tests (on the PC):**
+- `model/eq_vectors.py` writes test vectors from the model:
+  - random designs per slot and band (every type, the extremes);
+  - frames of random 24-bit input;
+  - the coefficients changed mid-run;
+  - the expected outputs, bit for bit.
+- The library's regression script runs it before XSim, so vectors are never stale and never checked in.
+- `tb_lib_svf_eq` checks:
+  - every output sample, bit-exact;
+  - the stream contract;
+  - the last output beat inside the pool budget;
+  - identity bit-exact;
+  - each section's coefficients read exactly once per frame.
+- Then mutants: wrong rounding, no error feedback, a band skipped, lanes swapped, a stale state, and so on.
+
+**Not in step B:** the router's second pool, the window in the block design, the server's `mixer_eq.py` and the type-change-through-flat sequence. Those are step C.
+
+**Question for the user:** none of substance. The one visible consequence is the 8 KB window and its address (above). Unless you object, step B is built as planned and I check in with the results before step C.
