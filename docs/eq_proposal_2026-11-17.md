@@ -1,6 +1,6 @@
 # Proposal: the parametric EQ, the second insert type (2026-11-17)
 
-**State:** plan decided (§4, the user, 2026-11-17); step A in progress.
+**State: COMPLETE, UNTESTED (the user, 2026-11-18).** Steps A, B and C are built and the image is `eq2`. The user has listened to it and reports that it sounds right and behaves well, with no noticeable errors. The formal bench (§7.6) has not been run: it is deferred to a batch test later (§7.9).
 
 **Supersedes** the fixed-stage plan in `library_foundation_proposal_2026-10-10.md` §13: the EQ is now a **pool** behind the insert router (`insert_architecture_proposal_2026-10-31.md`), not a core stage.
 
@@ -466,3 +466,20 @@ The XSA's six `psu_init` files are byte-identical to eq1's, and its `ps_sys.hwh`
 **Bench:** §7.6 as written, on `eq2`. Step 4 (a flat EQ in the T1 path, bit-exact) is the direct check of this fix.
 
 **After a pass** (of `eq2`): it replaces `p15e` as the image in use. A response spot check (a known sine through a known band, read on the meters) is optional, if a tone source is at hand.
+
+### 7.9 Status: complete, untested (the user, 2026-11-18)
+
+The user: *"It sounds right and behaves well with no noticeable errors. I want to get a little bit farther and batch test things before running tests. Mark the EQs as complete, but untested."*
+
+**Verified:**
+- in simulation: the block bit-exact against the model, as RTL and as Vivado's netlist; mutants 19/19; FPGAmixer's regression, with a flat EQ inserted in the whole-top test;
+- on the board, informally: the user's listening on `eq2`.
+
+**Not yet run, for the batch test (§7.6):**
+1. the board check (`mixer_hw.py inserts`, the server's `Inserts` log line);
+2. the gate: T1 USB → USB, AVB → AVB, USB → AVB, 5 min each, bit-exact. This also covers `lf2` (smoothing) and `lf8` (inserts), which have never had a formal bench;
+3. a flat EQ in the T1 path, bit-exact: the direct check of the `in_buf` fix;
+4. the by-ear list, item by item: fast sweeps, each band type, type changes, `eq_on`, and `lf2`'s no-click checks;
+5. persistence across a reboot.
+
+**Until the batch test passes:** `p15e` stays the last formally tested baseline, and `library-foundation` isn't merged to `main` on the strength of this work.
