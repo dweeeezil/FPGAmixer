@@ -65,8 +65,8 @@ CORE_RTL := $(MIXCORE) $(LRTL)/coef_flat_reader.sv $(LRTL)/coef_smooth.sv \
             $(LEQ)/lib_svf_eq_pkg.sv $(LEQ)/lib_svf_eq.sv \
             $(RTL)/reset_sync.sv $(RTL)/audio_clocking.sv
 
-.PHONY: all matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat router topwin clean
-all: matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat router topwin
+.PHONY: all matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat ltc tcregs router topwin clean
+all: matrix matrix_rect corepkg gain core stream patch smooth_blocks mclk steer regs gainregs patchregs peak link linkstat ltc tcregs router topwin
 
 # --- LF8: the insert router with its table store and two gain pools ---
 router: | $(BUILD)
@@ -204,6 +204,23 @@ peak: | $(BUILD)
 		$(SIM)/tb_pcm_peak.sv
 	@$(VVP) $(BUILD)/tb_pcm_peak.vvp
 
+# --- Timecode: the LTC decoder against ltc_gen.py's vectors ---
+ltc: | $(BUILD)
+	@echo ">>> Building tb_ltc_decoder"
+	@python3 $(SIM)/ltc_gen.py --vectors $(BUILD)
+	@$(IVERILOG) $(FLAGS) -I$(BUILD) -s tb_ltc_decoder -o $(BUILD)/tb_ltc_decoder.vvp \
+		$(RTL)/ltc_decoder.sv $(SIM)/tb_ltc_decoder.sv
+	@cd $(BUILD) && $(VVP) tb_ltc_decoder.vvp
+
+# --- Timecode: the window around the decoder, across aclk/mclk ---
+tcregs: | $(BUILD)
+	@echo ">>> Building tb_timecode_regs"
+	@python3 $(SIM)/ltc_gen.py --vectors $(BUILD)
+	@$(IVERILOG) $(FLAGS) -I$(BUILD) -s tb_timecode_regs -o $(BUILD)/tb_timecode_regs.vvp \
+		$(RTL)/ltc_decoder.sv $(RTL)/coef_bank_handoff.sv $(RTL)/axil_reg_window.sv \
+		$(RTL)/timecode_regs_axil.sv $(SIM)/tb_timecode_regs.sv
+	@cd $(BUILD) && $(VVP) tb_timecode_regs.vvp
+
 # --- Phase 12: fpgamixer_top as a PS build (INCLUDE_PS), the BD replaced by
 # ps_sys_wrapper_stub: each register window on its port, driving its block ---
 topwin: | $(BUILD)
@@ -213,7 +230,8 @@ topwin: | $(BUILD)
 		$(RTL)/matrix_regs_axil.sv $(RTL)/gain_regs_axil.sv $(RTL)/pcm_peak.sv \
 		$(RTL)/peak_regs_axil.sv $(RTL)/patch_regs_axil.sv \
 		$(RTL)/insert_router_regs_axil.sv $(LTPL)/lib_template_regs_axil.sv \
-		$(LEQ)/lib_svf_eq_regs_axil.sv $(RTL)/fpgamixer_top.sv \
+		$(LEQ)/lib_svf_eq_regs_axil.sv $(RTL)/ltc_decoder.sv $(RTL)/coef_bank_handoff.sv \
+		$(RTL)/axil_reg_window.sv $(RTL)/timecode_regs_axil.sv $(RTL)/fpgamixer_top.sv \
 		$(SIM)/ps_sys_wrapper_stub.sv $(SIM)/clk_wiz_audio_stub.sv $(SIM)/tb_top_windows.sv
 	@$(VVP) $(BUILD)/tb_top_windows.vvp
 

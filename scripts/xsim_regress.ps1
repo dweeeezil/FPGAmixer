@@ -55,8 +55,10 @@ $targets = [ordered]@{
   mclk        = @("tb_media_clock_meter", "", @("$rtl\media_clock_meter.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\media_clock_stat_regs.sv","$sim\tb_media_clock_meter.sv"))
   steer       = @("tb_media_clock_steer", "", @("$rtl\axil_reg_window.sv","$rtl\media_clock_ctrl_regs.sv","$rtl\media_clock_steer.sv","$rtl\media_clock_meter.sv","$sim\tb_media_clock_steer.sv"))
   linkstat    = @("tb_link_stat_regs",   "", @("$rtl\coef_bank_handoff.sv","$rtl\axil_stat_window.sv","$rtl\pcm_link_stat_regs.sv","$sim\tb_link_stat_regs.sv"))
+  ltc         = @("tb_ltc_decoder",      "", @("$rtl\ltc_decoder.sv","$sim\tb_ltc_decoder.sv"))
+  tcregs      = @("tb_timecode_regs",    "", @("$rtl\ltc_decoder.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_reg_window.sv","$rtl\timecode_regs_axil.sv","$sim\tb_timecode_regs.sv"))
   router      = @("tb_insert_router",    "", @("$rtl\pcm_matrix_pkg.sv","$rtl\mixer_core_pkg.sv","$rtl\insert_router_pkg.sv","$rtl\insert_router.sv","$lr\coef_bank_ram.sv","$sim\tb_insert_router.sv"))
-  topwin      = @("tb_top_windows",      "INCLUDE_PS", ($coreRtl + @("$lr\coef_bank_ram.sv","$lr\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$rtl\patch_regs_axil.sv","$rtl\insert_router_regs_axil.sv","$lt\lib_template_regs_axil.sv","$leq\lib_svf_eq_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
+  topwin      = @("tb_top_windows",      "INCLUDE_PS", ($coreRtl + @("$lr\coef_bank_ram.sv","$lr\axil_coef_window.sv","$rtl\matrix_regs_axil.sv","$rtl\gain_regs_axil.sv","$rtl\pcm_peak.sv","$rtl\peak_regs_axil.sv","$rtl\patch_regs_axil.sv","$rtl\insert_router_regs_axil.sv","$lt\lib_template_regs_axil.sv","$leq\lib_svf_eq_regs_axil.sv","$rtl\ltc_decoder.sv","$rtl\coef_bank_handoff.sv","$rtl\axil_reg_window.sv","$rtl\timecode_regs_axil.sv","$sim\ps_sys_wrapper_stub.sv","$sim\clk_wiz_audio_stub.sv","$sim\tb_top_windows.sv")))
 }
 
 function Invoke-Limited([string]$dir, [scriptblock]$block, [object[]]$argsList, [int]$seconds) {
@@ -75,10 +77,16 @@ foreach ($name in $targets.Keys) {
   if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
   New-Item -ItemType Directory -Force $dir | Out-Null
 
+  # The LTC testbench's vectors come from its independent encoder, every run.
+  if ($name -in @("ltc", "tcregs")) {
+      $g = & python "$sim\ltc_gen.py" --vectors $dir 2>&1 | Out-String
+      if ($LASTEXITCODE -ne 0) { "{0,-12} FAIL (vectors: {1})" -f $name, $g.Trim(); $fails++; continue }
+  }
+
   $comp = Invoke-Limited $dir {
       param($d, $def, $files)
       Set-Location $d
-      $dargs = @(); if ($def) { foreach ($d in $def.Split(" ")) { $dargs += @("-d", $d) } }
+      $dargs = @("-i", $d); if ($def) { foreach ($x in $def.Split(" ")) { $dargs += @("-d", $x) } }
       xvlog -sv @dargs @files 2>&1 | Out-String
   } @($def, $files) 180
   if ($null -eq $comp -or $comp -match "ERROR:") {

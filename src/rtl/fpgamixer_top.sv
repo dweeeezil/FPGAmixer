@@ -29,6 +29,8 @@
 //                  u_insert_regs (the routing tables), M_AXI_GPOOL ->
 //                  lib_template_regs_axil u_gpool_regs (the gain pool);
 //                  M_AXI_EQPOOL (8 KB) -> lib_svf_eq_regs_axil u_eqpool_regs (the EQ)
+//                  M_AXI_TIMECODE -> timecode_regs_axil u_timecode_regs (LTC from
+//                  one I/O port: a listener on io_in, nothing goes back)
 //                  (without the PS: coef_flat_readers over the reset banks;
 //                  no inserts)
 //   inserts (LF8): the core's insert ports -> insert_router u_router ->
@@ -413,6 +415,14 @@ module fpgamixer_top #(
     logic        eqp_awvalid, eqp_awready, eqp_wvalid, eqp_wready;
     logic        eqp_bvalid, eqp_bready, eqp_arvalid, eqp_arready;
     logic        eqp_rvalid, eqp_rready;
+    // the timecode display (2026-11-18): M_AXI_TIMECODE 0x8001_1000, 4 KB, tcd_*
+    logic [31:0] tcd_awaddr, tcd_araddr, tcd_wdata, tcd_rdata;
+    logic [2:0]  tcd_awprot, tcd_arprot;
+    logic [3:0]  tcd_wstrb;
+    logic [1:0]  tcd_bresp, tcd_rresp;
+    logic        tcd_awvalid, tcd_awready, tcd_wvalid, tcd_wready;
+    logic        tcd_bvalid, tcd_bready, tcd_arvalid, tcd_arready;
+    logic        tcd_rvalid, tcd_rready;
 
 `ifdef INCLUDE_LINK
     // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
@@ -839,6 +849,25 @@ module fpgamixer_top #(
         .M_AXI_EQPOOL_rresp     (eqp_rresp),
         .M_AXI_EQPOOL_rvalid    (eqp_rvalid),
         .M_AXI_EQPOOL_rready    (eqp_rready),
+        .M_AXI_TIMECODE_awaddr  (tcd_awaddr),
+        .M_AXI_TIMECODE_awprot  (tcd_awprot),
+        .M_AXI_TIMECODE_awvalid (tcd_awvalid),
+        .M_AXI_TIMECODE_awready (tcd_awready),
+        .M_AXI_TIMECODE_wdata   (tcd_wdata),
+        .M_AXI_TIMECODE_wstrb   (tcd_wstrb),
+        .M_AXI_TIMECODE_wvalid  (tcd_wvalid),
+        .M_AXI_TIMECODE_wready  (tcd_wready),
+        .M_AXI_TIMECODE_bresp   (tcd_bresp),
+        .M_AXI_TIMECODE_bvalid  (tcd_bvalid),
+        .M_AXI_TIMECODE_bready  (tcd_bready),
+        .M_AXI_TIMECODE_araddr  (tcd_araddr),
+        .M_AXI_TIMECODE_arprot  (tcd_arprot),
+        .M_AXI_TIMECODE_arvalid (tcd_arvalid),
+        .M_AXI_TIMECODE_arready (tcd_arready),
+        .M_AXI_TIMECODE_rdata   (tcd_rdata),
+        .M_AXI_TIMECODE_rresp   (tcd_rresp),
+        .M_AXI_TIMECODE_rvalid  (tcd_rvalid),
+        .M_AXI_TIMECODE_rready  (tcd_rready),
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -1105,6 +1134,22 @@ module fpgamixer_top #(
         .s_axi_rvalid  (eqp_rvalid), .s_axi_rready (eqp_rready),
         .mclk (mclk), .frame_i (eq_swap),
         .coef_addr (eq_addr), .coef_data (eq_bk_data)
+    );
+
+    // ----- the timecode display (2026-11-18): reads io_in, drives no audio -----
+    timecode_regs_axil #(.P (P), .SW (SW), .ADDR_WIDTH (12)) u_timecode_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (tcd_awaddr[11:0]), .s_axi_awvalid (tcd_awvalid),
+        .s_axi_awready (tcd_awready),
+        .s_axi_wdata   (tcd_wdata),  .s_axi_wstrb  (tcd_wstrb),
+        .s_axi_wvalid  (tcd_wvalid), .s_axi_wready (tcd_wready),
+        .s_axi_bresp   (tcd_bresp),  .s_axi_bvalid (tcd_bvalid),
+        .s_axi_bready  (tcd_bready),
+        .s_axi_araddr  (tcd_araddr[11:0]), .s_axi_arvalid (tcd_arvalid),
+        .s_axi_arready (tcd_arready),
+        .s_axi_rdata   (tcd_rdata),  .s_axi_rresp  (tcd_rresp),
+        .s_axi_rvalid  (tcd_rvalid), .s_axi_rready (tcd_rready),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (frame), .in_flat (io_in)
     );
 
 `ifdef INCLUDE_LINK

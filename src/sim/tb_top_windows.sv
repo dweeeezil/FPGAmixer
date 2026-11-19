@@ -118,9 +118,10 @@ module tb_top_windows;
     localparam int INPATCH = 8, OUTPATCH = 9;                             // Phase 15
     localparam int INSERT = 10, GPOOL = 11;                               // LF8
     localparam int EQPOOL = 12;                                           // the EQ (2026-11-17)
-    string name [13] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
+    localparam int TIMECODE = 13;                                         // 2026-11-18
+    string name [14] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
                          "input meter", "bus meter", "output meter", "input patch", "output patch",
-                         "insert router", "gain pool", "EQ"};
+                         "insert router", "gain pool", "EQ", "timecode"};
 
     function automatic logic [31:0] mag(input logic [SW-1:0] x);       // as pcm_peak
         if (x == 24'h800000) return 32'h7F_FFFF;
@@ -196,6 +197,9 @@ module tb_top_windows;
         check("EQ last coefficient register (8 KB window) reads flat", r, 32'h0004_0000);
         rd(GPOOL,  32'h000, r); check("gain pool ID",         r, 32'h5450_5001);
         rd(GPOOL,  32'h004, r); check("gain pool CONFIG",     r, 32'h2000_1210);  // 32 slots, Q2.16
+        rd(TIMECODE, 32'h000, r); check("timecode ID",        r, 32'h5443_5001);
+        rd(TIMECODE, 32'h004, r); check("timecode CONFIG",    r, 32'd20);         // 20 I/O ports
+        rd(TIMECODE, 32'h100, r); check("timecode SOURCE off at reset", r, 32'h0);
 
         $display("-- reset state: a blank slate (CS5): nothing patched, every port silent");
         repeat (3) @(posedge u_dut.u_core.valid_o);
@@ -349,6 +353,27 @@ module tb_top_windows;
         @(negedge u_dut.mclk);
         check("EQ low shelf +6 dB on in 13: port 13 doubled", 32'(u_dut.io_out[13*SW +: SW]), 32'h1C_0000);
         rd(EQPOOL, 32'h100 + 4 * 4, r); check("EQ m1 reads back", r, 32'd153562);
+
+        $display("-- the timecode display (2026-11-18): SOURCE picks the I/O port, the audio doesn't notice");
+        exp_out[13] = 24'h1C_0000;                       // the EQ's shelf, above
+        wr(TIMECODE, 32'h100, 32'd8);                    // port 7 (link #1 ch 3)
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode hears port 7", 32'(u_dut.u_timecode_regs.sample), 32'(stim[7*SW +: SW]));
+        wr(TIMECODE, 32'h100, 32'd20);                   // port 19, the last (link #2 ch 7)
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode hears port 19", 32'(u_dut.u_timecode_regs.sample), 32'(stim[19*SW +: SW]));
+        wr(TIMECODE, 32'h100, 32'd1);                    // port 0, the first (link #3 ch 0)
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode hears port 0", 32'(u_dut.u_timecode_regs.sample), 32'(stim[0*SW +: SW]));
+        wr(TIMECODE, 32'h100, 32'd0);                    // off
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode off hears nothing", 32'(u_dut.u_timecode_regs.sample), 32'h0);
+        for (int k = 0; k < N; k++)
+            check($sformatf("after timecode port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
 
         check("frame strobes at 256-cycle spacing", 32'(frame_errors), 0);
         if (strobes < 10) begin $display("  FAIL only %0d frame strobes", strobes); errors++; end

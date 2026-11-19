@@ -16,6 +16,7 @@
 //   8 M_AXI_INPATCH / 9 M_AXI_OUTPATCH (the I/O patch, Phase 15)
 //   10 M_AXI_INSERT (the insert router) / 11 M_AXI_GPOOL (the gain pool, LF8)
 //   12 M_AXI_EQPOOL (the EQ, 8 KB; 2026-11-17)
+//   13 M_AXI_TIMECODE (the timecode display; 2026-11-18)
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
@@ -57,9 +58,10 @@ module ps_sys_wrapper (
     `AXIL_MASTER_PORTS(M_AXI_OUTPATCH),
     `AXIL_MASTER_PORTS(M_AXI_INSERT),
     `AXIL_MASTER_PORTS(M_AXI_GPOOL),
-    `AXIL_MASTER_PORTS(M_AXI_EQPOOL)
+    `AXIL_MASTER_PORTS(M_AXI_EQPOOL),
+    `AXIL_MASTER_PORTS(M_AXI_TIMECODE)
 );
-    localparam int NM = 13;
+    localparam int NM = 14;
 
     initial begin ctrl_aclk = 0; ctrl_aresetn = 0; #100 ctrl_aresetn = 1; end
     always #5 ctrl_aclk = ~ctrl_aclk;
@@ -90,6 +92,7 @@ module ps_sys_wrapper (
     `AXIL_MASTER_BIND(M_AXI_INSERT, 10)
     `AXIL_MASTER_BIND(M_AXI_EQPOOL, 12)
     `AXIL_MASTER_BIND(M_AXI_GPOOL, 11)
+    `AXIL_MASTER_BIND(M_AXI_TIMECODE, 13)
 
     int bus_errors = 0;   // non-OKAY responses
 

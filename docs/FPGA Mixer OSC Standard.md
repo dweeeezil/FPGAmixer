@@ -52,6 +52,7 @@ The segment after the mixer name is the command kind:
 | `ping` / `pong` | controller → mixer / mixer → controller | `/<name>/ping <token>`, `/<name>/pong <token>` | *Ping* |
 | `snapshot` | both | `/<name>/snapshot/<request> ...` (controller), `/<name>/snapshot/list|data|loaded ...` (mixer) | *Snapshots* |
 | `config` | mixer → controller | `/<name>/config/changed` | *Config changed* |
+| `timecode` | both | `/<name>/timecode/subscribe <port>` (controller), `/<name>/timecode ...` (mixer) | *Timecode* |
 
 A message with any other kind is ignored.
 
@@ -410,6 +411,20 @@ The list is a JSON array, sorted by name: `[{"name": "Song A", "savedAt": "2026-
 
 A recall changes many parameters at once and may be audible (a click), since the mixer doesn't smooth gain changes.
 
+## Timecode
+
+Optional: the mixer decodes LTC from one input port and streams the time to controllers. A mixer that has it lists `"timecode"` in `capabilities` and `timecodeSource` in the config's `system` block. The full version, with examples, is FPGAmixer `docs/timecode_controller_spec_2026-11-18.md`.
+
+- **`system/timecodeSource`** (enum): 0 = Off, p + 1 = I/O port p, with `optionLabels`. Default 0. Kept across a power cycle; not part of snapshots. The port needs no patch.
+- **Subscribe** (controller → mixer, TCP): `/<name>/timecode/subscribe <port:int>`. The stream goes to the source IP of the TCP connection. Port 0 unsubscribes. The lease is 5 s: controllers re-send every 2 s while connected. Closing the TCP connection ends the subscription. A malformed `subscribe` is refused with an *Error reply*.
+- **Stream** (mixer → controller, UDP): `/<name>/timecode <seq:i> <state:i> <hours:i> <minutes:i> <seconds:i> <frames:i> <fps:f> <dropFrame:i>`.
+  - `seq`: per subscriber, from 0, +1 per message, wraps from 2³¹−1 to 0.
+  - `state`: 0 = no source selected, 1 = no timecode (the last time is held), 2 = running.
+  - `fps`: 23.976, 24, 25, 29.97 or 30; 0 if no timecode has been decoded yet. Valid whenever `state` is 2.
+  - `dropFrame`: 1 only with `fps` 29.97.
+  - Sent once per decoded frame while running, otherwise twice a second.
+- The time is the last decoded frame. Any latency offset is the controller's own display preference.
+
 ## Ping
 
 Optional: a mixer may not implement it, and controllers then fall back to TCP state and meter sequence gaps.
@@ -446,3 +461,4 @@ Optional: a mixer may not implement it, and controllers then fall back to TCP st
 
   Additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/insert_architecture_proposal_2026-10-31.md` (§12: the whole-list set, `gain` exposed, free slots refused, inserts follow groups); the controller's spec is `docs/inserts_controller_spec_2026-10-31.md`.
 - **17 Nov 2026:** *Inserts*: the type `eq` (41 modules; the controller spec, §13). Additive, `schemaVersion` stays 1.
+- **18 Nov 2026:** *Timecode* (the `timecode` command kind, `system/timecodeSource`, the `"timecode"` capability). Additive, `schemaVersion` stays 1. Decided in FPGAmixer `docs/timecode_proposal_2026-11-18.md`; the controller's spec is `docs/timecode_controller_spec_2026-11-18.md`.
