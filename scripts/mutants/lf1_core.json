@@ -1,0 +1,44 @@
+[
+ {
+  "name": "pcm_gain swaps on its first beat",
+  "file": "src/rtl/pcm_gain.sv",
+  "old": "assign coef_swap = in_valid && (in_ch == CW'(N - 1));",
+  "new": "assign coef_swap = in_valid && (in_ch == '0);"
+ },
+ {
+  "name": "pcm_gain never swaps",
+  "file": "src/rtl/pcm_gain.sv",
+  "old": "assign coef_swap = in_valid && (in_ch == CW'(N - 1));",
+  "new": "assign coef_swap = 1'b0;"
+ },
+ {
+  "name": "pcm_matrix swaps on its first input beat",
+  "file": "src/rtl/pcm_matrix.sv",
+  "old": "assign coef_swap = start;",
+  "new": "assign coef_swap = in_valid && (in_ch == '0);"
+ },
+ {
+  "name": "pcm_matrix swaps on every input beat",
+  "file": "src/rtl/pcm_matrix.sv",
+  "old": "assign coef_swap = start;",
+  "new": "assign coef_swap = in_valid;"
+ },
+ {
+  "name": "output patch swaps on its first beat",
+  "file": "src/rtl/pcm_stream2patch.sv",
+  "old": "assign coef_swap = s_valid && (s_ch == CW'(N - 1));",
+  "new": "assign coef_swap = s_valid && (s_ch == '0);"
+ },
+ {
+  "name": "input patch swaps late (its first beat)",
+  "file": "src/rtl/pcm_patch2stream.sv",
+  "old": "assign coef_swap = frame_i;",
+  "new": "assign coef_swap = s_valid && (s_ch == '0);"
+ },
+ {
+  "name": "flat reader LATCH follows the vector live",
+  "file": "src/lib/rtl/coef_flat_reader.sv",
+  "old": "if (frame_i || !loaded) begin",
+  "new": "if (1'b1) begin"
+ }
+]

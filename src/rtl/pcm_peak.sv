@@ -17,7 +17,10 @@
 //   - a window is a whole number of frames, the same frames for every channel
 //     (atomic across channels by construction);
 //   - nothing is lost between snapshots: every frame belongs to exactly one
-//     window, and every beat of a frame lies between two strobes;
+//     window. Since LF1 (2026-10-26) frame_i is the stream's own frame
+//     boundary, its last beat (fpgamixer_top), not the global strobe: when
+//     the chain spans frames a tap's frame may cross strobes, and that pulse
+//     still falls between two of the stream's frames;
 //   - clearing to 0 at a frame boundary is the same as starting at the first
 //     sample of the new window (max(0, |x|) = |x|), so a loud frame at the
 //     boundary is never lost (the F4a handoff's "clear means start at the

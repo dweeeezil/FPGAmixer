@@ -1,0 +1,32 @@
+[
+ {
+  "name": "matrix_fits: depth < FRAME",
+  "file": "src/rtl/mixer_core_pkg.sv",
+  "old": "return (p * n_in <= FRAME) &&",
+  "new": "return (p * n_in < FRAME) &&"
+ },
+ {
+  "name": "matrix_fits: samples without the +1",
+  "file": "src/rtl/mixer_core_pkg.sv",
+  "old": "(span_in + (p - 1) * n_in + 1 <= FRAME)",
+  "new": "(span_in + (p - 1) * n_in <= FRAME)"
+ },
+ {
+  "name": "chooser without the multi-frame fallback",
+  "file": "src/rtl/mixer_core_pkg.sv",
+  "old": "for (int pass = 0; pass < 2; pass++)",
+  "new": "for (int pass = 0; pass < 1; pass++)"
+ },
+ {
+  "name": "chooser ignores chain_fits",
+  "file": "src/rtl/mixer_core_pkg.sv",
+  "old": "if (l2 >= 1 && l2 <= max2 && chain_fits(n_in, n_bus, n_out, l1, l2)) begin",
+  "new": "if (l2 >= 1 && l2 <= max2) begin"
+ },
+ {
+  "name": "chain_fits ignores the bus matrix",
+  "file": "src/rtl/mixer_core_pkg.sv",
+  "old": "            && matrix_fits(n_bus, n_out, l2, matrix_span_out(n_in, n_bus, l1))\n",
+  "new": ""
+ }
+]

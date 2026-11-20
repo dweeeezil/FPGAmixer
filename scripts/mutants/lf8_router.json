@@ -1,0 +1,80 @@
+[
+ {
+  "name": "dry return one frame fresher (K frames, not K + 1)",
+  "file": "src/rtl/insert_router.sv",
+  "old": "rd_ha[gz][z] = {hsub(r1z_h[gz], delay_frames(K)), r1z_c[gz]};",
+  "new": "rd_ha[gz][z] = {hsub(r1z_h[gz], delay_frames(K) - 1), r1z_c[gz]};"
+ },
+ {
+  "name": "chain head reads one frame fresher (wrong age)",
+  "file": "src/rtl/insert_router.sv",
+  "old": "rd_ha[R][z] = {hsub(r1_h, 1 + int'(age)), CWM'(idx)};",
+  "new": "rd_ha[R][z] = {hsub(r1_h, int'(age)), CWM'(idx)};"
+ },
+ {
+  "name": "pool-to-pool hop from the current run, not the previous",
+  "file": "src/rtl/insert_router.sv",
+  "old": "rd_pa[R][p] = {~r1_p, SLW'(idx)};",
+  "new": "rd_pa[R][p] = {r1_p, SLW'(idx)};"
+ },
+ {
+  "name": "return reads the current run, not the previous",
+  "file": "src/rtl/insert_router.sv",
+  "old": "rd_pa[gz][p] = {~r1z_p[gz], SLW'(idx)};",
+  "new": "rd_pa[gz][p] = {r1z_p[gz], SLW'(idx)};"
+ },
+ {
+  "name": "tables never swap (COMMIT skipped)",
+  "file": "src/rtl/insert_router.sv",
+  "old": "assign tab_swap = frame_i;",
+  "new": "assign tab_swap = 1'b0;"
+ },
+ {
+  "name": "a pool run misses its last slot",
+  "file": "src/rtl/insert_router.sv",
+  "old": "if (int'(cnt) == S - 1) run <= 1'b0;",
+  "new": "if (int'(cnt) == S - 2) run <= 1'b0;"
+ },
+ {
+  "name": "return looks up the next channel's entry",
+  "file": "src/rtl/insert_router.sv",
+  "old": "assign tab_addr[gz*TAW +: TAW] = TAW'(BASE + int'(zs_c[gz]));",
+  "new": "assign tab_addr[gz*TAW +: TAW] = TAW'(BASE + int'(zs_c[gz]) + 1);"
+ },
+ {
+  "name": "source age K treated as out of range",
+  "file": "src/rtl/insert_router.sv",
+  "old": "(int'(age) <= K)",
+  "new": "(int'(age) < K)"
+ },
+ {
+  "name": "kind 3 read as a zone source",
+  "file": "src/rtl/insert_router.sv",
+  "old": "assign ok_zone = (kind == KIND_ZONE)",
+  "new": "assign ok_zone = kind[0]"
+ },
+ {
+  "name": "history written one slot ahead",
+  "file": "src/rtl/insert_router.sv",
+  "old": "zw_a[z] <= {hw, zs_c[z]};",
+  "new": "zw_a[z] <= {hsub(hw, H - 1), zs_c[z]};"
+ },
+ {
+  "name": "pool output into the buffer being read",
+  "file": "src/rtl/insert_router.sv",
+  "old": "pw_a[p] <= {fpar, pool_out_ch[p*SLW +: SLW]};",
+  "new": "pw_a[p] <= {~fpar, pool_out_ch[p*SLW +: SLW]};"
+ },
+ {
+  "name": "pool buffer parity never toggles",
+  "file": "src/rtl/insert_router.sv",
+  "old": "fpar <= ~fpar;",
+  "new": "fpar <= fpar;"
+ },
+ {
+  "name": "a return channel's slot index off by one",
+  "file": "src/rtl/insert_router.sv",
+  "old": "rd_pa[gz][p] = {~r1z_p[gz], SLW'(idx)};",
+  "new": "rd_pa[gz][p] = {~r1z_p[gz], SLW'(idx + 8'd1)};"
+ }
+]

@@ -33,20 +33,45 @@
 //     channel B+3 -> port 2 (channel 2 -> None): port 2 carries port 13's
 //     signal, port B+3 goes silent; swapped patch windows give otherwise.
 // Phase 11: fpgamixer_top has no Pmod pins any more (decision P1).
+// LF2/LF3 (2026-10-26): the gain/matrix ports are smoothed; the top runs
+// with SMOOTH_K = 2, checks wait until a change has arrived exactly, and the
+// per-window changes are first seen mid-fade (the smoothers are wired in).
+// LF8 (2026-10-31): the insert router and the gain pool. Every channel is
+// INS_FR = 3 x 9 frames later through the three insert points, so a change
+// upstream of an insert point reaches the outputs that much later (the waits
+// below add it). The router's and the pool's windows (ID, CONFIG), then real
+// inserts through them: a slot on input channel 9 (0.5), on bus 10 (0.25),
+// a chain of two slots on input channel 11 (0.5, 0.5), on output 12 (0.5).
 // -----------------------------------------------------------------------------
 `timescale 1ns / 1ps
 
 module tb_top_windows;
+    import insert_router_pkg::*;
 
     localparam int N  = 20;
     localparam int SW = 24;
     localparam int NH = 4;     // the USB-host channels 0..3: input matrix off at reset (H5)
     localparam int B  = 4;     // the first channel of the per-window test (an identity one)
 
+    // LF2/LF3: the five gain/matrix ports are smoothed (coef_smooth). With
+    // K = 2 here (8 in the builds) a change is exact after (18 + 1) * 4 = 76
+    // frames; the checks after a coefficient change wait SETTLE frames.
+    localparam int TB_K   = 2;
+    localparam int SETTLE = ((18 + 1) << TB_K) + 3;
+    // LF8: the top's K = 8; each insert point delays 9 frames
+    localparam int INS_K  = 8;
+    localparam int INS_PT = delay_frames(INS_K);       // per insert point
+    localparam int INS_FR = 3 * INS_PT;                // input -> output
+    localparam int EQ_NCOEF = 32 * 8 * 6;              // the EQ's coefficients (8 KB window)
+
     logic sysclk = 0;
     always #4 sysclk = ~sysclk;
 
-    fpgamixer_top u_dut (.sysclk (sysclk));     // Phase 11: no Pmod pins any more
+    fpgamixer_top #(.SMOOTH_K (TB_K)) u_dut (.sysclk (sysclk));   // Phase 11: no Pmod pins any more
+
+    task automatic settle();
+        repeat (SETTLE + INS_FR) @(posedge u_dut.u_core.valid_o);
+    endtask
 
     // ----- known core inputs: in[k] = (k + 1) * 0x010000 -----
     // Driven at the LINKS' wires, per the channel map (Phase 11): core 0..3 =
@@ -91,8 +116,12 @@ module tb_top_windows;
     localparam int CTRL = 0, BUSMX = 1, INLVL = 2, BUSLVL = 3, OUTLVL = 4;
     localparam int INMTR = 5, BUSMTR = 6, OUTMTR = 7;                    // Phase 13
     localparam int INPATCH = 8, OUTPATCH = 9;                             // Phase 15
-    string name [10] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
-                         "input meter", "bus meter", "output meter", "input patch", "output patch"};
+    localparam int INSERT = 10, GPOOL = 11;                               // LF8
+    localparam int EQPOOL = 12;                                           // the EQ (2026-11-17)
+    localparam int TIMECODE = 13;                                         // 2026-11-18
+    string name [14] = '{"input matrix", "bus matrix", "input levels", "bus levels", "output levels",
+                         "input meter", "bus meter", "output meter", "input patch", "output patch",
+                         "insert router", "gain pool", "EQ", "timecode"};
 
     function automatic logic [31:0] mag(input logic [SW-1:0] x);       // as pcm_peak
         if (x == 24'h800000) return 32'h7F_FFFF;
@@ -160,6 +189,17 @@ module tb_top_windows;
         rd(INPATCH,  32'h004, r); check("input patch CONFIG",  r, 32'h1414_0005);
         rd(OUTPATCH, 32'h000, r); check("output patch ID",     r, 32'h5054_5001);
         rd(OUTPATCH, 32'h004, r); check("output patch CONFIG", r, 32'h1414_0105);
+        rd(INSERT, 32'h000, r); check("insert router ID",     r, 32'h4952_5001);
+        rd(INSERT, 32'h004, r); check("insert router CONFIG", r, 32'h0820_0209);  // K 8, S 32, NP 2, 9 frames
+        rd(EQPOOL, 32'h000, r); check("EQ ID",                r, 32'h4551_5001);
+        rd(EQPOOL, 32'h004, r); check("EQ CONFIG",            r, 32'h2008_1812);  // 32 slots, 8 bands, AF 24, MF 18
+        rd(EQPOOL, 32'h100 + 4 * (EQ_NCOEF - 3), r);                              // the last section's m0:
+        check("EQ last coefficient register (8 KB window) reads flat", r, 32'h0004_0000);
+        rd(GPOOL,  32'h000, r); check("gain pool ID",         r, 32'h5450_5001);
+        rd(GPOOL,  32'h004, r); check("gain pool CONFIG",     r, 32'h2000_1210);  // 32 slots, Q2.16
+        rd(TIMECODE, 32'h000, r); check("timecode ID",        r, 32'h5443_5001);
+        rd(TIMECODE, 32'h004, r); check("timecode CONFIG",    r, 32'd20);         // 20 I/O ports
+        rd(TIMECODE, 32'h100, r); check("timecode SOURCE off at reset", r, 32'h0);
 
         $display("-- reset state: a blank slate (CS5): nothing patched, every port silent");
         repeat (3) @(posedge u_dut.u_core.valid_o);
@@ -177,7 +217,7 @@ module tb_top_windows;
             wr(OUTPATCH, lv(c), 32'(c + 1));
         end
         commit(INPATCH); commit(OUTPATCH);
-        repeat (3) @(posedge u_dut.u_core.valid_o);
+        settle();                                       // the levels fade in from 0 at power-on (LF2, Q2)
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("identity port%0d", k), 32'(u_dut.io_out[k*SW +: SW]),
@@ -208,7 +248,17 @@ module tb_top_windows;
         exp_out[B+1] = SW'((32'h400000 / 4 + 32'h060000) / 2);  // (in B/2/2 + in B+1) / 2
         exp_out[B+2] = SW'(32'h070000 / 4);                     // in B+2 / 4
 
-        repeat (3) @(posedge u_dut.u_core.valid_o);
+        // LF2/LF3: 3 frames on, the changed outputs are mid-fade: neither the
+        // old value (= the input) nor the new one, so the smoothers are on
+        // these paths (input levels, both matrices, bus and output levels).
+        // LF8: the input levels' change passes two insert points on its way
+        // out (the input matrix's too), so "3 frames on" is 3 + 2 x 9.
+        repeat (3 + 2 * INS_PT) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        for (int k = B; k <= B + 2; k++)
+            check($sformatf("out%0d mid-fade after 3 frames", k),
+                  32'(u_dut.io_out[k*SW +: SW] != exp_out[k] && u_dut.io_out[k*SW +: SW] != stim[k*SW +: SW]), 1);
+        settle();
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("out%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
@@ -237,7 +287,7 @@ module tb_top_windows;
         commit(INPATCH); commit(OUTPATCH);
         exp_out[2]   = stim[13*SW +: SW];               // channel B+3, fed by port 13
         exp_out[B+3] = '0;                              // no channel names port B+3
-        repeat (3) @(posedge u_dut.u_core.valid_o);
+        repeat (3 + INS_FR) @(posedge u_dut.u_core.valid_o);   // the input patch: before all three
         @(negedge u_dut.mclk);
         for (int k = 0; k < N; k++)
             check($sformatf("repatched port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
@@ -249,6 +299,81 @@ module tb_top_windows;
         rd(BUSMX,  mx(B+1, B), r);  check("bus matrix B+1<-B", r, 32'h0001_0000);
         rd(OUTLVL, lv(B+1), r);     check("output level B+1", r, 32'h0000_8000);
         rd(CTRL,   mx(0, 0), r);    check("input matrix 0<-0 off at reset (H5)", r, 32'h0);
+
+        $display("-- inserts (LF8): the gain pool on all three zones, and a chain of two");
+        // table entry k at 0x100 + 4k: RETURN inputs 0..19, buses 20..39,
+        // outputs 40..59, then the gain pool's SOURCE slots 60..91
+        wr(GPOOL, lv(0), 32'h0000_8000);                // slot 0: 0.5
+        wr(GPOOL, lv(1), 32'h0000_4000);                // slot 1: 0.25
+        wr(GPOOL, lv(2), 32'h0000_8000);                // slots 2, 3: 0.5 each
+        wr(GPOOL, lv(3), 32'h0000_8000);
+        wr(GPOOL, lv(4), 32'h0000_8000);                // slot 4: 0.5
+        commit(GPOOL);
+        wr(INSERT, lv(60 + 0), 32'(ent_zone(ZONE_IN,  9,  head_age(INS_K, 1))));  // in 9 -> slot 0
+        wr(INSERT, lv(9),      32'(ent_slot(0, 0)));
+        wr(INSERT, lv(60 + 1), 32'(ent_zone(ZONE_BUS, 10, head_age(INS_K, 1))));  // bus 10 -> slot 1
+        wr(INSERT, lv(20 + 10), 32'(ent_slot(0, 1)));
+        wr(INSERT, lv(60 + 2), 32'(ent_zone(ZONE_IN,  11, head_age(INS_K, 2))));  // in 11 -> 2 -> 3
+        wr(INSERT, lv(60 + 3), 32'(ent_slot(0, 2)));
+        wr(INSERT, lv(11),     32'(ent_slot(0, 3)));
+        wr(INSERT, lv(60 + 4), 32'(ent_zone(ZONE_OUT, 12, head_age(INS_K, 1))));  // out 12 -> slot 4
+        wr(INSERT, lv(40 + 12), 32'(ent_slot(0, 4)));
+        commit(INSERT);
+        exp_out[9]  = SW'(32'h0A0000 / 2);
+        exp_out[10] = SW'(32'h0B0000 / 4);
+        exp_out[11] = SW'(32'h0C0000 / 4);
+        exp_out[12] = SW'(32'h0D0000 / 2);
+        settle();
+        @(negedge u_dut.mclk);
+        for (int k = 0; k < N; k++)
+            check($sformatf("inserted port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
+        rd(INSERT, lv(11), r);     check("RETURN in 11 reads back", r, 32'(ent_slot(0, 3)));
+        rd(INSERT, lv(60 + 2), r); check("SOURCE slot 2 reads back", r, 32'(ent_zone(ZONE_IN, 11, INS_K - 2)));
+
+        $display("-- the EQ (2026-11-17): inserted flat it is bit-exact; a low shelf doubles a DC input");
+        // EQ slot 0 on input channel 13: SOURCE pool 1 slot 0 is entry 60 + 32 + 0
+        wr(INSERT, lv(92),  32'(ent_zone(ZONE_IN, 13, head_age(INS_K, 1))));
+        wr(INSERT, lv(13),  32'(ent_slot(1, 0)));
+        commit(INSERT);
+        settle();
+        @(negedge u_dut.mclk);
+        check("EQ flat on in 13: port 13 unchanged", 32'(u_dut.io_out[13*SW +: SW]), 32'(exp_out[13]));
+        // band 0 of slot 0 a low shelf, 1 kHz, +6.02 dB, Q 0.7071: the codes from
+        // model/svf_eq.py quantize(design("lowshelf", 1000, 6.0206, 0.7071), EQ_FMT);
+        // the model's output for in 13's DC (0x0E0000) settles at exactly 0x1C0000
+        wr(EQPOOL, 32'h100 + 4 * 0, 32'd15520330);       // a1
+        wr(EQPOOL, 32'h100 + 4 * 1, 32'd855407);         // a2
+        wr(EQPOOL, 32'h100 + 4 * 2, 32'd47146);          // a3
+        wr(EQPOOL, 32'h100 + 4 * 3, 32'd262144);         // m0
+        wr(EQPOOL, 32'h100 + 4 * 4, 32'd153562);         // m1
+        wr(EQPOOL, 32'h100 + 4 * 5, 32'd262144);         // m2
+        commit(EQPOOL);
+        settle();
+        repeat (100) @(posedge u_dut.u_core.valid_o);    // the shelf's own settling at DC
+        @(negedge u_dut.mclk);
+        check("EQ low shelf +6 dB on in 13: port 13 doubled", 32'(u_dut.io_out[13*SW +: SW]), 32'h1C_0000);
+        rd(EQPOOL, 32'h100 + 4 * 4, r); check("EQ m1 reads back", r, 32'd153562);
+
+        $display("-- the timecode display (2026-11-18): SOURCE picks the I/O port, the audio doesn't notice");
+        exp_out[13] = 24'h1C_0000;                       // the EQ's shelf, above
+        wr(TIMECODE, 32'h100, 32'd8);                    // port 7 (link #1 ch 3)
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode hears port 7", 32'(u_dut.u_timecode_regs.sample), 32'(stim[7*SW +: SW]));
+        wr(TIMECODE, 32'h100, 32'd20);                   // port 19, the last (link #2 ch 7)
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode hears port 19", 32'(u_dut.u_timecode_regs.sample), 32'(stim[19*SW +: SW]));
+        wr(TIMECODE, 32'h100, 32'd1);                    // port 0, the first (link #3 ch 0)
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode hears port 0", 32'(u_dut.u_timecode_regs.sample), 32'(stim[0*SW +: SW]));
+        wr(TIMECODE, 32'h100, 32'd0);                    // off
+        repeat (4) @(posedge u_dut.u_core.valid_o);
+        @(negedge u_dut.mclk);
+        check("timecode off hears nothing", 32'(u_dut.u_timecode_regs.sample), 32'h0);
+        for (int k = 0; k < N; k++)
+            check($sformatf("after timecode port%0d", k), 32'(u_dut.io_out[k*SW +: SW]), 32'(exp_out[k]));
 
         check("frame strobes at 256-cycle spacing", 32'(frame_errors), 0);
         if (strobes < 10) begin $display("  FAIL only %0d frame strobes", strobes); errors++; end
@@ -262,7 +387,7 @@ module tb_top_windows;
     end
 
     initial begin
-        #10ms;
+        #40ms;                         // LF8: every settle is 27 frames longer; the EQ adds two
         $display("FAIL: tb_top_windows TIMEOUT");
         $finish;
     end

@@ -25,7 +25,17 @@
 //                  M_AXI_INMTR / BUSMTR / OUTMTR (the meters)
 //                  Phase 15: M_AXI_INPATCH / OUTPATCH -> patch_regs_axil
 //                  u_inpatch_regs / u_outpatch_regs (the I/O patch)
-//                  (without the PS: coef_flat_readers over the reset banks)
+//                  LF8: M_AXI_INSERT -> insert_router_regs_axil
+//                  u_insert_regs (the routing tables), M_AXI_GPOOL ->
+//                  lib_template_regs_axil u_gpool_regs (the gain pool);
+//                  M_AXI_EQPOOL (8 KB) -> lib_svf_eq_regs_axil u_eqpool_regs (the EQ)
+//                  M_AXI_TIMECODE -> timecode_regs_axil u_timecode_regs (LTC from
+//                  one I/O port: a listener on io_in, nothing goes back)
+//                  (without the PS: coef_flat_readers over the reset banks;
+//                  no inserts)
+//   inserts (LF8): the core's insert ports -> insert_router u_router ->
+//                  pools (pool 0: lib_template u_pool_gain, 32 slots;
+//                  pool 1: lib_svf_eq u_pool_eq, 32 slots x 8 bands)
 //                  (INCLUDE_LINK): PS -> M_AXI_LINKSTAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK2): PS -> M_AXI_LINK2STAT -> pcm_link_stat_regs
 //                  (INCLUDE_LINK3): PS -> M_AXI_LINK3STAT -> pcm_link_stat_regs
@@ -58,7 +68,12 @@
 // warning at XDC parse time, and the build then fails in IO clock placement
 // (seen 2026-09-22).
 // -----------------------------------------------------------------------------
-module fpgamixer_top (
+module fpgamixer_top #(
+    // LF2/LF3: the coefficient smoothers' time constant, 2^SMOOTH_K frames.
+    // 8 in every build (the user, 2026-10-26: 5.3 ms); a parameter only so
+    // that a TB of the whole top can settle in a few frames.
+    parameter int SMOOTH_K = 8
+) (
     input  logic sysclk        // 25 MHz PL ref, pin E12 (LVCMOS18)
 );
 
@@ -187,6 +202,25 @@ module fpgamixer_top (
     logic [L2*GW-1:0]  bus_mx_data;
     logic [CW-1:0]     in_patch_addr, out_patch_addr;   // Phase 15
     logic [PW-1:0]     in_patch_data, out_patch_data;
+    // LF1 (2026-10-26): each bank swaps on its block's own frame boundary,
+    // given by the core (mixer_core: the block's input's last beat), not on
+    // the global strobe, so a chain that spans frames still gives every
+    // frame one whole bank per block.
+    logic in_patch_swap, in_lvl_swap, in_mx_swap, bus_lvl_swap, bus_mx_swap,
+          out_lvl_swap, out_patch_swap;
+    // LF2/LF3 (2026-10-26): click-free levels and matrices. A coef_smooth on
+    // each of the five gain/matrix ports, between its bank (the *_bk_* side)
+    // and the core; the core's read strobes (*_rd) tell it the real reads.
+    // tau = 2^SMOOTH_K frames (the module parameter; the user, Q1: K = 8,
+    // 5.3 ms, exact within ~70 ms). The patches aren't smoothed: a routing
+    // change switches at once.
+    logic [CW-1:0]     in_lvl_bk_addr, bus_lvl_bk_addr, out_lvl_bk_addr;
+    logic [GW-1:0]     in_lvl_bk_data, bus_lvl_bk_data, out_lvl_bk_data;
+    logic [IMX_AW-1:0] in_mx_bk_addr;
+    logic [L1*GW-1:0]  in_mx_bk_data;
+    logic [BMX_AW-1:0] bus_mx_bk_addr;
+    logic [L2*GW-1:0]  bus_mx_bk_data;
+    logic in_lvl_rd, in_mx_rd, bus_lvl_rd, bus_mx_rd, out_lvl_rd;
 
     // the core's tap ports (Phase 13): the level stages' output streams,
     // metered in PS builds (unused without the PS)
@@ -194,6 +228,72 @@ module fpgamixer_top (
     logic [CW-1:0]        tap_in_ch, tap_out_ch;
     logic [$clog2(N_BUS)-1:0] tap_bus_ch;
     logic [SW-1:0]        tap_in_data, tap_bus_data, tap_out_data;
+    // LF1: a meter's window closes on its tap's own frame boundary (the
+    // stream's last beat), which stays between two of its frames when the
+    // chain spans frames; the global strobe might not.
+    wire tap_in_last  = tap_in_valid  && (tap_in_ch  == CW'(N - 1));
+    wire tap_bus_last = tap_bus_valid && (tap_bus_ch == $clog2(N_BUS)'(N_BUS - 1));
+    wire tap_out_last = tap_out_valid && (tap_out_ch == CW'(N - 1));
+
+    // ----- inserts (LF8, docs/insert_architecture_proposal_2026-10-31.md) -----
+    // The core's three insert ports close on the insert router, which feeds
+    // the processor pools: pool 0 a gain pool (the library's template block
+    // at 32 slots), pool 1 the parametric EQ (lib_svf_eq: 32 slots x 8
+    // bands; docs/eq_proposal_2026-11-17.md). K = 8 inserts per channel at
+    // most (the user, Q1): every channel at every insert point is 9 frames
+    // late, inserted or not. The pool order is mixer_hw.POOLS'.
+    localparam int INS_K  = 8;
+    localparam int SLOTS  = 32;                   // per pool (the user: "32 channels worth")
+    localparam int NPOOL  = 2;
+    localparam int SLW    = $clog2(SLOTS);
+    localparam int N_TAB  = 3 * N + NPOOL * SLOTS;
+    localparam int TAW    = $clog2(N_TAB);
+    localparam int POOL_GAIN = 0;                 // pool index of the gain pool
+    localparam int POOL_EQ   = 1;                 // ... and of the EQ
+    localparam int EQ_B      = 8;                 // bands (the user, 2026-11-09)
+    localparam int EQ_CW     = lib_svf_eq_pkg::CW;
+    localparam int EQ_NC     = lib_svf_eq_pkg::NC;
+    localparam int EQ_CAW    = $clog2(SLOTS * EQ_B);
+    localparam int EQ_NCOEF  = SLOTS * EQ_B * EQ_NC;
+    // the routers' rule takes the slowest pool's latency (the EQ's)
+    localparam int POOL_LAT  = (lib_svf_eq_pkg::lat_last(SLOTS, EQ_B) > lib_template_pkg::LAT)
+                               ? lib_svf_eq_pkg::lat_last(SLOTS, EQ_B) : lib_template_pkg::LAT;
+    logic                 ins_in_sv,  ins_in_rv,  ins_bus_sv, ins_bus_rv, ins_out_sv, ins_out_rv;
+    logic [CW-1:0]        ins_in_sc,  ins_in_rc,  ins_out_sc, ins_out_rc;
+    logic [$clog2(N_BUS)-1:0] ins_bus_sc, ins_bus_rc;
+    logic [SW-1:0]        ins_in_sd,  ins_in_rd,  ins_bus_sd, ins_bus_rd, ins_out_sd, ins_out_rd;
+    logic [NPOOL-1:0]       pool_in_v, pool_out_v;
+    logic [NPOOL*SLW-1:0]   pool_in_c, pool_out_c;
+    logic [NPOOL*SW-1:0]    pool_in_d, pool_out_d;
+    logic                   tab_swap;
+    logic [(3+NPOOL)*TAW-1:0]                tab_addr;
+    logic [(3+NPOOL)*insert_router_pkg::EW-1:0] tab_data;
+    // the gain pool's coefficient port: bank (gp_bk_*) -> coef_smooth -> block
+    logic [SLW-1:0] gp_addr, gp_bk_addr;
+    logic [GW-1:0]  gp_data, gp_bk_data;
+    logic           gp_rd, gp_swap;
+    function automatic logic [SLOTS*GW-1:0] unity_slots();
+        logic [SLOTS*GW-1:0] g;
+        for (int s = 0; s < SLOTS; s++) g[s*GW +: GW] = G_UNITY;
+        return g;
+    endfunction
+    localparam logic [SLOTS*GW-1:0] POOL_GAINS = unity_slots();   // every slot identity
+    // the EQ's two coefficient ports (one per lane): bank (eq_bk_*) -> a
+    // coef_smooth each -> block
+    logic [2*EQ_CAW-1:0]       eq_addr;
+    logic [2*EQ_NC*EQ_CW-1:0]  eq_data, eq_bk_data;
+    logic [1:0]                eq_rd;
+    logic                      eq_swap, eq_err;
+    function automatic logic [EQ_NCOEF*EQ_CW-1:0] eq_flat_bank();   // every section flat
+        logic [EQ_NCOEF*EQ_CW-1:0] c = '0;
+        for (int sec = 0; sec < SLOTS * EQ_B; sec++) begin
+            c[(sec*EQ_NC + 0)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::A1_FLAT;
+            c[(sec*EQ_NC + 1)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::A2_FLAT;
+            c[(sec*EQ_NC + 2)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::A3_FLAT;
+            c[(sec*EQ_NC + 3)*EQ_CW +: EQ_CW] = lib_svf_eq_pkg::M0_ONE;
+        end
+        return c;
+    endfunction
 
 `ifdef INCLUDE_PS
     // ps_sys_wrapper (the BD) exports M_AXI_CTRL (AXI4-Lite, through a
@@ -289,6 +389,40 @@ module fpgamixer_top (
     logic        opt_awvalid, opt_awready, opt_wvalid, opt_wready;
     logic        opt_bvalid, opt_bready, opt_arvalid, opt_arready;
     logic        opt_rvalid, opt_rready;
+
+    // LF8 (2026-10-31): the insert router's tables and the gain pool, the
+    // same way, behind the second SmartConnect:
+    //   M_AXI_INSERT 0x8000_F000 irt_*   M_AXI_GPOOL 0x8001_0000 gpl_*
+    logic [31:0] irt_awaddr, irt_araddr, irt_wdata, irt_rdata;
+    logic [2:0]  irt_awprot, irt_arprot;
+    logic [3:0]  irt_wstrb;
+    logic [1:0]  irt_bresp, irt_rresp;
+    logic        irt_awvalid, irt_awready, irt_wvalid, irt_wready;
+    logic        irt_bvalid, irt_bready, irt_arvalid, irt_arready;
+    logic        irt_rvalid, irt_rready;
+    logic [31:0] gpl_awaddr, gpl_araddr, gpl_wdata, gpl_rdata;
+    logic [2:0]  gpl_awprot, gpl_arprot;
+    logic [3:0]  gpl_wstrb;
+    logic [1:0]  gpl_bresp, gpl_rresp;
+    logic        gpl_awvalid, gpl_awready, gpl_wvalid, gpl_wready;
+    logic        gpl_bvalid, gpl_bready, gpl_arvalid, gpl_arready;
+    logic        gpl_rvalid, gpl_rready;
+    // the EQ (2026-11-17): M_AXI_EQPOOL 0x8001_2000, 8 KB (1,536 coefficients) eqp_*
+    logic [31:0] eqp_awaddr, eqp_araddr, eqp_wdata, eqp_rdata;
+    logic [2:0]  eqp_awprot, eqp_arprot;
+    logic [3:0]  eqp_wstrb;
+    logic [1:0]  eqp_bresp, eqp_rresp;
+    logic        eqp_awvalid, eqp_awready, eqp_wvalid, eqp_wready;
+    logic        eqp_bvalid, eqp_bready, eqp_arvalid, eqp_arready;
+    logic        eqp_rvalid, eqp_rready;
+    // the timecode display (2026-11-18): M_AXI_TIMECODE 0x8001_1000, 4 KB, tcd_*
+    logic [31:0] tcd_awaddr, tcd_araddr, tcd_wdata, tcd_rdata;
+    logic [2:0]  tcd_awprot, tcd_arprot;
+    logic [3:0]  tcd_wstrb;
+    logic [1:0]  tcd_bresp, tcd_rresp;
+    logic        tcd_awvalid, tcd_awready, tcd_wvalid, tcd_wready;
+    logic        tcd_bvalid, tcd_bready, tcd_arvalid, tcd_arready;
+    logic        tcd_rvalid, tcd_rready;
 
 `ifdef INCLUDE_LINK
     // Link: formatter streams (pl_clk0) and the status window's AXI4-Lite port
@@ -658,6 +792,82 @@ module fpgamixer_top (
         .M_AXI_OUTPATCH_rresp   (opt_rresp),
         .M_AXI_OUTPATCH_rvalid  (opt_rvalid),
         .M_AXI_OUTPATCH_rready  (opt_rready),
+        .M_AXI_INSERT_awaddr    (irt_awaddr),
+        .M_AXI_INSERT_awprot    (irt_awprot),
+        .M_AXI_INSERT_awvalid   (irt_awvalid),
+        .M_AXI_INSERT_awready   (irt_awready),
+        .M_AXI_INSERT_wdata     (irt_wdata),
+        .M_AXI_INSERT_wstrb     (irt_wstrb),
+        .M_AXI_INSERT_wvalid    (irt_wvalid),
+        .M_AXI_INSERT_wready    (irt_wready),
+        .M_AXI_INSERT_bresp     (irt_bresp),
+        .M_AXI_INSERT_bvalid    (irt_bvalid),
+        .M_AXI_INSERT_bready    (irt_bready),
+        .M_AXI_INSERT_araddr    (irt_araddr),
+        .M_AXI_INSERT_arprot    (irt_arprot),
+        .M_AXI_INSERT_arvalid   (irt_arvalid),
+        .M_AXI_INSERT_arready   (irt_arready),
+        .M_AXI_INSERT_rdata     (irt_rdata),
+        .M_AXI_INSERT_rresp     (irt_rresp),
+        .M_AXI_INSERT_rvalid    (irt_rvalid),
+        .M_AXI_INSERT_rready    (irt_rready),
+        .M_AXI_GPOOL_awaddr     (gpl_awaddr),
+        .M_AXI_GPOOL_awprot     (gpl_awprot),
+        .M_AXI_GPOOL_awvalid    (gpl_awvalid),
+        .M_AXI_GPOOL_awready    (gpl_awready),
+        .M_AXI_GPOOL_wdata      (gpl_wdata),
+        .M_AXI_GPOOL_wstrb      (gpl_wstrb),
+        .M_AXI_GPOOL_wvalid     (gpl_wvalid),
+        .M_AXI_GPOOL_wready     (gpl_wready),
+        .M_AXI_GPOOL_bresp      (gpl_bresp),
+        .M_AXI_GPOOL_bvalid     (gpl_bvalid),
+        .M_AXI_GPOOL_bready     (gpl_bready),
+        .M_AXI_GPOOL_araddr     (gpl_araddr),
+        .M_AXI_GPOOL_arprot     (gpl_arprot),
+        .M_AXI_GPOOL_arvalid    (gpl_arvalid),
+        .M_AXI_GPOOL_arready    (gpl_arready),
+        .M_AXI_GPOOL_rdata      (gpl_rdata),
+        .M_AXI_GPOOL_rresp      (gpl_rresp),
+        .M_AXI_GPOOL_rvalid     (gpl_rvalid),
+        .M_AXI_GPOOL_rready     (gpl_rready),
+        .M_AXI_EQPOOL_awaddr    (eqp_awaddr),
+        .M_AXI_EQPOOL_awprot    (eqp_awprot),
+        .M_AXI_EQPOOL_awvalid   (eqp_awvalid),
+        .M_AXI_EQPOOL_awready   (eqp_awready),
+        .M_AXI_EQPOOL_wdata     (eqp_wdata),
+        .M_AXI_EQPOOL_wstrb     (eqp_wstrb),
+        .M_AXI_EQPOOL_wvalid    (eqp_wvalid),
+        .M_AXI_EQPOOL_wready    (eqp_wready),
+        .M_AXI_EQPOOL_bresp     (eqp_bresp),
+        .M_AXI_EQPOOL_bvalid    (eqp_bvalid),
+        .M_AXI_EQPOOL_bready    (eqp_bready),
+        .M_AXI_EQPOOL_araddr    (eqp_araddr),
+        .M_AXI_EQPOOL_arprot    (eqp_arprot),
+        .M_AXI_EQPOOL_arvalid   (eqp_arvalid),
+        .M_AXI_EQPOOL_arready   (eqp_arready),
+        .M_AXI_EQPOOL_rdata     (eqp_rdata),
+        .M_AXI_EQPOOL_rresp     (eqp_rresp),
+        .M_AXI_EQPOOL_rvalid    (eqp_rvalid),
+        .M_AXI_EQPOOL_rready    (eqp_rready),
+        .M_AXI_TIMECODE_awaddr  (tcd_awaddr),
+        .M_AXI_TIMECODE_awprot  (tcd_awprot),
+        .M_AXI_TIMECODE_awvalid (tcd_awvalid),
+        .M_AXI_TIMECODE_awready (tcd_awready),
+        .M_AXI_TIMECODE_wdata   (tcd_wdata),
+        .M_AXI_TIMECODE_wstrb   (tcd_wstrb),
+        .M_AXI_TIMECODE_wvalid  (tcd_wvalid),
+        .M_AXI_TIMECODE_wready  (tcd_wready),
+        .M_AXI_TIMECODE_bresp   (tcd_bresp),
+        .M_AXI_TIMECODE_bvalid  (tcd_bvalid),
+        .M_AXI_TIMECODE_bready  (tcd_bready),
+        .M_AXI_TIMECODE_araddr  (tcd_araddr),
+        .M_AXI_TIMECODE_arprot  (tcd_arprot),
+        .M_AXI_TIMECODE_arvalid (tcd_arvalid),
+        .M_AXI_TIMECODE_arready (tcd_arready),
+        .M_AXI_TIMECODE_rdata   (tcd_rdata),
+        .M_AXI_TIMECODE_rresp   (tcd_rresp),
+        .M_AXI_TIMECODE_rvalid  (tcd_rvalid),
+        .M_AXI_TIMECODE_rready  (tcd_rready),
         .ctrl_aclk            (ctrl_aclk),
         .ctrl_aresetn         (ctrl_aresetn),
         .M_AXI_CTRL_awaddr    (ctrl_awaddr),
@@ -698,8 +908,8 @@ module fpgamixer_top (
         .s_axi_arready (ctrl_arready),
         .s_axi_rdata   (ctrl_rdata),  .s_axi_rresp  (ctrl_rresp),
         .s_axi_rvalid  (ctrl_rvalid), .s_axi_rready (ctrl_rready),
-        .mclk (mclk), .frame_i (frame),
-        .coef_addr (in_mx_addr), .coef_data (in_mx_data)
+        .mclk (mclk), .frame_i (in_mx_swap),
+        .coef_addr (in_mx_bk_addr), .coef_data (in_mx_bk_data)
     );
 
     // Phase 12: the bus matrix (zone busMatrix, bus -> output) ...
@@ -718,8 +928,8 @@ module fpgamixer_top (
         .s_axi_arready (bmx_arready),
         .s_axi_rdata   (bmx_rdata),  .s_axi_rresp  (bmx_rresp),
         .s_axi_rvalid  (bmx_rvalid), .s_axi_rready (bmx_rready),
-        .mclk (mclk), .frame_i (frame),
-        .coef_addr (bus_mx_addr), .coef_data (bus_mx_data)
+        .mclk (mclk), .frame_i (bus_mx_swap),
+        .coef_addr (bus_mx_bk_addr), .coef_data (bus_mx_bk_data)
     );
 
     // ... and the three level stages (zones inputChannel, busChannel,
@@ -739,8 +949,8 @@ module fpgamixer_top (
         .s_axi_arready (ilv_arready),
         .s_axi_rdata   (ilv_rdata),  .s_axi_rresp  (ilv_rresp),
         .s_axi_rvalid  (ilv_rvalid), .s_axi_rready (ilv_rready),
-        .mclk (mclk), .frame_i (frame),
-        .coef_addr (in_lvl_addr), .coef_data (in_lvl_data)
+        .mclk (mclk), .frame_i (in_lvl_swap),
+        .coef_addr (in_lvl_bk_addr), .coef_data (in_lvl_bk_data)
     );
 
     gain_regs_axil #(
@@ -758,8 +968,8 @@ module fpgamixer_top (
         .s_axi_arready (blv_arready),
         .s_axi_rdata   (blv_rdata),  .s_axi_rresp  (blv_rresp),
         .s_axi_rvalid  (blv_rvalid), .s_axi_rready (blv_rready),
-        .mclk (mclk), .frame_i (frame),
-        .coef_addr (bus_lvl_addr), .coef_data (bus_lvl_data)
+        .mclk (mclk), .frame_i (bus_lvl_swap),
+        .coef_addr (bus_lvl_bk_addr), .coef_data (bus_lvl_bk_data)
     );
 
     gain_regs_axil #(
@@ -777,8 +987,8 @@ module fpgamixer_top (
         .s_axi_arready (olv_arready),
         .s_axi_rdata   (olv_rdata),  .s_axi_rresp  (olv_rresp),
         .s_axi_rvalid  (olv_rvalid), .s_axi_rready (olv_rready),
-        .mclk (mclk), .frame_i (frame),
-        .coef_addr (out_lvl_addr), .coef_data (out_lvl_data)
+        .mclk (mclk), .frame_i (out_lvl_swap),
+        .coef_addr (out_lvl_bk_addr), .coef_data (out_lvl_bk_data)
     );
 
     // Phase 13: a peak meter on each tap (zones inputChannel, busChannel,
@@ -795,7 +1005,7 @@ module fpgamixer_top (
         .s_axi_arready (imt_arready),
         .s_axi_rdata   (imt_rdata),  .s_axi_rresp  (imt_rresp),
         .s_axi_rvalid  (imt_rvalid), .s_axi_rready (imt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (tap_in_last),
         .s_valid (tap_in_valid), .s_ch (tap_in_ch), .s_data (tap_in_data)
     );
 
@@ -811,7 +1021,7 @@ module fpgamixer_top (
         .s_axi_arready (bmt_arready),
         .s_axi_rdata   (bmt_rdata),  .s_axi_rresp  (bmt_rresp),
         .s_axi_rvalid  (bmt_rvalid), .s_axi_rready (bmt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (tap_bus_last),
         .s_valid (tap_bus_valid), .s_ch (tap_bus_ch), .s_data (tap_bus_data)
     );
 
@@ -827,7 +1037,7 @@ module fpgamixer_top (
         .s_axi_arready (omt_arready),
         .s_axi_rdata   (omt_rdata),  .s_axi_rresp  (omt_rresp),
         .s_axi_rvalid  (omt_rvalid), .s_axi_rready (omt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (tap_out_last),
         .s_valid (tap_out_valid), .s_ch (tap_out_ch), .s_data (tap_out_data)
     );
 
@@ -847,7 +1057,7 @@ module fpgamixer_top (
         .s_axi_arready (ipt_arready),
         .s_axi_rdata   (ipt_rdata),  .s_axi_rresp  (ipt_rresp),
         .s_axi_rvalid  (ipt_rvalid), .s_axi_rready (ipt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (in_patch_swap),
         .coef_addr (in_patch_addr), .coef_data (in_patch_data)
     );
 
@@ -864,8 +1074,82 @@ module fpgamixer_top (
         .s_axi_arready (opt_arready),
         .s_axi_rdata   (opt_rdata),  .s_axi_rresp  (opt_rresp),
         .s_axi_rvalid  (opt_rvalid), .s_axi_rready (opt_rready),
-        .mclk (mclk), .frame_i (frame),
+        .mclk (mclk), .frame_i (out_patch_swap),
         .coef_addr (out_patch_addr), .coef_data (out_patch_data)
+    );
+
+    // LF8: the insert router's tables (one window, one COMMIT; reset: every
+    // channel dry, every slot silent) ...
+    insert_router_regs_axil #(.N_I (N), .N_B (N_BUS), .N_O (N), .K (INS_K), .S (SLOTS),
+                              .NP (NPOOL), .ADDR_WIDTH (12))
+    u_insert_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (irt_awaddr[11:0]), .s_axi_awvalid (irt_awvalid),
+        .s_axi_awready (irt_awready),
+        .s_axi_wdata   (irt_wdata),  .s_axi_wstrb  (irt_wstrb),
+        .s_axi_wvalid  (irt_wvalid), .s_axi_wready (irt_wready),
+        .s_axi_bresp   (irt_bresp),  .s_axi_bvalid (irt_bvalid),
+        .s_axi_bready  (irt_bready),
+        .s_axi_araddr  (irt_araddr[11:0]), .s_axi_arvalid (irt_arvalid),
+        .s_axi_arready (irt_arready),
+        .s_axi_rdata   (irt_rdata),  .s_axi_rresp  (irt_rresp),
+        .s_axi_rvalid  (irt_rvalid), .s_axi_rready (irt_rready),
+        .mclk (mclk), .frame_i (tab_swap),
+        .tab_addr (tab_addr), .tab_data (tab_data)
+    );
+
+    // ... and the gain pool's 32 gains (reset: unity, the identity)
+    lib_template_regs_axil #(.N (SLOTS), .GAIN_WIDTH (GW), .GAIN_FRAC (GF), .ADDR_WIDTH (12),
+                             .RESET_GAINS (POOL_GAINS))
+    u_gpool_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (gpl_awaddr[11:0]), .s_axi_awvalid (gpl_awvalid),
+        .s_axi_awready (gpl_awready),
+        .s_axi_wdata   (gpl_wdata),  .s_axi_wstrb  (gpl_wstrb),
+        .s_axi_wvalid  (gpl_wvalid), .s_axi_wready (gpl_wready),
+        .s_axi_bresp   (gpl_bresp),  .s_axi_bvalid (gpl_bvalid),
+        .s_axi_bready  (gpl_bready),
+        .s_axi_araddr  (gpl_araddr[11:0]), .s_axi_arvalid (gpl_arvalid),
+        .s_axi_arready (gpl_arready),
+        .s_axi_rdata   (gpl_rdata),  .s_axi_rresp  (gpl_rresp),
+        .s_axi_rvalid  (gpl_rvalid), .s_axi_rready (gpl_rready),
+        .mclk (mclk), .frame_i (gp_swap),
+        .coef_addr (gp_bk_addr), .coef_data (gp_bk_data)
+    );
+
+    // ... and the EQ's 1,536 coefficients (reset: every section flat), two
+    // read ports on one bank
+    lib_svf_eq_regs_axil #(.S (SLOTS), .B (EQ_B), .ADDR_WIDTH (13))
+    u_eqpool_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (eqp_awaddr[12:0]), .s_axi_awvalid (eqp_awvalid),
+        .s_axi_awready (eqp_awready),
+        .s_axi_wdata   (eqp_wdata),  .s_axi_wstrb  (eqp_wstrb),
+        .s_axi_wvalid  (eqp_wvalid), .s_axi_wready (eqp_wready),
+        .s_axi_bresp   (eqp_bresp),  .s_axi_bvalid (eqp_bvalid),
+        .s_axi_bready  (eqp_bready),
+        .s_axi_araddr  (eqp_araddr[12:0]), .s_axi_arvalid (eqp_arvalid),
+        .s_axi_arready (eqp_arready),
+        .s_axi_rdata   (eqp_rdata),  .s_axi_rresp  (eqp_rresp),
+        .s_axi_rvalid  (eqp_rvalid), .s_axi_rready (eqp_rready),
+        .mclk (mclk), .frame_i (eq_swap),
+        .coef_addr (eq_addr), .coef_data (eq_bk_data)
+    );
+
+    // ----- the timecode display (2026-11-18): reads io_in, drives no audio -----
+    timecode_regs_axil #(.P (P), .SW (SW), .ADDR_WIDTH (12)) u_timecode_regs (
+        .aclk (ctrl_aclk), .aresetn (ctrl_aresetn),
+        .s_axi_awaddr  (tcd_awaddr[11:0]), .s_axi_awvalid (tcd_awvalid),
+        .s_axi_awready (tcd_awready),
+        .s_axi_wdata   (tcd_wdata),  .s_axi_wstrb  (tcd_wstrb),
+        .s_axi_wvalid  (tcd_wvalid), .s_axi_wready (tcd_wready),
+        .s_axi_bresp   (tcd_bresp),  .s_axi_bvalid (tcd_bvalid),
+        .s_axi_bready  (tcd_bready),
+        .s_axi_araddr  (tcd_araddr[11:0]), .s_axi_arvalid (tcd_arvalid),
+        .s_axi_arready (tcd_arready),
+        .s_axi_rdata   (tcd_rdata),  .s_axi_rresp  (tcd_rresp),
+        .s_axi_rvalid  (tcd_rvalid), .s_axi_rready (tcd_rready),
+        .mclk (mclk), .rst_n (rst_n), .frame_i (frame), .in_flat (io_in)
     );
 
 `ifdef INCLUDE_LINK
@@ -1098,49 +1382,137 @@ module fpgamixer_top (
 `endif
 `else
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (N), .LANES (L1)) u_in_mx_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (IN_MX_GAINS),
-        .rd_addr (in_mx_addr), .rd_data (in_mx_data)
+        .mclk (mclk), .frame_i (in_mx_swap), .coefs_flat (IN_MX_GAINS),
+        .rd_addr (in_mx_bk_addr), .rd_data (in_mx_bk_data)
     );
     // Without the PS the bus matrix and the three level stages also read
     // their reset banks (identity, unity).
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (N_BUS), .LANES (L2)) u_bus_mx_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (BUS_MX_GAINS),
-        .rd_addr (bus_mx_addr), .rd_data (bus_mx_data)
+        .mclk (mclk), .frame_i (bus_mx_swap), .coefs_flat (BUS_MX_GAINS),
+        .rd_addr (bus_mx_bk_addr), .rd_data (bus_mx_bk_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_lvl_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
-        .rd_addr (in_lvl_addr), .rd_data (in_lvl_data)
+        .mclk (mclk), .frame_i (in_lvl_swap), .coefs_flat (LEVEL_GAINS),
+        .rd_addr (in_lvl_bk_addr), .rd_data (in_lvl_bk_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N_BUS), .ROW_LEN (1), .LANES (1)) u_bus_lvl_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
-        .rd_addr (bus_lvl_addr), .rd_data (bus_lvl_data)
+        .mclk (mclk), .frame_i (bus_lvl_swap), .coefs_flat (LEVEL_GAINS),
+        .rd_addr (bus_lvl_bk_addr), .rd_data (bus_lvl_bk_data)
     );
     coef_flat_reader #(.W (GW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_lvl_gains (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (LEVEL_GAINS),
-        .rd_addr (out_lvl_addr), .rd_data (out_lvl_data)
+        .mclk (mclk), .frame_i (out_lvl_swap), .coefs_flat (LEVEL_GAINS),
+        .rd_addr (out_lvl_bk_addr), .rd_data (out_lvl_bk_data)
     );
     // ... and the identity patch (nothing could ever patch these builds)
     coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_in_patch (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (PATCH_IDENTITY),
+        .mclk (mclk), .frame_i (in_patch_swap), .coefs_flat (PATCH_IDENTITY),
         .rd_addr (in_patch_addr), .rd_data (in_patch_data)
     );
     coef_flat_reader #(.W (PW), .N_ROWS (N), .ROW_LEN (1), .LANES (1)) u_out_patch (
-        .mclk (mclk), .frame_i (frame), .coefs_flat (PATCH_IDENTITY),
+        .mclk (mclk), .frame_i (out_patch_swap), .coefs_flat (PATCH_IDENTITY),
         .rd_addr (out_patch_addr), .rd_data (out_patch_data)
     );
+    // ... no inserts (every channel dry), and the gain pool at identity
+    assign tab_data = '0;
+    coef_flat_reader #(.W (GW), .N_ROWS (SLOTS), .ROW_LEN (1), .LANES (1)) u_gpool_gains (
+        .mclk (mclk), .frame_i (gp_swap), .coefs_flat (POOL_GAINS),
+        .rd_addr (gp_bk_addr), .rd_data (gp_bk_data)
+    );
+    // ... and the EQ flat, one reader per lane
+    for (genvar l = 0; l < 2; l++) begin : g_eq_flat
+        coef_flat_reader #(.W (EQ_CW), .N_ROWS (EQ_NCOEF), .ROW_LEN (1), .LANES (EQ_NC)) u_eq_flat (
+            .mclk (mclk), .frame_i (eq_swap), .coefs_flat (eq_flat_bank()),
+            .rd_addr (eq_addr[l*EQ_CAW +: EQ_CAW]), .rd_data (eq_bk_data[l*EQ_NC*EQ_CW +: EQ_NC*EQ_CW])
+        );
+    end
     assign link_rx  = '0;
     assign link2_rx = '0;
     assign link3_rx = '0;
 `endif
 
+    // ----- click-free coefficients (LF2/LF3): bank -> coef_smooth -> core -----
+    coef_smooth #(.W (GW), .DEPTH (N), .LANES (1), .K (SMOOTH_K)) u_sm_in_lvl (
+        .mclk (mclk), .rd_addr (in_lvl_addr), .rd_en (in_lvl_rd), .rd_data (in_lvl_data),
+        .bk_addr (in_lvl_bk_addr), .bk_data (in_lvl_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (pcm_matrix_pkg::matrix_passes(N_BUS, L1) * N), .LANES (L1),
+                  .K (SMOOTH_K)) u_sm_in_mx (
+        .mclk (mclk), .rd_addr (in_mx_addr), .rd_en (in_mx_rd), .rd_data (in_mx_data),
+        .bk_addr (in_mx_bk_addr), .bk_data (in_mx_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (N_BUS), .LANES (1), .K (SMOOTH_K)) u_sm_bus_lvl (
+        .mclk (mclk), .rd_addr (bus_lvl_addr), .rd_en (bus_lvl_rd), .rd_data (bus_lvl_data),
+        .bk_addr (bus_lvl_bk_addr), .bk_data (bus_lvl_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (pcm_matrix_pkg::matrix_passes(N, L2) * N_BUS), .LANES (L2),
+                  .K (SMOOTH_K)) u_sm_bus_mx (
+        .mclk (mclk), .rd_addr (bus_mx_addr), .rd_en (bus_mx_rd), .rd_data (bus_mx_data),
+        .bk_addr (bus_mx_bk_addr), .bk_data (bus_mx_bk_data));
+    coef_smooth #(.W (GW), .DEPTH (N), .LANES (1), .K (SMOOTH_K)) u_sm_out_lvl (
+        .mclk (mclk), .rd_addr (out_lvl_addr), .rd_en (out_lvl_rd), .rd_data (out_lvl_data),
+        .bk_addr (out_lvl_bk_addr), .bk_data (out_lvl_bk_data));
+
+    // ----- inserts (LF8): the router, off the core's insert ports, and its pools -----
+    insert_router #(
+        .N_I (N), .N_B (N_BUS), .N_O (N), .SW (SW), .K (INS_K), .S (SLOTS), .NP (NPOOL),
+        .POOL_LAT (POOL_LAT),
+        .SEND_LAST_I (mixer_core_pkg::ins_in_send_last(N)),
+        .SEND_LAST_B (mixer_core_pkg::ins_bus_send_last(N, N_BUS, L1)),
+        .SEND_LAST_O (mixer_core_pkg::ins_out_send_last(N, N_BUS, N, L1, L2))
+    ) u_router (
+        .mclk (mclk), .rst_n (rst_n), .frame_i (frame),
+        .in_send_valid  (ins_in_sv),  .in_send_ch  (ins_in_sc),  .in_send_data  (ins_in_sd),
+        .in_ret_valid   (ins_in_rv),  .in_ret_ch   (ins_in_rc),  .in_ret_data   (ins_in_rd),
+        .bus_send_valid (ins_bus_sv), .bus_send_ch (ins_bus_sc), .bus_send_data (ins_bus_sd),
+        .bus_ret_valid  (ins_bus_rv), .bus_ret_ch  (ins_bus_rc), .bus_ret_data  (ins_bus_rd),
+        .out_send_valid (ins_out_sv), .out_send_ch (ins_out_sc), .out_send_data (ins_out_sd),
+        .out_ret_valid  (ins_out_rv), .out_ret_ch  (ins_out_rc), .out_ret_data  (ins_out_rd),
+        .pool_in_valid  (pool_in_v),  .pool_in_ch  (pool_in_c),  .pool_in_data  (pool_in_d),
+        .pool_out_valid (pool_out_v), .pool_out_ch (pool_out_c), .pool_out_data (pool_out_d),
+        .tab_swap (tab_swap), .tab_addr (tab_addr), .tab_data (tab_data),
+        .err_o ()
+    );
+
+    // pool 0: gain, one per slot (the template block as it is)
+    lib_template #(.N (SLOTS), .SW (SW), .GW (GW), .GF (GF)) u_pool_gain (
+        .mclk (mclk), .rst_n (rst_n),
+        .in_valid (pool_in_v[POOL_GAIN]), .in_ch (pool_in_c[POOL_GAIN*SLW +: SLW]),
+        .in_data (pool_in_d[POOL_GAIN*SW +: SW]),
+        .coef_addr (gp_addr), .coef_rd (gp_rd), .coef_swap (gp_swap), .coef_data (gp_data),
+        .out_valid (pool_out_v[POOL_GAIN]), .out_ch (pool_out_c[POOL_GAIN*SLW +: SLW]),
+        .out_data (pool_out_d[POOL_GAIN*SW +: SW])
+    );
+    coef_smooth #(.W (GW), .DEPTH (SLOTS), .LANES (1), .K (SMOOTH_K)) u_sm_gpool (
+        .mclk (mclk), .rd_addr (gp_addr), .rd_en (gp_rd), .rd_data (gp_data),
+        .bk_addr (gp_bk_addr), .bk_data (gp_bk_data));
+
+    // pool 1: the parametric EQ (lib_svf_eq; docs/eq_proposal_2026-11-17.md),
+    // its two lanes' coefficients smoothed (the a form glides safely, step A)
+    logic [2*EQ_CAW-1:0] eq_blk_addr;
+    lib_svf_eq #(.S (SLOTS), .B (EQ_B)) u_pool_eq (
+        .mclk (mclk), .rst_n (rst_n),
+        .in_valid (pool_in_v[POOL_EQ]), .in_ch (pool_in_c[POOL_EQ*SLW +: SLW]),
+        .in_data (pool_in_d[POOL_EQ*SW +: SW]),
+        .coef_addr (eq_blk_addr), .coef_rd (eq_rd), .coef_swap (eq_swap), .coef_data (eq_data),
+        .out_valid (pool_out_v[POOL_EQ]), .out_ch (pool_out_c[POOL_EQ*SLW +: SLW]),
+        .out_data (pool_out_d[POOL_EQ*SW +: SW]),
+        .err_o (eq_err)
+    );
+    for (genvar l = 0; l < 2; l++) begin : g_sm_eq
+        coef_smooth #(.W (EQ_CW), .DEPTH (SLOTS * EQ_B), .LANES (EQ_NC), .K (SMOOTH_K)) u_sm_eq (
+            .mclk (mclk), .rd_addr (eq_blk_addr[l*EQ_CAW +: EQ_CAW]), .rd_en (eq_rd[l]),
+            .rd_data (eq_data[l*EQ_NC*EQ_CW +: EQ_NC*EQ_CW]),
+            .bk_addr (eq_addr[l*EQ_CAW +: EQ_CAW]), .bk_data (eq_bk_data[l*EQ_NC*EQ_CW +: EQ_NC*EQ_CW]));
+    end
+
     // ----- PCM core -----
     // mixer_core (Phase 12): input levels -> input matrix -> bus levels ->
     // bus matrix -> output levels; since Phase 15 between the input and
     // output patch (I/O ports <-> channels). io_out updates D cycles after
-    // the strobe (251 at 20 -> 20 -> 20 on 4 + 4 lanes; 249 before the patch,
-    // the single matrix 227), before the links take their frame (the next
+    // the strobe (241 at 20 -> 20 -> 20 on 4 + 5 lanes since LF8, its three
+    // insert stages; 251 on 4 + 4 before; 249 before the patch, the single
+    // matrix 227), before the links take their frame (the next
     // strobe, edge 256: D_MAX = 255): the same latency in frames as the
-    // parallel matrix had.
+    // parallel matrix had. Since LF1 the chain may span frames (only when
+    // nothing fits one: the lane chooser is latency first); the links then
+    // take io_out on the first strobe after it updates.
     mixer_core #(
         .N_IN (N), .N_BUS (N_BUS), .N_OUT (N), .P_IN (P), .P_OUT (P),
         .SW (SW), .GW (GW), .GF (GF), .L1 (L1), .L2 (L2)
@@ -1151,6 +1523,11 @@ module fpgamixer_top (
         .out_flat (io_out),
         .valid_o  (),
         .err_o    (),
+        .in_patch_swap (in_patch_swap), .in_lvl_swap  (in_lvl_swap),  .in_mx_swap   (in_mx_swap),
+        .bus_lvl_swap  (bus_lvl_swap),  .bus_mx_swap  (bus_mx_swap),  .out_lvl_swap (out_lvl_swap),
+        .out_patch_swap (out_patch_swap),
+        .in_lvl_rd (in_lvl_rd), .in_mx_rd (in_mx_rd), .bus_lvl_rd (bus_lvl_rd),
+        .bus_mx_rd (bus_mx_rd), .out_lvl_rd (out_lvl_rd),
         .in_patch_addr  (in_patch_addr),  .in_patch_data  (in_patch_data),
         .out_patch_addr (out_patch_addr), .out_patch_data (out_patch_data),
         .in_lvl_addr  (in_lvl_addr),  .in_lvl_data  (in_lvl_data),
@@ -1160,7 +1537,13 @@ module fpgamixer_top (
         .out_lvl_addr (out_lvl_addr), .out_lvl_data (out_lvl_data),
         .tap_in_valid  (tap_in_valid),  .tap_in_ch  (tap_in_ch),  .tap_in_data  (tap_in_data),
         .tap_bus_valid (tap_bus_valid), .tap_bus_ch (tap_bus_ch), .tap_bus_data (tap_bus_data),
-        .tap_out_valid (tap_out_valid), .tap_out_ch (tap_out_ch), .tap_out_data (tap_out_data)
+        .tap_out_valid (tap_out_valid), .tap_out_ch (tap_out_ch), .tap_out_data (tap_out_data),
+        .ins_in_send_valid  (ins_in_sv),  .ins_in_send_ch  (ins_in_sc),  .ins_in_send_data  (ins_in_sd),
+        .ins_in_ret_valid   (ins_in_rv),  .ins_in_ret_ch   (ins_in_rc),  .ins_in_ret_data   (ins_in_rd),
+        .ins_bus_send_valid (ins_bus_sv), .ins_bus_send_ch (ins_bus_sc), .ins_bus_send_data (ins_bus_sd),
+        .ins_bus_ret_valid  (ins_bus_rv), .ins_bus_ret_ch  (ins_bus_rc), .ins_bus_ret_data  (ins_bus_rd),
+        .ins_out_send_valid (ins_out_sv), .ins_out_send_ch (ins_out_sc), .ins_out_send_data (ins_out_sd),
+        .ins_out_ret_valid  (ins_out_rv), .ins_out_ret_ch  (ins_out_rc), .ins_out_ret_data  (ins_out_rd)
     );
 
 endmodule

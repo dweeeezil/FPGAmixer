@@ -28,8 +28,11 @@
 // Coefficients arrive through a READ PORT (coef_addr -> coef_data one cycle
 // later), served by coef_bank_ram or coef_flat_reader with ROW_LEN = 1,
 // N_ROWS = N, LANES = 1: word c is channel c's gain. The address is the
-// beat's channel, so all of a frame's reads fall between its two strobes
-// (beats never sit in the strobe cycle) and each frame uses one bank.
+// beat's channel, so with the bank swapping on the input's last beat
+// (mixer_core, LF1: the read in that cycle still sees the old bank) each
+// frame uses one bank, wherever its beats fall relative to the strobe.
+// coef_rd (LF2) marks the real reads, one per channel per frame, for a
+// coef_smooth on the port; the address alone is driven every cycle.
 //
 // ----- Pipeline (cycle c = the input beat's cycle) -----
 //   c+1  sample, channel, valid registered; coef_data(ch) arrives
@@ -57,6 +60,8 @@ module pcm_gain
 
     // ----- coefficient read port -----
     output logic [CW-1:0]             coef_addr,
+    output logic                      coef_rd,     // LF2: a real read (one per channel per frame)
+    output logic                      coef_swap,   // step 3 (Q2): where this block's bank may swap
     input  logic [GAIN_WIDTH-1:0]     coef_data,
 
     // ----- output stream -----
@@ -80,6 +85,10 @@ module pcm_gain
     localparam logic signed [MW-1:0] SAMP_MIN = -(MW'(1) <<< (SW-1));
 
     assign coef_addr = in_ch;
+    assign coef_rd   = in_valid;     // coef_addr is in_ch every cycle; a beat is the real read
+    // The bank swaps on the last beat: that read still sees the old bank, the
+    // next frame's channel 0 the new (LF1; the block states it, Q2)
+    assign coef_swap = in_valid && (in_ch == CW'(N - 1));
 
     // ----- data path (no reset) -----
     logic        [SW-1:0] s1;

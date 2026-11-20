@@ -102,7 +102,8 @@ if {$current_phase in {phase4 phase5 phase8 phase9}} {
     lappend scoped_xdc {constraints/coef_bank_handoff.xdc coef_bank_handoff}
     # Phase 9: the matrix's gains live in coef_bank_ram (the handoff above
     # stays for the reverse-direction status windows).
-    lappend scoped_xdc {constraints/coef_bank_ram.xdc coef_bank_ram}
+    # Since library step 3 (2026-10-31) it lives in the library (src/lib).
+    lappend scoped_xdc {src/lib/constraints/coef_bank_ram.xdc coef_bank_ram}
     # Phase 13: the peak meters behind the meter windows
     lappend scoped_xdc {constraints/pcm_peak.xdc pcm_peak}
 }
@@ -120,23 +121,34 @@ if {$current_phase in {phase9}} {
 }
 
 # ------ Verify we're at the repo root ------
-foreach d {src/rtl src/sim constraints scripts} {
+foreach d {src/rtl src/sim src/lib/rtl src/lib/sim constraints scripts} {
     if {![file isdirectory $d]} {
         puts "ERROR: expected directory '$d' not found under [pwd]"
-        puts "       Run this script from the repo root."
+        puts "       Run this script from the repo root. (src/lib is the library"
+        puts "       submodule: git submodule update --init)"
         return
     }
 }
 
 # ------ Gather sources ------
-set rtl_files [glob -nocomplain src/rtl/*.sv]
+# The library's primitives (submodule HDL-DSP-Library at src/lib, library
+# step 3) are RTL like ours; its TBs stay out. Since LF8 (2026-10-31) the
+# template block is RTL too: it is the gain pool (lib_template*, not its TB);
+# since 2026-11-17 the EQ block (blocks/svf_eq, not its TB) is pool 1.
+set rtl_files [concat [glob -nocomplain src/rtl/*.sv] [glob -nocomplain src/lib/rtl/*.sv] \
+                      [glob -nocomplain src/lib/template/lib_template*.sv] \
+                      [glob -nocomplain src/lib/blocks/svf_eq/lib_svf_eq*.sv]]
+set rtl_files [lsearch -all -inline -not -glob $rtl_files *tb_lib_*.sv]
 
-# Sim files: everything in src/sim EXCEPT the sim-only IP stub.
+# Sim files: everything in src/sim (and the library's sim/) EXCEPT the
+# sim-only IP stub.
 set sim_files {}
-foreach f [glob -nocomplain src/sim/*.sv] {
+foreach f [concat [glob -nocomplain src/sim/*.sv] [glob -nocomplain src/lib/sim/*.sv]] {
     if {[string match "*clk_wiz_audio_stub.sv" $f]} continue
     # the BD wrapper's sim stand-in (tb_top_windows); the real one is generated
     if {[string match "*ps_sys_wrapper_stub.sv" $f]} continue
+    # these include the vectors' parameters, generated when xsim_regress runs them
+    if {[string match "*tb_ltc_decoder.sv" $f] || [string match "*tb_timecode_regs.sv" $f]} continue
     lappend sim_files $f
 }
 
@@ -715,7 +727,7 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     set smc2 [create_bd_cell -type ip \
         -vlnv [get_ipdefs -filter {NAME == smartconnect}] ctrl_smc2]
     set_property -dict [list CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI [expr {2 + ($include_link3 ? 1 : 0)}]] $smc2
+        CONFIG.NUM_MI [expr {6 + ($include_link3 ? 1 : 0)}]] $smc2
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins $smc2/aclk]
     connect_bd_net [get_bd_pins $rst/interconnect_aresetn] [get_bd_pins $smc2/aresetn]
     connect_bd_intf_net [get_bd_intf_pins $smc/[format "M%02d_AXI" $mi]] \
@@ -723,10 +735,16 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
     puts "INFO: ctrl_smc2 on ctrl_smc [format "M%02d" $mi]"
     incr mi
 
-    set ports2 {M_AXI_INPATCH 0x8000D000 M_AXI_OUTPATCH 0x8000E000}
-    if {$include_link3} { lappend ports2 M_AXI_LINK3STAT 0x8000C000 }
+    # LF8 (2026-10-31): the insert router's tables and the gain pool;
+    # 2026-11-17: the EQ pool, 8 KB (1,536 coefficients), on an 8 KB boundary.
+    # 2026-11-18: the timecode display.
+    # Each entry: port, offset, range.
+    set ports2 {M_AXI_INPATCH 0x8000D000 4K M_AXI_OUTPATCH 0x8000E000 4K
+                M_AXI_INSERT 0x8000F000 4K M_AXI_GPOOL 0x80010000 4K
+                M_AXI_EQPOOL 0x80012000 8K M_AXI_TIMECODE 0x80011000 4K}
+    if {$include_link3} { lappend ports2 M_AXI_LINK3STAT 0x8000C000 4K }
     set mi2 0
-    foreach {port offset} $ports2 {
+    foreach {port offset range} $ports2 {
         set p [create_bd_intf_port -mode Master \
             -vlnv xilinx.com:interface:aximm_rtl:1.0 $port]
         set_property -dict [list \
@@ -736,11 +754,11 @@ zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on [format "M%02d" $mi]"
             CONFIG.FREQ_HZ    $pl_clk0_hz \
         ] $p
         connect_bd_intf_net [get_bd_intf_pins $smc2/[format "M%02d_AXI" $mi2]] $p
-        assign_bd_address -offset $offset -range 4K \
+        assign_bd_address -offset $offset -range $range \
             -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] \
             [get_bd_addr_segs $port/Reg]
         puts "INFO: $port = [get_property OFFSET [get_bd_addr_segs \
-zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] (4K) on ctrl_smc2 [format "M%02d" $mi2]"
+zynq_ultra_ps_e_0/Data/SEG_${port}_Reg]] ($range) on ctrl_smc2 [format "M%02d" $mi2]"
         set_property CONFIG.ASSOCIATED_BUSIF \
             "[get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports ctrl_aclk]]:$port" \
             [get_bd_ports ctrl_aclk]
